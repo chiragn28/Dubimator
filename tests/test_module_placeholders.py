@@ -1,4 +1,5 @@
 """Confirms the Phase 1 placeholder module structure is importable."""
+
 import importlib
 
 import pytest
