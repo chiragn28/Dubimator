@@ -55,6 +55,21 @@ def test_mlflow_health():
     assert resp.status_code == 200
 
 
+def test_mlflow_proxies_artifacts():
+    mlflow_url = _env("MLFLOW_TRACKING_URI", "http://localhost:5000").rstrip("/")
+    try:
+        resp = requests.get(
+            f"{mlflow_url}/api/2.0/mlflow/experiments/get",
+            params={"experiment_id": "0"},
+            timeout=CONNECT_TIMEOUT,
+        )
+    except requests.exceptions.ConnectionError as exc:
+        pytest.skip(f"MLflow not reachable at {mlflow_url} — start it with `docker compose up -d mlflow`. ({exc})")
+
+    resp.raise_for_status()
+    assert resp.json()["experiment"]["artifact_location"].startswith("mlflow-artifacts:")
+
+
 def test_airflow_health():
     port = _env("AIRFLOW_PORT", "8080")
     try:
