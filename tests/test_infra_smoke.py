@@ -12,6 +12,7 @@ import os
 
 import psycopg2
 import pytest
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -43,3 +44,12 @@ def test_postgres_pgvector():
             conn.commit()
     finally:
         conn.close()
+
+
+def test_mlflow_health():
+    try:
+        resp = requests.get("http://localhost:5000/", timeout=CONNECT_TIMEOUT)
+    except requests.exceptions.ConnectionError as exc:
+        pytest.skip(f"MLflow not reachable on localhost:5000 — start it with `docker compose up -d mlflow`. ({exc})")
+
+    assert resp.status_code == 200
