@@ -53,3 +53,16 @@ def test_mlflow_health():
         pytest.skip(f"MLflow not reachable on localhost:5000 — start it with `docker compose up -d mlflow`. ({exc})")
 
     assert resp.status_code == 200
+
+
+def test_airflow_health():
+    port = _env("AIRFLOW_PORT", "8080")
+    try:
+        resp = requests.get(f"http://localhost:{port}/health", timeout=CONNECT_TIMEOUT)
+    except requests.exceptions.ConnectionError as exc:
+        pytest.skip(
+            f"Airflow not reachable on localhost:{port} — start it with `docker compose up -d airflow`. "
+            f"Note: Airflow standalone can take 30-60s to become healthy on first start. ({exc})"
+        )
+
+    assert resp.status_code == 200

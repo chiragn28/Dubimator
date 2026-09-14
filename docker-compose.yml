@@ -27,5 +27,17 @@ services:
     volumes:
       - ./mlruns:/mlflow/mlruns
 
+  airflow:
+    image: apache/airflow:2.10.3-python3.11
+    container_name: zestimator-airflow
+    command: standalone
+    environment:
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    ports:
+      - "${AIRFLOW_PORT}:8080"
+    volumes:
+      - airflow_data:/opt/airflow
+
 volumes:
   postgres_data:
+  airflow_data:
