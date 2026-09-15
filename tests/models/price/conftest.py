@@ -1,6 +1,11 @@
 import math
 from datetime import date, timedelta
 
+# Import lightgbm before psycopg2 (pulled in transitively below via models.price.data) has a
+# chance to load: on this Windows machine, psycopg2's native libpq loading ahead of scikit-learn
+# (imported by models.price.features -> models.price.split) corrupts state that crashes a later
+# lightgbm Dataset construction with an access violation. Harmless once lightgbm is loaded first.
+import lightgbm  # noqa: F401
 import numpy as np
 import polars as pl
 import pytest
