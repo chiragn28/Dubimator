@@ -1,4 +1,8 @@
 import dataclasses
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import numpy as np
 import polars as pl
@@ -81,3 +85,37 @@ def test_lightgbm_baseline_trains_with_early_stopping(synthetic_homes):
     assert predicted.shape == (val.height,)
     assert np.isfinite(predicted).all()
     assert 1 <= booster.best_iteration <= 200
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="msvcp140 DLL load-order crash is Windows-only")
+def test_lightgbm_survives_pandas_loading_before_it_in_a_fresh_process():
+    """models.price.__init__ preloads the system msvcp140.dll so LightGBM never dereferences
+
+    pyarrow's older bundled copy. Regression test for that crash: import a models.price module
+    that pulls in pandas (and therefore pyarrow) well before LightGBM ever touches a Dataset,
+    in a fresh subprocess so no earlier import in this test session can mask the bug.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    code = (
+        "import models.price.features\n"
+        "import numpy as np\n"
+        "import lightgbm as lgb\n"
+        "rng = np.random.default_rng(0)\n"
+        "x = rng.normal(size=(50, 4))\n"
+        "y = rng.normal(size=50)\n"
+        "train = lgb.Dataset(x, label=y)\n"
+        "booster = lgb.train({'objective': 'regression', 'verbose': -1}, train, num_boost_round=5)\n"
+        "print('ok')\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=repo_root,
+        env={**os.environ, "PYTHONPATH": str(repo_root)},
+        check=False,
+    )
+    assert result.returncode == 0 and "ok" in result.stdout, (
+        f"returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
