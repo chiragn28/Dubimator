@@ -1,0 +1,7 @@
+FROM apache/airflow:2.10.3-python3.11
+
+RUN pip install --no-cache-dir \
+    "apache-airflow==2.10.3" \
+    "polars==1.44.2" \
+    "psycopg2-binary==2.9.13" \
+    "python-dotenv==1.2.3"

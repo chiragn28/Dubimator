@@ -34,15 +34,32 @@ services:
       start_period: 20s
 
   airflow:
-    image: apache/airflow:2.10.3-python3.11
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    image: zestimator-airflow:local
     container_name: zestimator-airflow
-    command: standalone
+    command: bash -c "rm -f /opt/airflow/*.pid && exec airflow standalone"
+    depends_on:
+      postgres:
+        condition: service_healthy
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      PYTHONPATH: /opt/zestimator
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
+      POSTGRES_DB: ${POSTGRES_DB}
+      DLD_CSV_PATH: /opt/zestimator/data/raw/Transactions.csv
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
     volumes:
       - airflow_data:/opt/airflow
+      - ./dags:/opt/airflow/dags
+      - ./ingestion:/opt/zestimator/ingestion:ro
+      - ./data:/opt/zestimator/data:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import json, urllib.request; h = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert h['metadatabase']['status'] == 'healthy' and h['scheduler']['status'] == 'healthy'"]
       interval: 10s
