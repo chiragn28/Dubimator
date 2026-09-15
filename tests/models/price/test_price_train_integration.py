@@ -52,14 +52,29 @@ def test_end_to_end_training_registers_a_working_champion(pg_test_db, temp_mlflo
     assert 0.0 <= champion["test_clean.all.coverage_80"] <= 1.0
     assert any(key.startswith("test_clean.segment.") for key in champion)
 
-    run_names = set(
-        mlflow.search_runs(experiment_names=["price-integration"])["tags.mlflow.runName"]
-    )
+    runs = mlflow.search_runs(experiment_names=["price-integration"])
+    run_names = set(runs["tags.mlflow.runName"])
     assert {"b0-comps", "b1-lightgbm", "xgb-tune", "trial-000", "trial-001",
             "xgb-champion-eval", "xgb-production"} <= run_names  # fmt: skip
 
+    client = mlflow.MlflowClient()
+    run_ids = dict(zip(runs["tags.mlflow.runName"], runs["run_id"], strict=True))
+    eval_run = client.get_run(run_ids["xgb-champion-eval"])
+    prod_run = client.get_run(run_ids["xgb-production"])
+    eval_artifacts = {artifact.path for artifact in client.list_artifacts(eval_run.info.run_id)}
+    assert {"metrics.json", "conformal.json", "feature_importance.png",
+            "residuals_by_segment.png", "error_by_loc_level.png",
+            "pred_vs_actual.png"} <= eval_artifacts  # fmt: skip
+    for run in (eval_run, prod_run):
+        assert {"lineage.ingest_run_id", "lineage.source_sha256"} <= set(run.data.params)
+    num_rounds = int(eval_run.data.metrics["best_iteration"]) + 1
+    assert int(prod_run.data.params["num_boost_round"]) == num_rounds
+
     model = mlflow.pyfunc.load_model("models:/zestimator-price-it@champion")
     predictor = model.unwrap_python_model().predictor
+    assert predictor.bundle.metadata["num_boost_round"] == num_rounds
+    logged_conformal = mlflow.artifacts.load_dict(f"runs:/{eval_run.info.run_id}/conformal.json")
+    assert predictor.bundle.conformal == logged_conformal
     areas = predictor.bundle.priors.stats["area"].filter(pl.col("property_type") == "unit")
     busiest_area = int(areas.sort("sum_w", descending=True)["area_id"][0])
     estimate = predictor.predict_one(
@@ -80,3 +95,5 @@ def test_failed_gate_registers_nothing(pg_test_db, temp_mlflow):
         mlflow.search_runs(experiment_names=["price-integration"])["tags.mlflow.runName"]
     )
     assert "xgb-champion-eval" in run_names and "xgb-production" not in run_names
+    registered = mlflow.MlflowClient().search_registered_models("name='zestimator-price-it'")
+    assert registered == []
