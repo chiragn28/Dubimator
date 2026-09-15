@@ -25,7 +25,7 @@ services:
     ports:
       - "127.0.0.1:${MLFLOW_PORT:-5000}:5000"
     volumes:
-      - ./mlruns:/mlflow/mlruns
+      - mlflow_data:/mlflow/mlruns
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health')"]
       interval: 10s
@@ -70,3 +70,4 @@ services:
 volumes:
   postgres_data:
   airflow_data:
+  mlflow_data:

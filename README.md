@@ -18,7 +18,7 @@ graph LR
         PG[(Postgres + pgvector<br/>schema dld)]
         ML[MLflow]
     end
-    MLRUNS[("./mlruns")]
+    MLRUNS[("mlflow_data volume")]
     CSV --> CLI --> PG
     CSV --> AF --> PG
     ML -.->|"runs + artifacts"| MLRUNS
@@ -42,7 +42,7 @@ uv run pytest tests/ -v
 
 | Service | Where (default port — `.env` variable) |
 |---|---|
-| MLflow | http://localhost:5000 — `MLFLOW_PORT`. Runs and artifacts persist in `./mlruns` |
+| MLflow | http://localhost:5000 — `MLFLOW_PORT`. Runs and artifacts persist in the `mlflow_data` Docker volume (not a bind mount — this repo lives on OneDrive, and SQLite over a synced folder stalls 15-20s intermittently) |
 | Airflow | http://localhost:8080 — `AIRFLOW_PORT`. User `admin`; password via `docker compose exec airflow cat /opt/airflow/standalone_admin_password.txt` (in Git Bash, prefix with `MSYS_NO_PATHCONV=1`) |
 | Postgres | `localhost:5432` — `POSTGRES_PORT`. Database, user, and password from `.env` |
 
