@@ -74,3 +74,12 @@ CREATE TABLE IF NOT EXISTS dld.area_aliases (
 
 CREATE OR REPLACE VIEW dld.market_sales AS
     SELECT * FROM dld.transactions WHERE exclusion_reason IS NULL;
+
+COMMENT ON COLUMN dld.transactions.price_per_sqm_aed IS
+    'Derived from price_aed (the target). Never use as a model feature.';
+COMMENT ON COLUMN dld.transactions.price_robust_z IS
+    'Price-per-m2 z-score against peer sales, derived from the target. Never use as a model feature.';
+COMMENT ON COLUMN dld.transactions.peer_tier IS
+    'Outlier-rule bookkeeping that depends on the target. Never use as a model feature.';
+COMMENT ON COLUMN dld.transactions.exclusion_reason IS
+    'Why the row is not a clean market sale; NULL means market sale. Not a model feature.';

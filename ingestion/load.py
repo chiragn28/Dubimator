@@ -8,6 +8,7 @@ from psycopg2.extras import Json
 SCHEMA_SQL = Path(__file__).parent / "sql" / "schema.sql"
 COPY_CHUNK_ROWS = 100_000
 INGEST_LOCK_KEY = 7_042_026
+TRUNCATE_LOCK_TIMEOUT = "60s"
 
 
 class LoadInvariantError(RuntimeError):
@@ -81,6 +82,7 @@ def copy_frame(cur, table: str, frame: pl.DataFrame) -> None:
 def replace_data(
     cur, run_id: int, transactions: pl.DataFrame, areas: pl.DataFrame, aliases: pl.DataFrame
 ) -> int:
+    cur.execute(f"SET LOCAL lock_timeout = '{TRUNCATE_LOCK_TIMEOUT}'")
     cur.execute("TRUNCATE dld.transactions, dld.areas, dld.area_aliases")
     copy_frame(
         cur, "dld.transactions", transactions.with_columns(pl.lit(run_id).alias("ingest_run_id"))

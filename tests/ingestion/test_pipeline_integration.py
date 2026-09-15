@@ -193,6 +193,25 @@ def test_concurrent_run_is_rejected_without_writing(pg_test_db):
     assert scalar(pg_test_db, "SELECT to_regclass('dld.ingestion_runs')") is None
 
 
+def test_truncate_gives_up_on_a_blocking_reader(pg_test_db, monkeypatch):
+    import psycopg2.errors
+
+    run_pipeline(FIXTURE, pg_test_db)
+    monkeypatch.setattr("ingestion.load.TRUNCATE_LOCK_TIMEOUT", "1s")
+    reader = pg_test_db.connect()
+    try:
+        with reader.cursor() as cur:
+            cur.execute("SELECT count(*) FROM dld.transactions")
+        with pytest.raises(psycopg2.errors.LockNotAvailable):
+            run_pipeline(FIXTURE, pg_test_db)
+    finally:
+        reader.close()
+    assert query(pg_test_db, "SELECT status FROM dld.ingestion_runs ORDER BY run_id") == [
+        ("succeeded",),
+        ("failed",),
+    ]
+
+
 def test_stale_running_rows_are_marked_abandoned(pg_test_db):
     run_pipeline(FIXTURE, pg_test_db)
     conn = pg_test_db.connect()
