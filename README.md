@@ -52,9 +52,9 @@ Real Dubai Land Department transactions (see `data/README.md` for the source).
 The file covers **1995-03-07 to 2023-03-17**, so every price estimate in this
 project is **as of Q1 2023**. No synthetic data is used in the ingestion phase.
 
-Of 1,047,965 transactions, **701,394** are clean open-market sales used
+Of 1,047,965 transactions, **707,655** are clean open-market sales used
 for modelling. Every other row is kept in Postgres with exactly one exclusion
-reason (last full run, 30.2s):
+reason (last full run, 28.9s):
 
 | Reason | Rows | Why excluded |
 |---|---:|---|
@@ -65,9 +65,9 @@ reason (last full run, 30.2s):
 | `missing_price` | 753 | No price |
 | `invalid_area` | 0 | Size missing or ≤ 0 |
 | `price_below_floor` | 499 | Under AED 10,000 — placeholder or nominal transfer |
-| `suspected_sqft_entry` | 2,807 | Price per m² is far too low, but would be normal if the size had been entered in sq ft |
-| `price_outlier_low` | 11,430 | Price per m² more than 3.5 robust deviations below comparable sales |
-| `price_outlier_high` | 13,768 | Price per m² more than 3.5 robust deviations above comparable sales |
+| `suspected_sqft_entry` | 2,808 | Price per m² is far too low, but would be normal if the size had been entered in sq ft |
+| `price_outlier_low` | 7,873 | Price per m² more than 3.5 robust deviations below comparable sales |
+| `price_outlier_high` | 11,063 | Price per m² more than 3.5 robust deviations above comparable sales |
 | `duplicate_transaction_id` | 0 | Repeat of an earlier row |
 
 "Comparable sales" means the same area, property type, ready/off-plan status
@@ -83,11 +83,13 @@ docker compose exec airflow airflow dags trigger dld_ingestion   # same pipeline
 
 Each run replaces the `dld` tables atomically (a failed run leaves the previous
 data untouched). Only one run can load at a time — a second concurrent run
-stops immediately — and any run left marked `running` by a killed process is
-marked failed as abandoned by the next run. Each run records itself in
+stops as soon as it reaches the database, before writing anything — and any
+run left marked `running` by a killed process is marked failed as abandoned
+by the next run. Each run records itself in
 `dld.ingestion_runs` with the file's SHA-256 and per-reason counts. Phase 3
-trains on the `dld.market_sales` view; `price_per_sqm_aed` is derived from the
-price and must never be used as a model feature. `dld.area_aliases` maps
+trains on the `dld.market_sales` view. `price_per_sqm_aed`, `price_robust_z`
+and `peer_tier` are all derived from the price, so they must never be used as
+model features (the columns carry database comments saying so). `dld.area_aliases` maps
 familiar names (Dubai Marina, JBR, JLT, JVC, Downtown, …) to DLD's official
 area names.
 

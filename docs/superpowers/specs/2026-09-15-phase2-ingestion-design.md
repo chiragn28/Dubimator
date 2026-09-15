@@ -166,7 +166,8 @@ matching reason, evaluated in this order:
 
 A group qualifies when it has ≥ 30 candidate rows and `MAD > 0`, where
 `MAD = median(|x − median(x)|)` over the group's candidates.
-`price_robust_z = (x − median) / (1.4826 × MAD)`; `peer_tier` records the tier
+`price_robust_z = (x − median) / scale` with `scale = max(1.4826 × MAD, 0.12)`;
+the sqft-corrected z uses the same scale. `peer_tier` records the tier
 used. If no tier qualifies for a row, raise (cannot happen with real data;
 tested with a synthetic frame). Then:
 - `z < −3.5` and the sqft-corrected value
@@ -332,3 +333,12 @@ reason counts; exit code 0 on success, 1 on failure with the error on stderr.
 Model training and training-window/recency choices (Phase 3), sparse-area
 prediction fallback (Phase 3), search use of aliases (Phase 5), newer DLD
 data, scheduling (the DAG is manual-trigger only), CI (Phase 8).
+
+## Amendments during implementation (2026-09-15)
+
+- Runs are serialized with a session-level Postgres advisory lock taken right after connecting; a concurrent run raises `IngestionInProgressError` before writing anything. While holding the lock, leftover `running` rows are marked `failed` ("abandoned: ingestion process ended before finishing").
+- `finished_at` uses `clock_timestamp()` (not `now()`, which is the transaction start).
+- The load sets `lock_timeout = 60s` before its `TRUNCATE`, so an idle reader holding a lock fails the run instead of hanging it.
+- The DAG has `max_active_runs=1` and is verified with `airflow dags trigger`, never `dags test`/`tasks test` (those create DagRuns that the unpaused scheduler also executes).
+- Outlier robust scale has a floor of 0.12 (log units), so prices within about 1.5x of the peer median are never flagged; bulk-sale blocks can make a group's MAD near zero.
+- `price_per_sqm_aed`, `price_robust_z`, `peer_tier` and `exclusion_reason` carry database comments warning they are not model features.
