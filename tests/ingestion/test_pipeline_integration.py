@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import polars as pl
+import psycopg2
 import pytest
 
 from ingestion.__main__ import main
@@ -101,6 +102,49 @@ def test_rerun_is_a_full_refresh(pg_test_db):
     assert query(pg_test_db, "SELECT DISTINCT ingest_run_id FROM dld.transactions") == [
         (second.run_id,)
     ]
+
+
+def test_failure_inside_transaction_rolls_back_and_marks_run_failed(pg_test_db, monkeypatch):
+    first = run_pipeline(FIXTURE, pg_test_db)
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("ingestion.pipeline.finish_run", boom)
+
+    with pytest.raises(RuntimeError, match="boom"):
+        run_pipeline(FIXTURE, pg_test_db)
+
+    assert scalar(pg_test_db, "SELECT count(*) FROM dld.transactions") == first.rows_read
+    assert query(pg_test_db, "SELECT DISTINCT ingest_run_id FROM dld.transactions") == [
+        (first.run_id,)
+    ]
+    assert query(pg_test_db, "SELECT status FROM dld.ingestion_runs ORDER BY run_id") == [
+        ("succeeded",),
+        ("failed",),
+    ]
+    error, finished_at = query(
+        pg_test_db, "SELECT error, finished_at FROM dld.ingestion_runs WHERE status = 'failed'"
+    )[0]
+    assert error.startswith("RuntimeError: boom")
+    assert finished_at is not None
+
+
+def test_fail_run_failure_preserves_root_cause_as_note(pg_test_db, monkeypatch):
+    def boom_finish(*args, **kwargs):
+        raise RuntimeError("boom")
+
+    def boom_fail(*args, **kwargs):
+        raise psycopg2.InterfaceError("connection already closed")
+
+    monkeypatch.setattr("ingestion.pipeline.finish_run", boom_finish)
+    monkeypatch.setattr("ingestion.pipeline.fail_run", boom_fail)
+
+    with pytest.raises(RuntimeError, match="boom") as excinfo:
+        run_pipeline(FIXTURE, pg_test_db)
+
+    notes = getattr(excinfo.value, "__notes__", [])
+    assert any("also failed to mark run" in note for note in notes)
 
 
 def test_schema_drift_writes_nothing(pg_test_db, tmp_path):

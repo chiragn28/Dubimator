@@ -59,7 +59,10 @@ def run_pipeline(csv_path: Path, settings: DbSettings) -> RunSummary:
                 finish_run(cur, run_id, rows_loaded, rows_market_sale, details)
             conn.commit()
         except Exception as exc:
-            fail_run(conn, run_id, f"{type(exc).__name__}: {exc}")
+            try:
+                fail_run(conn, run_id, f"{type(exc).__name__}: {exc}")
+            except Exception as mark_exc:  # noqa: BLE001 — preserve root cause, see add_note below
+                exc.add_note(f"also failed to mark run {run_id} as failed: {mark_exc!r}")
             raise
     finally:
         conn.close()
