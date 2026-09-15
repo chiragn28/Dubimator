@@ -5,7 +5,16 @@ import polars as pl
 
 from ingestion.areas import build_area_aliases, build_areas
 from ingestion.config import DbSettings
-from ingestion.load import apply_schema, fail_run, file_sha256, finish_run, replace_data, start_run
+from ingestion.load import (
+    abandon_stale_runs,
+    acquire_ingest_lock,
+    apply_schema,
+    fail_run,
+    file_sha256,
+    finish_run,
+    replace_data,
+    start_run,
+)
 from ingestion.normalize import to_typed
 from ingestion.rules import REASONS, classify
 from ingestion.schema import read_raw
@@ -51,7 +60,9 @@ def run_pipeline(csv_path: Path, settings: DbSettings) -> RunSummary:
 
     conn = settings.connect()
     try:
+        acquire_ingest_lock(conn)
         apply_schema(conn)
+        abandon_stale_runs(conn)
         run_id = start_run(conn, str(csv_path), file_sha256(csv_path), classified.height)
         try:
             with conn.cursor() as cur:

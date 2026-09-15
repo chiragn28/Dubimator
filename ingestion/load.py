@@ -7,10 +7,36 @@ from psycopg2.extras import Json
 
 SCHEMA_SQL = Path(__file__).parent / "sql" / "schema.sql"
 COPY_CHUNK_ROWS = 100_000
+INGEST_LOCK_KEY = 7_042_026
 
 
 class LoadInvariantError(RuntimeError):
     pass
+
+
+class IngestionInProgressError(RuntimeError):
+    pass
+
+
+def acquire_ingest_lock(conn) -> None:
+    with conn.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (INGEST_LOCK_KEY,))
+        acquired = cur.fetchone()[0]
+    conn.commit()
+    if not acquired:
+        raise IngestionInProgressError("another DLD ingestion run is in progress")
+
+
+def abandon_stale_runs(conn) -> int:
+    with conn.cursor() as cur:
+        cur.execute(
+            "UPDATE dld.ingestion_runs SET status = 'failed', finished_at = clock_timestamp(), "
+            "error = 'abandoned: ingestion process ended before finishing' "
+            "WHERE status = 'running'"
+        )
+        count = cur.rowcount
+    conn.commit()
+    return count
 
 
 def file_sha256(path: Path) -> str:
@@ -70,7 +96,7 @@ def replace_data(
 
 def finish_run(cur, run_id: int, rows_loaded: int, rows_market_sale: int, details: dict) -> None:
     cur.execute(
-        "UPDATE dld.ingestion_runs SET status = 'succeeded', finished_at = now(), "
+        "UPDATE dld.ingestion_runs SET status = 'succeeded', finished_at = clock_timestamp(), "
         "rows_loaded = %s, rows_market_sale = %s, details = %s WHERE run_id = %s",
         (rows_loaded, rows_market_sale, Json(details), run_id),
     )
@@ -80,8 +106,8 @@ def fail_run(conn, run_id: int, error: str) -> None:
     conn.rollback()
     with conn.cursor() as cur:
         cur.execute(
-            "UPDATE dld.ingestion_runs SET status = 'failed', finished_at = now(), error = %s "
-            "WHERE run_id = %s",
+            "UPDATE dld.ingestion_runs SET status = 'failed', finished_at = clock_timestamp(), "
+            "error = %s WHERE run_id = %s",
             (error, run_id),
         )
     conn.commit()

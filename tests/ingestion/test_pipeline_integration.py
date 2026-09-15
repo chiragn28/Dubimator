@@ -5,6 +5,7 @@ import psycopg2
 import pytest
 
 from ingestion.__main__ import main
+from ingestion.load import INGEST_LOCK_KEY, IngestionInProgressError
 from ingestion.pipeline import run_pipeline
 from ingestion.rules import MARKET_SALE_PROCEDURES, REASONS
 from ingestion.schema import SchemaDriftError
@@ -172,3 +173,35 @@ def test_cli_success(pg_test_db, monkeypatch, capsys):
 def test_cli_failure_returns_1(tmp_path, capsys):
     assert main(["--csv", str(tmp_path / "missing.csv")]) == 1
     assert "missing.csv" in capsys.readouterr().err
+
+
+def test_concurrent_run_is_rejected_without_writing(pg_test_db):
+    holder = pg_test_db.connect()
+    try:
+        with holder.cursor() as cur:
+            cur.execute("SELECT pg_advisory_lock(%s)", (INGEST_LOCK_KEY,))
+        with pytest.raises(IngestionInProgressError):
+            run_pipeline(FIXTURE, pg_test_db)
+    finally:
+        holder.close()
+    assert scalar(pg_test_db, "SELECT to_regclass('dld.ingestion_runs')") is None
+
+
+def test_stale_running_rows_are_marked_abandoned(pg_test_db):
+    run_pipeline(FIXTURE, pg_test_db)
+    conn = pg_test_db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO dld.ingestion_runs (source_path, source_sha256, rows_read, status) "
+                "VALUES ('stale.csv', 'x', 1, 'running')"
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    run_pipeline(FIXTURE, pg_test_db)
+    assert query(pg_test_db, "SELECT status, error FROM dld.ingestion_runs ORDER BY run_id") == [
+        ("succeeded", None),
+        ("failed", "abandoned: ingestion process ended before finishing"),
+        ("succeeded", None),
+    ]
