@@ -111,3 +111,62 @@ def test_missing_property_type_raises():
     priors = LocationPriors.fit(FIT, 10.0, 3.0)
     with pytest.raises(LocationPriorError, match="villa"):
         priors.transform(make_rows({"property_type": "villa"}))
+
+
+def test_building_priors_are_scoped_by_project():
+    # One area, two projects that both happen to have a building named "Building 1": their
+    # sales must not be pooled together at the building level.
+    project_a = [
+        {"project_name": "Project A", "building_name": "Building 1", "y": 0.0} for _ in range(5)
+    ]
+    project_b = [
+        {"project_name": "Project B", "building_name": "Building 1", "y": 2.0} for _ in range(5)
+    ]
+    priors = LocationPriors.fit(make_rows(*project_a, *project_b), shrink_k=10.0, min_level_n=3.0)
+    rows = priors.transform(
+        make_rows(
+            {"project_name": "Project A", "building_name": "Building 1"},
+            {"project_name": "Project B", "building_name": "Building 1"},
+        )
+    )
+    # city = 10/10 = 1.0; area = (10 + 10*1.0)/(10+10) = 1.0
+    # project A = (0 + 10*1.0)/(5+10) = 2/3; building A = (0 + 10*2/3)/(5+10) = 4/9 ~= 0.444
+    # project B = (10 + 10*1.0)/(5+10) = 4/3; building B = (10 + 10*4/3)/(5+10) = 14/9 ~= 1.556
+    row_a, row_b = rows.row(0, named=True), rows.row(1, named=True)
+    assert row_a["prior_project"] == pytest.approx(2 / 3)
+    assert row_a["prior_building"] == pytest.approx(4 / 9)
+    assert row_a["n_building"] == pytest.approx(math.log1p(5))
+    assert row_b["prior_project"] == pytest.approx(4 / 3)
+    assert row_b["prior_building"] == pytest.approx(14 / 9)
+    assert row_b["n_building"] == pytest.approx(math.log1p(5))
+
+
+def test_projectless_buildings_pool_together_separately_from_a_named_project():
+    # Two rows share a building name but have no project; two more share that same building
+    # name and do have a project. The project-less pair must still resolve at building level
+    # (grouped with each other by building name alone) with a prior distinct from the
+    # same-named building that has a project.
+    no_project = [
+        {"project_name": None, "building_name": "Shared Tower", "y": 0.0} for _ in range(2)
+    ]
+    with_project = [
+        {"project_name": "Real Project", "building_name": "Shared Tower", "y": 2.0}
+        for _ in range(2)
+    ]
+    priors = LocationPriors.fit(
+        make_rows(*no_project, *with_project), shrink_k=10.0, min_level_n=2.0
+    )
+    rows = priors.transform(
+        make_rows(
+            {"project_name": None, "building_name": "Shared Tower"},
+            {"project_name": "Real Project", "building_name": "Shared Tower"},
+        )
+    )
+    # city = 4/4 = 1.0; area = (4 + 10*1.0)/(4+10) = 1.0
+    # project (real) = (4 + 10*1.0)/(2+10) = 7/6; building (real) = (4 + 10*7/6)/(2+10) = 47/36
+    # project (none) falls back to area = 1.0; building (none) = (0 + 10*1.0)/(2+10) = 5/6
+    assert rows["loc_level"].to_list() == [3, 3]
+    no_project_row, with_project_row = rows.row(0, named=True), rows.row(1, named=True)
+    assert no_project_row["prior_building"] == pytest.approx(5 / 6)
+    assert with_project_row["prior_building"] == pytest.approx(47 / 36)
+    assert no_project_row["prior_building"] != pytest.approx(with_project_row["prior_building"])

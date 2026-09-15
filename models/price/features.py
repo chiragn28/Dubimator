@@ -164,12 +164,18 @@ LEVEL_KEYS = {
     "city": ("property_type",),
     "area": ("property_type", "area_id"),
     "project": ("property_type", "area_id", "project_key"),
-    "building": ("property_type", "area_id", "building_key"),
+    "building": ("property_type", "area_id", "project_key", "building_key"),
 }
 PRIOR_COLUMNS = (
     "prior_area", "prior_project", "prior_building",
     "n_area", "n_project", "n_building", "loc_level",
 )  # fmt: skip
+
+# The building level is scoped within its project: two projects that happen to reuse a building
+# name must not pool their sales. A NULL project_key is itself a valid scope (buildings with no
+# project, pooled together), so it is coalesced to a sentinel rather than dropped; only a NULL
+# building_key drops a row from the building level entirely (the level is absent for that row).
+_NO_PROJECT = "\x00__no_project__"
 
 
 class LocationPriorError(RuntimeError):
@@ -183,6 +189,30 @@ def add_location_keys(frame: pl.DataFrame) -> pl.DataFrame:
     )
 
 
+def _group_keys(level: str) -> list[str]:
+    """Actual columns to group/join by for this level (null-safe project scoping for building)."""
+    keys = list(LEVEL_KEYS[level])
+    if level == "building":
+        keys[keys.index("project_key")] = "__p_building_project"
+    return keys
+
+
+def _with_group_keys(frame: pl.DataFrame, level: str) -> pl.DataFrame:
+    """Add any derived join-key columns this level needs."""
+    if level == "building":
+        return frame.with_columns(
+            pl.col("project_key").fill_null(_NO_PROJECT).alias("__p_building_project")
+        )
+    return frame
+
+
+def _required_keys(level: str) -> list[str]:
+    """Columns that must be non-null for a row to participate at this level."""
+    if level == "building":
+        return [key for key in LEVEL_KEYS[level] if key != "project_key"]
+    return list(LEVEL_KEYS[level])
+
+
 @dataclass(frozen=True)
 class LocationPriors:
     """Bulk-weighted relative-price statistics per location level, shrunk down the chain."""
@@ -194,25 +224,28 @@ class LocationPriors:
     @classmethod
     def fit(cls, frame: pl.DataFrame, shrink_k: float, min_level_n: float) -> "LocationPriors":
         stats = {}
-        for level, keys in LEVEL_KEYS.items():
+        for level in LEVEL_KEYS:
+            group_keys = _group_keys(level)
             stats[level] = (
-                frame.drop_nulls(list(keys))
-                .group_by(list(keys))
+                _with_group_keys(frame, level)
+                .drop_nulls(_required_keys(level))
+                .group_by(group_keys)
                 .agg(
                     (pl.col("y") * pl.col("bulk_weight")).sum().alias("sum_wy"),
                     pl.col("bulk_weight").sum().alias("sum_w"),
                 )
-                .sort(list(keys))
+                .sort(group_keys)
             )
         return cls(stats, shrink_k, min_level_n)
 
     def transform(self, frame: pl.DataFrame) -> pl.DataFrame:
         out = frame.with_row_index("__p_row")
-        for level, keys in LEVEL_KEYS.items():
+        for level in LEVEL_KEYS:
+            out = _with_group_keys(out, level)
             table = self.stats[level].rename(
                 {"sum_wy": f"__p_wy_{level}", "sum_w": f"__p_w_{level}"}
             )
-            out = out.join(table, on=list(keys), how="left")
+            out = out.join(table, on=_group_keys(level), how="left")
         out = out.sort("__p_row")
         if out["__p_w_city"].null_count():
             missing = sorted(out.filter(pl.col("__p_w_city").is_null())["property_type"].unique())
