@@ -1,4 +1,5 @@
 import csv
+from datetime import date
 
 import polars as pl
 import pytest
@@ -77,5 +78,55 @@ def make_raw():
             record = {**BASE_RAW_ROW, **overrides}
             records.append({k: (None if v == "null" else v) for k, v in record.items()})
         return pl.DataFrame(records, schema={column: pl.Utf8 for column in BASE_RAW_ROW})
+
+    return build
+
+
+TYPED_DEFAULTS = {
+    "trans_group": "sales",
+    "procedure_name": "Sell",
+    "instance_date": date(2020, 6, 1),
+    "property_type": "unit",
+    "property_sub_type": "Flat",
+    "property_usage": "Residential",
+    "reg_type": "ready",
+    "area_id": 1,
+    "area_name": "Area One",
+    "area_name_ar": None,
+    "building_name": None,
+    "project_number": None,
+    "project_name": None,
+    "master_project": None,
+    "nearest_landmark": None,
+    "nearest_metro": None,
+    "nearest_mall": None,
+    "rooms": "1 B/R",
+    "bedrooms": 1,
+    "has_parking": True,
+    "area_sqm": 100.0,
+    "price_aed": 1_000_000.0,
+    "parties_role_1": 1,
+    "parties_role_2": 1,
+    "parties_role_3": 0,
+}
+
+
+@pytest.fixture
+def make_typed():
+    from ingestion.normalize import TYPED_SCHEMA
+
+    def build(rows):
+        records = []
+        for n, overrides in enumerate(rows, start=1):
+            record = {"transaction_id": f"T-{n}", "source_row": n, **TYPED_DEFAULTS, **overrides}
+            if "year" not in overrides:
+                record["year"] = record["instance_date"].year if record["instance_date"] else None
+            if "price_per_sqm_aed" not in overrides:
+                price, area = record["price_aed"], record["area_sqm"]
+                record["price_per_sqm_aed"] = (
+                    price / area if price is not None and area and area > 0 else None
+                )
+            records.append({column: record[column] for column in TYPED_SCHEMA})
+        return pl.DataFrame(records, schema=TYPED_SCHEMA)
 
     return build
