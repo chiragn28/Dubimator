@@ -1,6 +1,6 @@
 # Phase 3 — Price Estimation Model
 
-Status: design approved in chat 2026-09-15; awaiting written-spec review
+Status: Implemented 2026-09-16 (see Amendments)
 Date: 2026-09-15
 Part of: Dubai Real Estate ML Platform (sub-project 3 of 10)
 Builds on: `docs/superpowers/specs/2026-09-15-phase2-ingestion-design.md`
@@ -315,8 +315,12 @@ Slices, logged as `{set}.{slice}.{metric}` (for example
 - Interval = `exp(ŷ + I ± q) × area_sqm`.
 - Test coverage (the share of actual prices inside the interval) is logged
   overall and per segment. Coverage is reported, not gated.
-- The production model reuses the evaluation model's quantiles. This is
-  conservative, because the refit's errors are no larger.
+- Production quantiles (corrected; the draft said reusing the val quantiles
+  in production was conservative, which is wrong). Val also drove early
+  stopping and the Optuna search, so val errors are optimistic, and the later
+  test months are harder. The val quantiles are kept only for the reported
+  test coverage. The production bundle ships quantiles fitted the same way on
+  the evaluation model's `test_clean` errors (see Amendments).
 
 **Artifacts** logged on `xgb-champion-eval` (matplotlib, Agg backend):
 - `feature_importance.png` (gain)
@@ -324,6 +328,9 @@ Slices, logged as `{set}.{slice}.{metric}` (for example
 - `error_by_loc_level.png`
 - `pred_vs_actual.png` (log–log hexbin)
 - `metrics.json`, the full metric table
+- `conformal_val.json` (the quantiles behind the reported coverage) and
+  `conformal_production.json` (the quantiles the production bundle ships),
+  replacing the planned single `conformal.json`
 
 ## Predictor (predictor.py, pyfunc.py)
 
@@ -350,12 +357,12 @@ API need no MLflow. It contains:
 | `building` | str, optional | |
 | `property_kind` | `apartment` \| `hotel_apartment` \| `townhouse` \| `villa` | required |
 | `status` | `ready` \| `off_plan` | required |
-| `size_sqm` | float | > 0 and within the size bounds above |
+| `size_sqm` | float | finite, > 0 and within the size bounds above |
 | `size_basis` | `built_up` \| `plot` | default `built_up`; `plot` only for a villa |
 | `bedrooms` | int 0–8, optional | 0 means studio |
 | `is_penthouse` | bool | default false; only for an apartment or hotel apartment |
 | `has_parking` | bool, optional | |
-| `asking_price_aed` | float > 0, optional | |
+| `asking_price_aed` | finite float > 0, optional | |
 
 A request raises `PriceInputError(field, message)` (a `ValueError`) when:
 - a field-level rule fails (pydantic validation, re-raised as
@@ -395,7 +402,8 @@ Guardrails (flags):
 - **`unusual_size`:** the size is outside the segment's p0.5–p99.5 in the
   training data (the request is still answered).
 - **`location_fallback`:** a given project or building wasn't found, so a
-  coarser level was used.
+  coarser level was used, or a building given without its project sits
+  under several projects (see Amendments).
 
 ## CLI (__main__.py)
 
@@ -521,8 +529,10 @@ Integration:
   as an int rather than a string.
 - **The integration test is stronger than planned:** it also checks the
   evaluation artifacts, the lineage params, the production round count, that
-  the production bundle reuses the evaluation conformal quantiles, and that
-  the registry stays empty when the gate fails.
+  the production bundle's conformal quantiles equal the logged
+  `conformal_production.json` (originally: the evaluation quantiles; changed
+  by the final-review fixes), and that the registry stays empty when the gate
+  fails.
 - **Two MLflow warnings during `log_model` are accepted as benign:** the pip
   version can't be resolved inside a uv venv, and the model is logged without
   a signature or input example.
@@ -533,3 +543,63 @@ Integration:
   - 80% range coverage on the clean test set is 73.9%, under the 80% target;
     95% coverage is 93.5%
   - registered as `zestimator-price` v1
+
+### Final-review fixes (2026-09-16)
+
+- **Production price ranges are calibrated on the test period.** The
+  evaluation still fits conformal quantiles on val and reports their test
+  coverage under the same metric names; that is the honest measure of the
+  method. The production bundle ships quantiles fitted the same way (same
+  `min_conformal_rows`) on the evaluation model's `test_clean` errors. The
+  test period (Nov 2022 to Mar 2023) is the most recent held-out period, and
+  it was never used for fitting, tuning or early stopping; only the gate reads
+  it. Both sets are logged on `xgb-champion-eval` as `conformal_val.json` and
+  `conformal_production.json`. The coverage of the shipped ranges can only be
+  verified once newer DLD data arrives.
+- **A1, no scikit-learn at serve time:** `split.py` imports `GroupKFold`
+  inside `grouped_folds`. A subprocess test imports the predictor with
+  sklearn blocked, and checks that sklearn, Optuna, LightGBM, matplotlib and
+  psycopg2 stay unloaded. xgboost imports sklearn opportunistically when it
+  is installed, so the test blocks it rather than checking `sys.modules`.
+- **A2, finite numbers only:** `PriceRequest` sets `allow_inf_nan=False`. An
+  infinite asking price used to pass `gt=0` and produce an infinite
+  percentage that JSON can't carry.
+- **A3, a building without its project:** when `building` is given and
+  `project` is not, the predictor looks up the building's project scope in
+  the building prior table for that property type and area. With exactly one
+  scope it uses that project (the no-project sentinel means none). With
+  several it does not guess: the project stays empty and `location_fallback`
+  is flagged. With none, behaviour is as before.
+- **A5, Windows DLL guard hardened:** the repo-root `tests/conftest.py`
+  imports `models.price` first. `lightgbm_b1` checks which `msvcp140.dll` is
+  loaded and raises a `RuntimeError` naming the cause and the fix if it is
+  pyarrow's copy. A subprocess test imports pyarrow first and expects that
+  error, not an access violation.
+- **B1, production run metrics:** `xgb-production` logs the evaluation
+  model's headline metrics as `eval.*` (for example
+  `eval.test_clean.all.mdape`) and has the tag
+  `metrics_source=xgb-champion-eval`, so they don't read as the refit's own
+  test score.
+- **B2, test sets stop at `DATA_END`:** both test sets require
+  `instance_date <= DATA_END`, so a stat-excluded sale dated after the last
+  clean sale can't land in `test_honest` beyond the market index. The real
+  data had no such row, and the row counts are unchanged.
+- **B3, feature list check:** `metadata.json` records `FEATURES`, and
+  `load_bundle` raises a `ValueError` if the saved list differs from the
+  code's, or is missing. So v1's bundle, saved before lists were recorded,
+  no longer loads with the current code.
+- **C1, no silent default port:** `DbSettings.from_env()` raises when
+  `POSTGRES_PORT` is unset, naming `.env` and `load_dotenv()`. The other
+  defaults stay. The Airflow container sets `POSTGRES_PORT` in
+  docker-compose.
+- **Rerun after these fixes (2026-09-16), `zestimator-price` v2:**
+  - Same rows and 60 GPU trials, 316 s end to end, now the `@champion`;
+    v1 stays in the registry.
+  - The evaluation metrics equal v1's to four decimals: champion test
+    MdAPE 12.6%, B0 17.3%, B1 13.0%. The val-calibrated coverage is also
+    unchanged, at 73.9% (80%) and 93.5% (95%).
+  - The production refit has identical inputs, hyperparameters and round
+    count, but different trees, because GPU training isn't bit-reproducible.
+    Single estimates moved by up to a few percent.
+  - The shipped test-calibrated 80% range is −24% / +31% pooled, against
+    −21% / +27% from val.

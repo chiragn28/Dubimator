@@ -105,7 +105,7 @@ market, fair or above market. It uses only real DLD transactions; there is no
 synthetic data.
 
 ```bash
-uv run python -m models.price train      # 6 min on an RTX 3060 Laptop GPU (60 Optuna trials)
+uv run python -m models.price train      # 5–6 min on an RTX 3060 Laptop GPU (60 Optuna trials)
 uv run python -m models.price predict --area "JVC" --kind apartment --status ready --size 75 --bedrooms 1 --asking 900000
 ```
 
@@ -119,9 +119,14 @@ uv run python -m models.price predict --area "JVC" --kind apartment --status rea
 - **Target:** ln(price per m²) minus a leak-free market index (the median of
   the previous three months for that segment). Trees can't extrapolate, and
   this keeps the 2022–23 boom from being underpredicted.
+- **Off-plan vs ready:** one model for both, with the status as a feature.
+  Each of the five segments (unit or villa, off-plan or ready, built-up or
+  plot size) gets its own market index, and metrics are reported per segment.
 - **Location:** building → project → area → city priors, each shrunk toward
   its parent. A new or sparse location falls back automatically, and the
-  response says which level it used.
+  response says which level it used. A building given without its project
+  still resolves at building level when its name belongs to one project in
+  that area.
 - **Leakage guards:** an exact feature allowlist, enforced by tests.
   Out-of-fold priors are grouped by bulk sale, so 94 identical sales can't
   reveal each other's price.
@@ -132,7 +137,7 @@ uv run python -m models.price predict --area "JVC" --kind apartment --status rea
   - input validation
   - unseen-location fallback
   - clipping of implausible predictions
-  - conformal price ranges
+  - conformal price ranges, calibrated on the test period (below)
 
 **Results** on the test set (2022-11-01 to 2023-03-17, never used for fitting
 or tuning). "Honest" adds back the 536 rows that Phase 2's price-based outlier
@@ -145,24 +150,43 @@ filter removed.
 | **XGBoost (champion)** | **12.6%** | **41.2%** | **69.1%** | **12.8%** |
 
 The champion clears the gate easily (12.6% against a 15.6% bar, 0.9 × B0), but
-it beats LightGBM only narrowly: 0.4 points of MdAPE on the test set.
+it beats LightGBM only narrowly: 0.4 points of MdAPE on the test set. These
+are the numbers of `zestimator-price` v2, retrained after the final-review
+fixes. The rerun reproduced v1's evaluation metrics exactly. Only the
+production refit's trees differ, because GPU training isn't bit-reproducible,
+so individual estimates moved by a few percent (for example −3.7% for an
+off-plan Dubai Marina flat).
 
-Champion by segment (clean test set):
+Champion by segment (clean test set). The coverage column measures the
+method: ranges calibrated on validation, scored on test. The last column is
+the 80% range that ships (next paragraph).
 
-| Segment | Test sales | MdAPE | 80% range coverage |
-|---|---|---|---|
-| Unit, off-plan, built-up (`unit_off_plan_built_up`) | 19,129 | 10.5% | 72.6% |
-| Unit, ready, built-up (`unit_ready_built_up`) | 13,180 | 15.4% | 78.5% |
-| Villa, off-plan, built-up (`villa_off_plan_built_up`) | 3,086 | 13.9% | 67.8% |
-| Villa, ready, built-up (`villa_ready_built_up`) | 1,100 | 13.4% | 66.0% |
-| Villa, ready, plot (`villa_ready_plot`) | 1,224 | 17.6% | 66.7% |
+| Segment | Test sales | MdAPE | 80% coverage (val-calibrated) | Shipped 80% range |
+|---|---|---|---|---|
+| Unit, off-plan, built-up (`unit_off_plan_built_up`) | 19,129 | 10.5% | 72.6% | −20% / +25% |
+| Unit, ready, built-up (`unit_ready_built_up`) | 13,180 | 15.4% | 78.5% | −27% / +38% |
+| Villa, off-plan, built-up (`villa_off_plan_built_up`) | 3,086 | 13.9% | 67.8% | −24% / +31% |
+| Villa, ready, built-up (`villa_ready_built_up`) | 1,100 | 13.4% | 66.0% | −23% / +29% |
+| Villa, ready, plot (`villa_ready_plot`) | 1,224 | 17.6% | 66.7% | −31% / +44% |
 
-80% range coverage overall: 73.9% (target 80%). 95%: 93.5%.
-The ranges are too narrow: they are calibrated on the validation months,
-and errors on the later test months are larger (MdAPE 12.6% against 10.6% on
-validation). Villas fall furthest short, at 66–68%.
-Tuning speed: 4.8s per trial on the GPU vs 7.5s per trial on the CPU. On the
-same three seeded trials, the GPU took 11.8s and the CPU 21.4s.
+**Price ranges.** Ranges calibrated on the validation months cover 73.9% of
+clean test prices at 80% (target 80%) and 93.5% at 95%; villas fall
+furthest short, at 66–68%. The ranges under-cover mainly because validation
+also drove early stopping and the 60-trial Optuna search, so its errors are
+optimistic (MdAPE 10.6% on validation against 12.6% on test), and the later
+months, in the 2022–23 boom, are harder. So the ranges that ship are
+calibrated on the test period's errors instead: Nov 2022 to Mar 2023, the
+most recent held-out period, which was never used for fitting, tuning or
+early stopping. They are wider; the pooled 80% range is −24% / +31% against
+−21% / +27% from validation. Their coverage can only be verified once newer
+DLD data arrives.
+
+**GPU vs CPU.** On the same three seeded tuning trials, the GPU trained
+1,049 boosting rounds in 11.5 s and the CPU 693 rounds in 21.4 s: about
+11 ms against 31 ms per round, 2.8× faster on the GPU. Over the full search
+the GPU averaged 4.8 s per trial. Tuning adds little on this feature set: 3
+CPU trials already reached 12.75% test MdAPE, against 12.60% after 60 GPU
+trials.
 
 **Write-up**
 
