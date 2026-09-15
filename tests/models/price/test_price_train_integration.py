@@ -1,4 +1,5 @@
 import dataclasses
+from datetime import date
 from pathlib import Path
 
 import mlflow
@@ -6,7 +7,7 @@ import polars as pl
 
 from ingestion.pipeline import run_pipeline
 from models.price.config import TrainConfig
-from models.price.train import run_training
+from models.price.train import eval_filters, run_training
 
 FIXTURE = Path("tests/fixtures/price_sample.csv")
 SMALL = dataclasses.replace(
@@ -62,9 +63,17 @@ def test_end_to_end_training_registers_a_working_champion(pg_test_db, temp_mlflo
     eval_run = client.get_run(run_ids["xgb-champion-eval"])
     prod_run = client.get_run(run_ids["xgb-production"])
     eval_artifacts = {artifact.path for artifact in client.list_artifacts(eval_run.info.run_id)}
-    assert {"metrics.json", "conformal.json", "feature_importance.png",
-            "residuals_by_segment.png", "error_by_loc_level.png",
+    assert {"metrics.json", "conformal_val.json", "conformal_production.json",
+            "feature_importance.png", "residuals_by_segment.png", "error_by_loc_level.png",
             "pred_vs_actual.png"} <= eval_artifacts  # fmt: skip
+    assert "conformal.json" not in eval_artifacts
+    # The production run carries the eval run's headline metrics, prefixed and tagged as such.
+    assert prod_run.data.tags["metrics_source"] == "xgb-champion-eval"
+    assert "test_clean.all.mdape" not in prod_run.data.metrics
+    assert (
+        prod_run.data.metrics["eval.test_clean.all.mdape"]
+        == (eval_run.data.metrics["test_clean.all.mdape"])
+    )
     for run in (eval_run, prod_run):
         assert {"lineage.ingest_run_id", "lineage.source_sha256"} <= set(run.data.params)
     num_rounds = int(eval_run.data.metrics["best_iteration"]) + 1
@@ -73,8 +82,11 @@ def test_end_to_end_training_registers_a_working_champion(pg_test_db, temp_mlflo
     model = mlflow.pyfunc.load_model("models:/zestimator-price-it@champion")
     predictor = model.unwrap_python_model().predictor
     assert predictor.bundle.metadata["num_boost_round"] == num_rounds
-    logged_conformal = mlflow.artifacts.load_dict(f"runs:/{eval_run.info.run_id}/conformal.json")
-    assert predictor.bundle.conformal == logged_conformal
+    run_uri = f"runs:/{eval_run.info.run_id}"
+    production_conformal = mlflow.artifacts.load_dict(f"{run_uri}/conformal_production.json")
+    val_conformal = mlflow.artifacts.load_dict(f"{run_uri}/conformal_val.json")
+    assert predictor.bundle.conformal == production_conformal  # shipped: test-period errors
+    assert "_pooled" in val_conformal  # reported coverage: val-calibrated quantiles
     areas = predictor.bundle.priors.stats["area"].filter(pl.col("property_type") == "unit")
     busiest_area = int(areas.sort("sum_w", descending=True)["area_id"][0])
     estimate = predictor.predict_one(
@@ -85,6 +97,26 @@ def test_end_to_end_training_registers_a_working_champion(pg_test_db, temp_mlflo
     assert estimate.range_80[0] < estimate.estimate_aed < estimate.range_80[1]
     assert estimate.as_of == predictor.bundle.data_end
     assert estimate.model_version == summary.model_uri.split("/")[1]
+
+
+def test_eval_sets_stop_at_data_end():
+    frame = pl.DataFrame(
+        {
+            "split": ["val", "test", "test", "test"],
+            "is_clean": [True, True, False, False],
+            "instance_date": [date(2022, 8, 1), date(2023, 3, 17), date(2023, 3, 1),
+                              date(2023, 4, 2)],  # last row: stat-excluded, after DATA_END
+        }
+    )  # fmt: skip
+    selected = {
+        name: frame.filter(expr)["instance_date"].to_list()
+        for name, expr in eval_filters(date(2023, 3, 17)).items()
+    }
+    assert selected == {
+        "val": [date(2022, 8, 1)],
+        "test_clean": [date(2023, 3, 17)],
+        "test_honest": [date(2023, 3, 17), date(2023, 3, 1)],
+    }
 
 
 def test_failed_gate_registers_nothing(pg_test_db, temp_mlflow):

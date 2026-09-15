@@ -6,6 +6,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 import mlflow
@@ -95,6 +96,23 @@ def _coverage_metrics(
     return out
 
 
+def eval_filters(data_end: date) -> dict[str, pl.Expr]:
+    """Evaluation sets. Test stops at data_end (the last clean sale): a stat-excluded sale dated
+    later would fall outside the market index's fitted months."""
+    split, clean = pl.col("split"), pl.col("is_clean")
+    in_test = (split == "test") & (pl.col("instance_date") <= data_end)
+    return {
+        "val": (split == "val") & clean,
+        "test_clean": in_test & clean,
+        "test_honest": in_test,
+    }
+
+
+def _conformal_from(frame: pl.DataFrame, min_rows: int) -> dict[str, dict[str, float]]:
+    abs_error = np.abs(np.log(frame["predicted"].to_numpy()) - np.log(frame["actual"].to_numpy()))
+    return fit_conformal(frame["segment"].to_list(), abs_error, min_rows)
+
+
 def run_training(
     settings: DbSettings,
     config: TrainConfig,
@@ -114,11 +132,7 @@ def run_training(
         config,
         homes.data_end,
         fit_filter=(split == "train") & clean,
-        apply_filters={
-            "val": (split == "val") & clean,
-            "test_clean": (split == "test") & clean,
-            "test_honest": split == "test",
-        },
+        apply_filters=eval_filters(homes.data_end),
     )
     fit, val = eval_fs.frames["fit"], eval_fs.frames["val"]
     x_fit, x_val = feature_frame(fit, eval_fs.categories), feature_frame(val, eval_fs.categories)
@@ -200,13 +214,16 @@ def run_training(
             eval_fs, lambda frame: predict_xgb(booster, feature_frame(frame, eval_fs.categories))
         )
         val_frame = frames["val"]
-        abs_error = np.abs(
-            np.log(val_frame["predicted"].to_numpy()) - np.log(val_frame["actual"].to_numpy())
+        # Val-calibrated quantiles measure the method honestly: their test coverage is reported.
+        conformal_val = _conformal_from(val_frame, config.min_conformal_rows)
+        metrics |= _coverage_metrics(frames, conformal_val)
+        # Shipped quantiles come from the test period's errors. Val also drove early stopping
+        # and tuning, so its errors are optimistic; test was never used for fitting or tuning.
+        conformal_production = (
+            _conformal_from(frames["test_clean"], config.min_conformal_rows)
+            if "test_clean" in frames
+            else None
         )
-        conformal = fit_conformal(
-            val_frame["segment"].to_list(), abs_error, config.min_conformal_rows
-        )
-        metrics |= _coverage_metrics(frames, conformal)
         log_metrics(metrics | {"best_iteration": float(booster.best_iteration)})
         summary.metrics["xgb-champion-eval"] = metrics
         with tempfile.TemporaryDirectory() as tmp:
@@ -214,7 +231,11 @@ def run_training(
             plot_frame = frames.get("test_clean", val_frame)
             save_eval_plots(plot_frame, booster.get_score(importance_type="total_gain"), out)
             (out / "metrics.json").write_text(json.dumps(metrics, indent=2, sort_keys=True))
-            (out / "conformal.json").write_text(json.dumps(conformal, indent=2))
+            (out / "conformal_val.json").write_text(json.dumps(conformal_val, indent=2))
+            if conformal_production is not None:
+                (out / "conformal_production.json").write_text(
+                    json.dumps(conformal_production, indent=2)
+                )
             mlflow.log_artifacts(tmp)
     log(f"xgb-champion-eval test_clean MdAPE {metrics.get('test_clean.all.mdape')}")
 
@@ -228,6 +249,8 @@ def run_training(
         summary.seconds["total"] = time.perf_counter() - started
         return summary
 
+    if conformal_production is None:
+        raise RuntimeError("no clean test rows: cannot calibrate the production price ranges")
     clock = time.perf_counter()
     prod_fs = build_feature_set(
         rows, config, homes.data_end, fit_filter=clean & (split != "seed"), apply_filters={}
@@ -258,7 +281,7 @@ def run_training(
             size_percentiles=fit_size_percentiles(prod_fit),
             areas=homes.areas,
             aliases=homes.aliases,
-            conformal=conformal,
+            conformal=conformal_production,
             supported_segments=homes.supported_segments,
             data_end=homes.data_end,
             metadata={
@@ -274,7 +297,10 @@ def run_training(
             model_dir = Path(tmp) / "model_dir"
             save_bundle(bundle, model_dir)
             summary.model_uri = log_price_model(model_dir)
-        log_metrics(headline)
+        # The eval model's scores, not this model's: prefixed and tagged so they don't read as
+        # a test score of the production refit (which has no held-out data).
+        mlflow.set_tag("metrics_source", "xgb-champion-eval")
+        log_metrics({f"eval.{key}": value for key, value in headline.items()})
     summary.seconds["xgb-production"] = time.perf_counter() - clock
     if register:
         summary.registered_version = register_champion(summary.model_uri, config.model_name)
