@@ -4,7 +4,6 @@ from datetime import date
 
 import numpy as np
 import polars as pl
-from sklearn.model_selection import GroupKFold
 
 from models.price.config import TrainConfig
 
@@ -45,6 +44,10 @@ def sample_weights(frame: pl.DataFrame, fit_end: date, half_life_days: float) ->
 
 
 def grouped_folds(frame: pl.DataFrame, n_folds: int) -> np.ndarray:
+    # Imported here, not at module level: the predictor imports this module (via features.py)
+    # and serving must not need scikit-learn, which the pyfunc's requirements omit.
+    from sklearn.model_selection import GroupKFold
+
     groups = frame["bulk_group"].to_numpy()
     folds = np.empty(frame.height, dtype=np.int64)
     splitter = GroupKFold(n_splits=n_folds)

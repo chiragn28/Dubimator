@@ -1,8 +1,17 @@
+import dataclasses
+import json
 import math
+import os
+import subprocess
+import sys
 from datetime import date
+from pathlib import Path
 
+import polars as pl
 import pytest
 
+from models.price.config import FEATURES
+from models.price.features import LocationPriors, add_location_keys
 from models.price.predictor import (
     PriceInputError,
     PricePredictor,
@@ -35,6 +44,40 @@ def test_known_building_resolves_at_building_level(tiny_bundle):
     estimate = predict(tiny_bundle(y_hat=0.0), project="Marina Gate", building="MARINA GATE 1")
     assert (estimate.location_level, estimate.confidence) == ("building", "high")
     assert estimate.flags == []
+
+
+def test_building_without_project_infers_its_only_project(tiny_bundle):
+    estimate = predict(tiny_bundle(y_hat=0.0), building="Marina Gate 1")
+    assert (estimate.location_level, estimate.confidence) == ("building", "high")
+    assert estimate.flags == []
+
+
+def _priors_with_a_shared_building_name():
+    """'Tower One' sold under two projects in area 10, so the name alone is ambiguous."""
+    fit = add_location_keys(
+        pl.DataFrame(
+            {
+                "property_type": ["unit"] * 10,
+                "area_id": [10] * 10,
+                "project_name": ["Alpha"] * 5 + ["Beta"] * 5,
+                "building_name": ["Tower One"] * 10,
+                "y": [0.1] * 5 + [0.3] * 5,
+                "bulk_weight": [1.0] * 10,
+            }
+        )
+    )
+    return LocationPriors.fit(fit, shrink_k=10.0, min_level_n=3.0)
+
+
+def test_building_under_several_projects_is_not_guessed(tiny_bundle):
+    bundle = dataclasses.replace(
+        tiny_bundle(y_hat=0.0), priors=_priors_with_a_shared_building_name()
+    )
+    estimate = predict(bundle, building="Tower One")
+    assert estimate.location_level != "building"
+    assert estimate.flags == ["location_fallback"]
+    with_project = predict(bundle, project="Beta", building="Tower One")
+    assert (with_project.location_level, with_project.flags) == ("building", [])
 
 
 def test_unknown_building_falls_back_and_is_flagged(tiny_bundle):
@@ -118,6 +161,16 @@ def test_invalid_requests_raise_price_input_error(tiny_bundle, changes, field):
     assert info.value.field == field
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("asking_price_aed", math.inf), ("asking_price_aed", math.nan), ("size_sqm", math.nan)],
+)
+def test_non_finite_numbers_are_rejected(tiny_bundle, field, value):
+    with pytest.raises(PriceInputError) as info:
+        predict(tiny_bundle(y_hat=0.0), **{field: value})
+    assert info.value.field == field
+
+
 def test_missing_required_field_names_the_field():
     with pytest.raises(PriceInputError) as info:
         PriceRequest.parse({"area": "JBR", "status": "ready", "size_sqm": 80.0})
@@ -137,6 +190,36 @@ def test_penthouse_and_studio_requests_are_accepted(tiny_bundle):
     assert predict(bundle, bedrooms=0).estimate_aed > 0
 
 
+TRAINING_ONLY_MODULES = ("sklearn", "optuna", "lightgbm", "matplotlib", "psycopg2")
+
+
+def test_serving_imports_no_training_only_packages():
+    """The pyfunc's requirements omit these, so importing the predictor must not need them.
+
+    xgboost imports sklearn opportunistically when it is installed (and falls back when it is
+    not), so sklearn is blocked outright: the import must still succeed without it.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    code = (
+        "import sys\n"
+        "sys.modules['sklearn'] = None  # any 'import sklearn' now raises ImportError\n"
+        "import models.price.predictor\n"
+        f"loaded = [m for m in {TRAINING_ONLY_MODULES!r} if sys.modules.get(m) is not None]\n"
+        "print('loaded:', loaded)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=repo_root,
+        env={**os.environ, "PYTHONPATH": str(repo_root)},
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert "loaded: []" in result.stdout, result.stdout
+
+
 def test_bundle_round_trips_through_a_directory(tiny_bundle, tmp_path):
     bundle = tiny_bundle()  # real booster
     save_bundle(bundle, tmp_path / "model")
@@ -149,3 +232,14 @@ def test_bundle_round_trips_through_a_directory(tiny_bundle, tmp_path):
     reloaded = PricePredictor.from_dir(tmp_path / "model").predict_one(REQ)
     assert reloaded.estimate_aed == pytest.approx(direct.estimate_aed)
     assert reloaded.model_version == "run-abc"
+
+
+def test_bundle_records_its_features_and_refuses_a_different_list(tiny_bundle, tmp_path):
+    save_bundle(tiny_bundle(), tmp_path / "model")
+    meta_path = tmp_path / "model" / "metadata.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    assert meta["features"] == list(FEATURES)
+    meta["features"] = list(reversed(FEATURES))
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    with pytest.raises(ValueError, match="features"):
+        load_bundle(tmp_path / "model")

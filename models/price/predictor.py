@@ -13,9 +13,10 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ingestion.normalize import match_key
 from models.price.boosting import predict_xgb
-from models.price.config import SIZE_BOUNDS
+from models.price.config import FEATURES, SIZE_BOUNDS
 from models.price.evaluate import quantiles_for
 from models.price.features import (
+    _NO_PROJECT,
     LEVEL_KEYS,
     LocationPriors,
     MarketIndex,
@@ -62,7 +63,9 @@ class PriceInputError(ValueError):
 
 
 class PriceRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # allow_inf_nan=False: an infinite asking price would pass gt=0 and make
+    # asking_vs_estimate_pct infinite, which JSON cannot carry (a 500 instead of a 422).
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
     area: str | None = None
     area_id: int | None = None
@@ -134,6 +137,7 @@ def save_bundle(bundle: ModelBundle, path: Path) -> None:
     for name, frame in frames.items():
         frame.write_parquet(tables / f"{name}.parquet")
     metadata = {
+        "features": list(FEATURES),
         "categories": bundle.categories,
         "conformal": bundle.conformal,
         "supported_segments": list(bundle.supported_segments),
@@ -149,6 +153,12 @@ def save_bundle(bundle: ModelBundle, path: Path) -> None:
 
 def load_bundle(path: Path) -> ModelBundle:
     meta = json.loads((path / "metadata.json").read_text(encoding="utf-8"))
+    saved_features = meta.get("features")
+    if saved_features != list(FEATURES):
+        raise ValueError(
+            f"model bundle at {path} was trained on features {saved_features}, but this code "
+            f"builds {list(FEATURES)}: retrain the model or use the code version it was built with"
+        )
     tables = {name: pl.read_parquet(path / "tables" / f"{name}.parquet") for name in TABLE_NAMES}
     booster = xgb.Booster()
     booster.load_model(str(path / "booster.json"))
@@ -253,6 +263,32 @@ class PricePredictor:
             raise RuntimeError(f"no plausibility bounds for {property_type}/{size_basis}")
         return float(table["lo"][0]), float(table["hi"][0])
 
+    def _infer_project_key(
+        self, property_type: str, area_id: int, building: str
+    ) -> tuple[str | None, bool]:
+        """Project scope for a building given without its project: (project_key, ambiguous).
+
+        Building priors are keyed within their project, so a building-only request would only
+        match buildings sold with no project. If the building name sits under exactly one
+        project scope in this area, use it (the no-project sentinel means "no project"). If it
+        sits under several, don't guess: (None, True).
+        """
+        scopes = (
+            self.bundle.priors.stats["building"]
+            .filter(
+                (pl.col("property_type") == property_type)
+                & (pl.col("area_id") == area_id)
+                & (pl.col("building_key") == match_key(building))
+            )["__p_building_project"]  # features.py's internal project-scope column
+            .unique()
+            .to_list()
+        )
+        if len(scopes) > 1:
+            return None, True
+        if len(scopes) == 1 and scopes[0] != _NO_PROJECT:
+            return scopes[0], False
+        return None, False
+
     def _unusual_size(self, segment: str, size: float) -> bool:
         row = self.bundle.size_percentiles.filter(pl.col("segment") == segment)
         if row.height == 0:
@@ -284,6 +320,13 @@ class PricePredictor:
             schema=ROW_SCHEMA,
         )
         row = add_location_keys(add_model_columns(row))
+        ambiguous_building = False
+        if request.building is not None and request.project is None:
+            project_key, ambiguous_building = self._infer_project_key(
+                property_type, area_id, request.building
+            )
+            if project_key is not None:
+                row = row.with_columns(pl.lit(project_key, dtype=pl.Utf8).alias("project_key"))
         row = self.bundle.priors.transform(
             row.with_columns(pl.lit(index_value).alias("market_index"))
         )
@@ -298,7 +341,7 @@ class PricePredictor:
             flags.append("implausible_clipped")
         unseen_project = request.project is not None and row["n_project"][0] == 0.0
         unseen_building = request.building is not None and row["n_building"][0] == 0.0
-        if unseen_project or unseen_building:
+        if unseen_project or unseen_building or ambiguous_building:
             flags.append("location_fallback")
         if self._unusual_size(segment, request.size_sqm):
             flags.append("unusual_size")
