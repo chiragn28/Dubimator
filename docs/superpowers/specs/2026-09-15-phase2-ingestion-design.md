@@ -171,7 +171,7 @@ the sqft-corrected z uses the same scale. `peer_tier` records the tier
 used. If no tier qualifies for a row, raise (cannot happen with real data;
 tested with a synthetic frame). Then:
 - `z < −3.5` and the sqft-corrected value
-  `(ln(price_per_sqm_aed × 10.7639) − median) / (1.4826 × MAD)` lies in
+  `(ln(price_per_sqm_aed × 10.7639) − median) / scale` lies in
   `[−3.5, 3.5]` → `suspected_sqft_entry` (size was probably entered in sqft).
 - else `z < −3.5` → `price_outlier_low`.
 - `z > 3.5` → `price_outlier_high`.
