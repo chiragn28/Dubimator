@@ -144,6 +144,17 @@ def test_excluded_rows_have_no_peer_stats(make_typed):
     assert last["peer_tier"] is None and last["price_robust_z"] is None
 
 
+def test_tight_group_does_not_flag_modest_deviations(make_typed):
+    tight = [{"price_aed": 999_000.0 + i * 50.0} for i in range(40)]
+    rows = tight + [
+        {"transaction_id": "x1_3", "price_aed": 1_300_000.0},
+        {"transaction_id": "x2", "price_aed": 2_000_000.0},
+    ]
+    reasons = reasons_by_id(classify(make_typed(rows)))
+    assert reasons["x1_3"] is None
+    assert reasons["x2"] == "price_outlier_high"
+
+
 def test_output_columns_and_order(make_typed):
     from ingestion.normalize import TYPED_SCHEMA
 

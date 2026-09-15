@@ -30,6 +30,7 @@ Z_THRESHOLD = 3.5
 PRICE_FLOOR_AED = 10_000
 SQFT_PER_SQM = 10.7639
 MAD_SCALE = 1.4826
+MIN_SCALE = 0.12
 _LN_SQFT_PER_SQM = math.log(SQFT_PER_SQM)
 
 
@@ -107,7 +108,7 @@ def _outlier_columns(candidates: pl.DataFrame) -> pl.DataFrame:
             f"{missing} rows have no peer group with >= {MIN_PEER_GROUP} rows and non-zero spread"
         )
 
-    scale = MAD_SCALE * _by_tier("mad")
+    scale = pl.max_horizontal(MAD_SCALE * _by_tier("mad"), pl.lit(MIN_SCALE))
     median = _by_tier("med")
     c = c.with_columns(
         ((pl.col("x") - median) / scale).alias("price_robust_z"),
