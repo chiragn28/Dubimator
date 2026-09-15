@@ -1,5 +1,8 @@
 """B0: index-adjusted comps. B1: LightGBM on the same features (CPU)."""
 
+import sys
+from pathlib import Path
+
 import lightgbm as lgb
 import numpy as np
 import polars as pl
@@ -50,7 +53,39 @@ def comps_b0(fit: pl.DataFrame, target: pl.DataFrame, min_n: float) -> np.ndarra
     return predicted.to_numpy()
 
 
+def _loaded_msvcp140() -> Path | None:
+    """Path of the msvcp140.dll loaded in this process (Windows only), or None."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.GetModuleFileNameW.argtypes = [wintypes.HMODULE, wintypes.LPWSTR, wintypes.DWORD]
+    kernel32.GetModuleFileNameW.restype = wintypes.DWORD
+    handle = kernel32.GetModuleHandleW("msvcp140.dll")
+    if not handle:
+        return None
+    buffer = ctypes.create_unicode_buffer(32_768)
+    length = kernel32.GetModuleFileNameW(handle, buffer, len(buffer))
+    return Path(buffer.value[:length]) if length else None
+
+
+def _check_msvcp140() -> None:
+    """Fail clearly, instead of with an access violation, if pyarrow's msvcp140.dll is loaded."""
+    loaded = _loaded_msvcp140()
+    if loaded is not None and "pyarrow" in (part.lower() for part in loaded.parts):
+        raise RuntimeError(
+            f"LightGBM would crash: the msvcp140.dll loaded in this process is pyarrow's older "
+            f"bundled copy ({loaded}), because pandas/pyarrow/mlflow was imported before "
+            f"models.price could preload the system one. Fix: import models.price before "
+            f"pandas/pyarrow/mlflow (see models/price/__init__.py)."
+        )
+
+
 def lightgbm_b1(x_fit, y_fit, w_fit, x_val, y_val, w_val, config: TrainConfig) -> lgb.Booster:
+    if sys.platform == "win32":
+        _check_msvcp140()
     params = {
         "objective": "regression",
         "learning_rate": config.lgbm_learning_rate,

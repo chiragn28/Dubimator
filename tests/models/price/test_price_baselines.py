@@ -119,3 +119,37 @@ def test_lightgbm_survives_pandas_loading_before_it_in_a_fresh_process():
     assert result.returncode == 0 and "ok" in result.stdout, (
         f"returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
     )
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="msvcp140 DLL load-order crash is Windows-only")
+def test_lightgbm_baseline_refuses_pyarrows_msvcp140_instead_of_crashing():
+    """pyarrow imported before models.price loads pyarrow's old msvcp140.dll, and the preload
+    can't undo that. lightgbm_b1 must then fail with a clear RuntimeError, not an access
+    violation."""
+    repo_root = Path(__file__).resolve().parents[3]
+    code = (
+        "import pyarrow  # loads pyarrow's bundled msvcp140.dll before models.price can preload\n"
+        "import numpy as np\n"
+        "from models.price.baselines import lightgbm_b1\n"
+        "from models.price.config import TrainConfig\n"
+        "rng = np.random.default_rng(0)\n"
+        "x, y, w = rng.normal(size=(50, 4)), rng.normal(size=50), np.ones(50)\n"
+        "try:\n"
+        "    lightgbm_b1(x, y, w, x, y, w, TrainConfig())\n"
+        "except RuntimeError as exc:\n"
+        "    print('RuntimeError:', exc)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=repo_root,
+        env={**os.environ, "PYTHONPATH": str(repo_root)},
+        check=False,
+    )
+    assert result.returncode == 0, (
+        f"returncode={result.returncode} stdout={result.stdout!r} stderr={result.stderr!r}"
+    )
+    assert "RuntimeError:" in result.stdout and "pyarrow" in result.stdout
+    assert "import models.price before pandas/pyarrow/mlflow" in result.stdout

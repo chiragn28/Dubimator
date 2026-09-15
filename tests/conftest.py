@@ -1,3 +1,6 @@
+import models.price  # noqa: F401 — Windows DLL preload, see models/price/__init__.py
+
+# isort: split
 import dataclasses
 import socket
 
