@@ -4,7 +4,7 @@ Portfolio-grade ML platform for Dubai real estate: property price
 estimation, duplicate/fraud listing detection, and search ranking, built
 on real Dubai Land Department (DLD) transaction data.
 
-> **Status:** Phase 2 (DLD ingestion) complete. See
+> **Status:** Phase 3 (price model) complete. See
 > `docs/superpowers/specs/` for the full 10-phase build plan.
 
 ## Architecture (current)
@@ -22,6 +22,9 @@ graph LR
     CSV --> CLI --> PG
     CSV --> AF --> PG
     ML -.->|"runs + artifacts"| MLRUNS
+    TRAIN["python -m models.price train<br/>(XGBoost on the GPU)"]
+    PG -->|"home sales"| TRAIN
+    TRAIN -->|"runs + zestimator-price@champion"| ML
 ```
 
 More components (ingestion pipeline, models, FastAPI service, Streamlit
@@ -93,11 +96,107 @@ model features (the columns carry database comments saying so). `dld.area_aliase
 familiar names (Dubai Marina, JBR, JLT, JVC, Downtown, …) to DLD's official
 area names.
 
+## Price model
+
+Estimates the fair market price of a Dubai home (apartment, hotel apartment,
+townhouse or villa) **as of 2023-03-17**, the last date in the DLD data. It
+gives an 80% and a 95% price range, and it labels an asking price as below
+market, fair or above market. It uses only real DLD transactions; there is no
+synthetic data.
+
+```bash
+uv run python -m models.price train      # 6 min on an RTX 3060 Laptop GPU (60 Optuna trials)
+uv run python -m models.price predict --area "JVC" --kind apartment --status ready --size 75 --bedrooms 1 --asking 900000
+```
+
+**How it works** (design: `docs/superpowers/specs/2026-09-15-phase3-price-model-design.md`)
+
+- **Data:** homes sold from 2015-01-01 on. Offices, shops, land and whole
+  buildings are out of scope. Sizes outside plausible bounds are dropped and
+  counted.
+- **Split by time:** train up to 2022-06, validate on 2022-07 to 2022-10, and
+  test on 2022-11 to 2023-03. The test set is touched once.
+- **Target:** ln(price per m²) minus a leak-free market index (the median of
+  the previous three months for that segment). Trees can't extrapolate, and
+  this keeps the 2022–23 boom from being underpredicted.
+- **Location:** building → project → area → city priors, each shrunk toward
+  its parent. A new or sparse location falls back automatically, and the
+  response says which level it used.
+- **Leakage guards:** an exact feature allowlist, enforced by tests.
+  Out-of-fold priors are grouped by bulk sale, so 94 identical sales can't
+  reveal each other's price.
+- **Model:** XGBoost on the GPU, tuned by Optuna. It is compared against an
+  area-comps rule (B0) and LightGBM (B1), and it must beat B0's test MdAPE by
+  10% to be registered.
+- **Serving:** one MLflow pyfunc, `models:/zestimator-price@champion`.
+  - input validation
+  - unseen-location fallback
+  - clipping of implausible predictions
+  - conformal price ranges
+
+**Results** on the test set (2022-11-01 to 2023-03-17, never used for fitting
+or tuning). "Honest" adds back the 536 rows that Phase 2's price-based outlier
+filter removed.
+
+| Model | MdAPE | PPE10 | PPE20 | MdAPE (honest) |
+|---|---|---|---|---|
+| B0 comps | 17.3% | 32.3% | 55.1% | 17.7% |
+| B1 LightGBM | 13.0% | 39.6% | 67.3% | 13.2% |
+| **XGBoost (champion)** | **12.6%** | **41.2%** | **69.1%** | **12.8%** |
+
+The champion clears the gate easily (12.6% against a 15.6% bar, 0.9 × B0), but
+it beats LightGBM only narrowly: 0.4 points of MdAPE on the test set.
+
+Champion by segment (clean test set):
+
+| Segment | Test sales | MdAPE | 80% range coverage |
+|---|---|---|---|
+| Unit, off-plan, built-up (`unit_off_plan_built_up`) | 19,129 | 10.5% | 72.6% |
+| Unit, ready, built-up (`unit_ready_built_up`) | 13,180 | 15.4% | 78.5% |
+| Villa, off-plan, built-up (`villa_off_plan_built_up`) | 3,086 | 13.9% | 67.8% |
+| Villa, ready, built-up (`villa_ready_built_up`) | 1,100 | 13.4% | 66.0% |
+| Villa, ready, plot (`villa_ready_plot`) | 1,224 | 17.6% | 66.7% |
+
+80% range coverage overall: 73.9% (target 80%). 95%: 93.5%.
+The ranges are too narrow: they are calibrated on the validation months,
+and errors on the later test months are larger (MdAPE 12.6% against 10.6% on
+validation). Villas fall furthest short, at 66–68%.
+Tuning speed: 4.8s per trial on the GPU vs 7.5s per trial on the CPU. On the
+same three seeded trials, the GPU took 11.8s and the CPU 21.4s.
+
+**Write-up**
+
+*Business problem.* Buyers, sellers and listing platforms need a
+defensible fair-value figure for a home, and a way to spot listings priced
+far from it. DLD registrations record what homes actually sold for. The model
+learns fair value from those sales and flags an asking price outside its 80%
+range as below or above market.
+
+*Metric optimised.* Training minimises the weighted squared error of the
+relative log price, which is roughly relative error: a 10% miss on an
+AED 800k flat counts the same as one on an AED 8M villa. Results are reported
+as MdAPE, PPE10 and PPE20, the standard automated-valuation metrics. They're
+measured on a later period the model never saw, on both the cleaned test set
+and an honest one, because the cleaning rule itself used the price.
+
+*What I'd do differently with production data and traffic.*
+- Add unit-level attributes that DLD doesn't publish, such as floor, view and
+  condition. They're the biggest missing signal, and listing data would
+  supply them.
+- Retrain monthly on fresh DLD exports (this data ends in March 2023) and
+  watch drift. The market index keeps the price level current between
+  retrains, but location premiums move too.
+- Make the intervals conditional, for example Mondrian conformal by location
+  level, so ranges in sparse areas widen honestly.
+- Evaluate against listing-to-sale outcomes, not just registered prices.
+- Geocode buildings to use distances instead of area IDs.
+
 ## Cost breakdown (current)
 
 | Component | Cost |
 |---|---|
 | Postgres, MLflow, Airflow (local Docker) | $0 — runs on your machine |
+| Price model training (local RTX 3060) | $0 — runs on your machine |
 
 Cloud costs are introduced in Phase 9 (deployment) and documented here as
 they're added.
@@ -107,7 +206,7 @@ they're added.
 - `ingestion/` — DLD CSV validation, cleaning, and Postgres load (`python -m ingestion`)
 - `dags/` — Airflow DAGs (`dld_ingestion`)
 - `scripts/` — maintenance scripts (test-fixture builder)
-- `models/` — price/fraud/ranking model code (Phase 3+)
+- `models/price/` — home price model: features, training, evaluation, predictor (`python -m models.price`)
 - `api/` — FastAPI service (Phase 6)
 - `demo/` — Streamlit app (Phase 7)
 - `data/raw/` — drop DLD CSVs here (gitignored)

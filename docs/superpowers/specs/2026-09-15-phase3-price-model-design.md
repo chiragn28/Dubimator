@@ -488,3 +488,48 @@ Integration:
 - The nearest-metro, mall and landmark features
 - Floor, view and unit-level features (not in the DLD data)
 - Estimates for dates after `DATA_END`
+
+## Amendments during implementation
+
+- **Two extra modules:** `boosting.py` holds the XGBoost helpers, so serving
+  never imports Optuna, and `plots.py` holds the evaluation plots.
+- **`PriceEstimate.model_version`** is the production MLflow run id, not the
+  registry version number. The version doesn't exist until after the artifact
+  is logged; the registry maps a run id to its version.
+- **Validation weights** for early stopping are the bulk weight only. Recency
+  is measured from the end of the fitted data, so it doesn't apply to later
+  rows.
+- **The val/test perturbation leakage test** is stated precisely: perturbing
+  every price from month M on leaves the features of every row dated in month
+  M or earlier unchanged. The market index legitimately uses earlier val and
+  test months.
+- **Test layout follows Phase 2:** there are no `__init__.py` files under
+  `tests/`, Phase 3 test files are named `test_price_*.py`, and shared
+  helpers are fixtures.
+- **Building priors are scoped within their project:** the building key is
+  (property_type, area_id, project, building), and a null project is its own
+  value. A review found same-named buildings in different projects being
+  pooled into one prior.
+- **Windows DLL preload:** pyarrow bundles an older `msvcp140.dll` that
+  crashes LightGBM (an access violation on its first Dataset) if it loads
+  first. `models/price/__init__.py` preloads the system copy before any
+  submodule imports pandas or pyarrow, and a subprocess regression test guards
+  it. Test fixtures must never import pandas, MLflow or pyarrow at module
+  level.
+- **Two test-only plan defects were fixed:** a market-index perturbation that
+  couldn't move a median, and the SQLite registry returning the alias version
+  as an int rather than a string.
+- **The integration test is stronger than planned:** it also checks the
+  evaluation artifacts, the lineage params, the production round count, that
+  the production bundle reuses the evaluation conformal quantiles, and that
+  the registry stays empty when the gate fails.
+- **Two MLflow warnings during `log_model` are accepted as benign:** the pip
+  version can't be resolved inside a uv venv, and the model is logged without
+  a signature or input example.
+- **Real run (2026-09-16):**
+  - 259,801 training rows (27,527 validation, 37,719 clean test, 38,255
+    honest test), 60 trials on the RTX 3060 Laptop GPU, 368 s end to end
+  - champion test MdAPE 12.6% against B0 17.3% (B1 LightGBM 13.0%)
+  - 80% range coverage on the clean test set is 73.9%, under the 80% target;
+    95% coverage is 93.5%
+  - registered as `zestimator-price` v1
