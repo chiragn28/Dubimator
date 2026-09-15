@@ -16,17 +16,31 @@ def _keys(series: pl.Series) -> pl.Series:
 
 def build_areas(classified: pl.DataFrame) -> pl.DataFrame:
     rows = classified.filter(pl.col("area_id").is_not_null())
-    names = (
-        rows.group_by("area_id", "area_name", "area_name_ar")
+    # Select most frequent English name per area_id
+    english_names = (
+        rows.group_by("area_id", "area_name")
         .len()
         .sort(["area_id", "len", "area_name"], descending=[False, True, False], nulls_last=True)
         .unique(subset="area_id", keep="first", maintain_order=True)
+        .select("area_id", "area_name")
     )
+    # Select most frequent non-null Arabic name per area_id
+    arabic_names = (
+        rows.filter(pl.col("area_name_ar").is_not_null())
+        .group_by("area_id", "area_name_ar")
+        .len()
+        .sort(["area_id", "len", "area_name_ar"], descending=[False, True, False])
+        .unique(subset="area_id", keep="first", maintain_order=True)
+        .select("area_id", "area_name_ar")
+    )
+    # Count market sales
     counts = rows.group_by("area_id").agg(
         pl.col("exclusion_reason").is_null().sum().cast(pl.Int64).alias("market_sales")
     )
+    # Join names and counts
     areas = (
-        names.join(counts, on="area_id")
+        english_names.join(counts, on="area_id")
+        .join(arabic_names, on="area_id", how="left")
         .with_columns(
             pl.coalesce("area_name", pl.format("Area {}", pl.col("area_id"))).alias("name_en")
         )

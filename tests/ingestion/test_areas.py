@@ -114,3 +114,19 @@ def test_shipped_curated_file_is_well_formed():
     assert curated.columns == ["alias", "area_name_en"]
     assert curated.height == 11
     assert curated.null_count().sum_horizontal()[0] == 0
+
+
+def test_build_areas_picks_most_frequent_english_and_arabic_names_independently():
+    # Reproduces case where English name appears with multiple Arabic spellings
+    # Should pick English by frequency across all spellings, and Arabic independently
+    data = frame(
+        rows_for(1, "Jumeirah Village Circle", 4, name_ar="Arabic_A")
+        + rows_for(1, "Jumeirah Village Circle", 2, name_ar="Arabic_B")
+        + rows_for(1, "JVC Area", 3, name_ar="Arabic_C")
+    )
+    areas = build_areas(data)
+    area_row = areas.filter(pl.col("area_id") == 1).to_dicts()[0]
+    # Most frequent English name is "Jumeirah Village Circle" (6 total vs 3)
+    assert area_row["name_en"] == "Jumeirah Village Circle"
+    # Most frequent Arabic name is "Arabic_A" (4 occurrences)
+    assert area_row["name_ar"] == "Arabic_A"
