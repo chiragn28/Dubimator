@@ -48,15 +48,21 @@ def test_loads_every_fixture_row(pg_test_db):
 def test_deterministic_rules_hold_on_loaded_rows(pg_test_db):
     run_pipeline(FIXTURE, pg_test_db)
     violations = {
-        "mortgage": f"trans_group = 'mortgages' AND {NOT_DUP} AND exclusion_reason <> 'mortgage'",
-        "gift": f"trans_group = 'gifts' AND {NOT_DUP} AND exclusion_reason <> 'gift'",
+        "mortgage": (
+            f"trans_group = 'mortgages' AND {NOT_DUP} "
+            "AND exclusion_reason IS DISTINCT FROM 'mortgage'"
+        ),
+        "gift": (
+            f"trans_group = 'gifts' AND {NOT_DUP} AND exclusion_reason IS DISTINCT FROM 'gift'"
+        ),
         "non_market_procedure": (
-            f"trans_group = 'sales' AND NOT (procedure_name = ANY(%(market)s)) AND {NOT_DUP} "
-            "AND exclusion_reason <> 'non_market_procedure'"
+            f"trans_group = 'sales' AND (procedure_name IS NULL OR NOT (procedure_name = ANY(%(market)s))) "
+            f"AND {NOT_DUP} AND exclusion_reason IS DISTINCT FROM 'non_market_procedure'"
         ),
         "missing_price": (
             f"trans_group = 'sales' AND procedure_name = ANY(%(market)s) AND instance_date IS NOT NULL "
-            f"AND price_aed IS NULL AND {NOT_DUP} AND exclusion_reason <> 'missing_price'"
+            f"AND price_aed IS NULL AND {NOT_DUP} "
+            "AND exclusion_reason IS DISTINCT FROM 'missing_price'"
         ),
         "price_below_floor": (
             f"trans_group = 'sales' AND procedure_name = ANY(%(market)s) AND instance_date IS NOT NULL "
