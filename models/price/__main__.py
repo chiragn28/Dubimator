@@ -43,7 +43,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    load_dotenv()  # before any settings are read: without it DbSettings defaults to port 5432
+    load_dotenv()  # before any settings are read: DbSettings.from_env() needs POSTGRES_PORT
     if args.command == "train":
         return _train(args)
     return _predict(args)

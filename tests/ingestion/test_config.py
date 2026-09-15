@@ -5,11 +5,19 @@ from ingestion.config import DbSettings
 ENV_VARS = ("POSTGRES_HOST", "POSTGRES_PORT", "POSTGRES_USER", "POSTGRES_PASSWORD", "POSTGRES_DB")
 
 
-def test_defaults_when_env_is_empty(monkeypatch):
+def test_missing_port_raises_instead_of_defaulting_to_5432(monkeypatch):
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
+    with pytest.raises(RuntimeError, match=r"POSTGRES_PORT.*load_dotenv\(\).*\.env"):
+        DbSettings.from_env()
+
+
+def test_defaults_for_the_other_fields_when_only_the_port_is_set(monkeypatch):
+    for name in ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("POSTGRES_PORT", "5433")
     assert DbSettings.from_env() == DbSettings(
-        host="127.0.0.1", port=5432, user="zestimator", password="changeme", dbname="zestimator"
+        host="127.0.0.1", port=5433, user="zestimator", password="changeme", dbname="zestimator"
     )
 
 

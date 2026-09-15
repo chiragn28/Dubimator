@@ -14,9 +14,17 @@ class DbSettings:
 
     @classmethod
     def from_env(cls) -> "DbSettings":
+        # No default port: a script that forgot load_dotenv() would otherwise silently connect
+        # to whatever Postgres owns 5432, which need not be this project's.
+        port = os.environ.get("POSTGRES_PORT")
+        if port is None:
+            raise RuntimeError(
+                "POSTGRES_PORT is not set: call load_dotenv() before DbSettings.from_env() so "
+                "the project's .env is read (or set POSTGRES_PORT in the environment)"
+            )
         return cls(
             host=os.environ.get("POSTGRES_HOST", "127.0.0.1"),
-            port=int(os.environ.get("POSTGRES_PORT", "5432")),
+            port=int(port),
             user=os.environ.get("POSTGRES_USER", "zestimator"),
             password=os.environ.get("POSTGRES_PASSWORD", "changeme"),
             dbname=os.environ.get("POSTGRES_DB", "zestimator"),
