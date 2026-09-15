@@ -1,12 +1,16 @@
 """Feature engineering for the price model: segments, market index, location priors."""
 
+import math
 from dataclasses import dataclass
 from datetime import date
 
 import numpy as np
+import pandas as pd
 import polars as pl
 
 from ingestion.normalize import map_unique, match_key
+from models.price.config import CATEGORICAL_FEATURES, FEATURES, TrainConfig
+from models.price.split import grouped_folds, sample_weights
 
 SUB_KINDS = {
     "Flat": "flat",
@@ -299,3 +303,116 @@ def oof_priors(
         priors = LocationPriors.fit(indexed.filter(~in_fold), shrink_k, min_level_n)
         parts.append(priors.transform(indexed.filter(in_fold)))
     return pl.concat(parts).sort("__oof_row").drop("__oof_row", "__oof_fold")
+
+
+LN3 = math.log(3.0)
+
+
+def add_model_columns(frame: pl.DataFrame) -> pl.DataFrame:
+    return frame.with_columns(
+        pl.col("area_sqm").log().alias("log_area_sqm"),
+        pl.col("has_parking").cast(pl.Float64).alias("has_parking"),
+    )
+
+
+def add_target(frame: pl.DataFrame) -> pl.DataFrame:
+    """y = ln(price per m²) − market index: the premium over the current market level."""
+    y = (pl.col("price_aed") / pl.col("area_sqm")).log() - pl.col("market_index")
+    return frame.with_columns(y.alias("y"))
+
+
+def fit_categories(frame: pl.DataFrame) -> dict[str, list[str]]:
+    return {
+        name: sorted(frame[name].drop_nulls().cast(pl.Utf8).unique().to_list())
+        for name in CATEGORICAL_FEATURES
+    }
+
+
+def feature_frame(frame: pl.DataFrame, categories: dict[str, list[str]]) -> pd.DataFrame:
+    """Exactly FEATURES, in order; categories fixed at fit time (unseen values become NaN)."""
+    missing = [name for name in FEATURES if name not in frame.columns]
+    if missing:
+        raise KeyError(f"feature columns missing: {missing}")
+    selected = frame.select(
+        [
+            pl.col(name).cast(pl.Utf8)
+            if name in CATEGORICAL_FEATURES
+            else pl.col(name).cast(pl.Float64)
+            for name in FEATURES
+        ]
+    ).to_pandas()
+    for name in CATEGORICAL_FEATURES:
+        selected[name] = pd.Categorical(selected[name], categories=categories[name])
+    return selected
+
+
+def fit_bounds(frame: pl.DataFrame, min_area_n: float) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Plausible range of y: [p1 − ln 3, p99 + ln 3] per area (if well sampled) and per segment."""
+    stats = [
+        pl.col("y").quantile(0.01, "linear").alias("p01"),
+        pl.col("y").quantile(0.99, "linear").alias("p99"),
+        pl.col("bulk_weight").sum().alias("n"),
+    ]
+
+    def finish(table: pl.DataFrame, keys: list[str]) -> pl.DataFrame:
+        return table.select(
+            *keys, (pl.col("p01") - LN3).alias("lo"), (pl.col("p99") + LN3).alias("hi")
+        ).sort(keys)
+
+    area_keys = ["property_type", "size_basis", "area_id"]
+    segment_keys = ["property_type", "size_basis"]
+    by_area = frame.group_by(area_keys).agg(stats).filter(pl.col("n") >= min_area_n)
+    by_segment = frame.group_by(segment_keys).agg(stats)
+    return finish(by_area, area_keys), finish(by_segment, segment_keys)
+
+
+def fit_size_percentiles(frame: pl.DataFrame) -> pl.DataFrame:
+    return (
+        frame.group_by("segment")
+        .agg(
+            pl.col("area_sqm").quantile(0.005, "linear").alias("p005"),
+            pl.col("area_sqm").quantile(0.995, "linear").alias("p995"),
+        )
+        .sort("segment")
+    )
+
+
+@dataclass(frozen=True)
+class FeatureSet:
+    frames: dict[str, pl.DataFrame]
+    weights: np.ndarray
+    index: MarketIndex
+    priors: LocationPriors
+    categories: dict[str, list[str]]
+
+
+def build_feature_set(
+    rows: pl.DataFrame,
+    config: TrainConfig,
+    data_end: date,
+    fit_filter: pl.Expr,
+    apply_filters: dict[str, pl.Expr],
+) -> FeatureSet:
+    """Index, target and priors for one fit.
+
+    frames["fit"] gets out-of-fold priors; apply frames get priors fitted on all fit rows.
+    """
+    rows = add_location_keys(add_model_columns(rows))
+    index = MarketIndex.fit(
+        rows.filter(pl.col("is_clean")),
+        config.train_start.replace(day=1),
+        data_end.replace(day=1),
+        config.min_index_sales,
+    )
+    rows = rows.filter(pl.col("split") != "seed")
+    rows = add_target(rows.with_columns(index.lookup(rows)))
+    fit_rows = rows.filter(fit_filter)
+    if fit_rows.height == 0:
+        raise ValueError("fit_filter selected no rows")
+    folds = grouped_folds(fit_rows, config.oof_folds)
+    frames = {"fit": oof_priors(fit_rows, folds, config.shrink_k, config.min_level_n)}
+    priors = LocationPriors.fit(fit_rows, config.shrink_k, config.min_level_n)
+    for name, expr in apply_filters.items():
+        frames[name] = priors.transform(rows.filter(expr))
+    weights = sample_weights(fit_rows, fit_rows["instance_date"].max(), config.half_life_days)
+    return FeatureSet(frames, weights, index, priors, fit_categories(fit_rows))
