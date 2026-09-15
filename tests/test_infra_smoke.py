@@ -15,9 +15,6 @@ import socket
 import psycopg2
 import pytest
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()  # no override: shell env wins, matching docker compose's own precedence
 
 CONNECT_TIMEOUT = 5
 HOST = "127.0.0.1"
