@@ -117,16 +117,20 @@ def test_shipped_curated_file_is_well_formed():
 
 
 def test_build_areas_picks_most_frequent_english_and_arabic_names_independently():
-    # Reproduces case where English name appears with multiple Arabic spellings
-    # Should pick English by frequency across all spellings, and Arabic independently
+    # Regression test: old code grouped by (area_id, area_name, area_name_ar) together,
+    # which would pick the single largest group. New code groups independently.
+    # Data: "Jumeirah Village Circle" appears 5 times total (3 with أ, 2 with ب)
+    #       its largest single group is 3, which loses to "JVC Area"'s single group of 4.
+    # Old code would wrongly pick "JVC Area" (4 > 3).
+    # New code correctly picks "Jumeirah Village Circle" (5 > 4).
     data = frame(
-        rows_for(1, "Jumeirah Village Circle", 4, name_ar="Arabic_A")
-        + rows_for(1, "Jumeirah Village Circle", 2, name_ar="Arabic_B")
-        + rows_for(1, "JVC Area", 3, name_ar="Arabic_C")
+        rows_for(1, "Jumeirah Village Circle", 3, name_ar="أ")
+        + rows_for(1, "Jumeirah Village Circle", 2, name_ar="ب")
+        + rows_for(1, "JVC Area", 4, name_ar="ج")
     )
     areas = build_areas(data)
     area_row = areas.filter(pl.col("area_id") == 1).to_dicts()[0]
-    # Most frequent English name is "Jumeirah Village Circle" (6 total vs 3)
+    # Most frequent English name is "Jumeirah Village Circle" (5 total vs 4)
     assert area_row["name_en"] == "Jumeirah Village Circle"
-    # Most frequent Arabic name is "Arabic_A" (4 occurrences)
-    assert area_row["name_ar"] == "Arabic_A"
+    # Most frequent Arabic name is "ج" (4 occurrences vs 3 + 2)
+    assert area_row["name_ar"] == "ج"
