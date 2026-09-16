@@ -7,6 +7,7 @@ by frame, so the report split uses frames the ranker never saw. This module read
 """
 
 import json
+import logging
 import math
 import random
 
@@ -16,7 +17,12 @@ from ingestion.normalize import map_unique, match_key
 from listings.text import AMENITIES
 from search.config import KIND_SQL, QUERY_KINDS, SPLITS, SQFT_TO_SQM, SearchConfig, listing_kind
 from search.grade import GRADE_SCHEMA, grade_frame
-from search.parse import AMENITY_SYNONYMS
+from search.lexicon import Lexicon
+from search.parse import AMENITY_SYNONYMS, parse
+from search.retrieve import load_clusters, retrieve
+from search.store import JUDGMENT_SCHEMA, latest_corpus_run
+
+LOGGER = logging.getLogger(__name__)
 
 TRUE_SLOT_KEYS = (
     "area_id", "area_name", "building", "bedrooms", "property_type",
@@ -328,3 +334,35 @@ def generate_queries(
             "n_grade3": pl.Int64,
         },
     )
+
+
+def build_query_set(
+    conn, embedder, lexicon: Lexicon, config: SearchConfig, log_every: int = 500
+) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """Generate queries, retrieve each one's candidates, and grade them."""
+    grading = load_grading_listings(conn)
+    queries = generate_queries(grading, load_area_aliases(conn), config)
+    corpus_run_id = latest_corpus_run(conn)
+    clusters = load_clusters(conn)
+    vectors = embedder.embed_texts(queries["text"].to_list())
+    frames = []
+    rows = queries.select("query_id", "text", "true_slots").iter_rows()
+    for index, ((query_id, text, raw_slots), vector) in enumerate(zip(rows, vectors), start=1):
+        candidates = retrieve(conn, parse(text, lexicon), text, vector, clusters, config)
+        if candidates.height:
+            listings = candidates.select("listing_id").join(
+                grading, on="listing_id", how="left", maintain_order="left"
+            )
+            grades = grade_frame(true_slots(raw_slots), listings, config.near_margin)
+            frames.append(
+                candidates.with_columns(pl.lit(query_id, dtype=pl.Int64).alias("query_id"), grades)
+            )
+        if index % log_every == 0:
+            LOGGER.info("retrieved and graded %s of %s queries", index, queries.height)
+    judgments = (
+        pl.concat(frames).select(list(JUDGMENT_SCHEMA)).cast(JUDGMENT_SCHEMA)
+        if frames
+        else pl.DataFrame(schema=JUDGMENT_SCHEMA)
+    )
+    queries = queries.with_columns(pl.lit(corpus_run_id, dtype=pl.Int64).alias("corpus_run_id"))
+    return queries, judgments
