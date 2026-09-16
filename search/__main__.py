@@ -71,7 +71,16 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _utf8_console() -> None:
+    """Windows pipes default to cp1252, which cannot encode the ✓ in the reasons."""
+    for stream in (sys.stdout, sys.stderr):
+        encoding = (getattr(stream, "encoding", None) or "").lower().replace("-", "")
+        if encoding != "utf8" and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _utf8_console()
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = _parser().parse_args(argv)
     load_dotenv()  # before any settings are read

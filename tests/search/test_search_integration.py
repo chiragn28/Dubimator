@@ -89,3 +89,17 @@ def test_train_refuses_a_stale_query_set(cli_env, capsys):
 def test_a_bad_command_line_is_an_argparse_error():
     with pytest.raises(SystemExit):
         main(["train", "--trials", "many"])
+
+
+def test_query_output_survives_a_non_utf8_console(cli_env, monkeypatch):
+    """A Windows pipe defaults to cp1252, which cannot encode the ✓ in the reasons."""
+    import io
+    import sys
+
+    assert main(["queries", "--n", "30", "--fake", "--data-dir", str(cli_env)]) == 0
+    raw = io.BytesIO()
+    console = io.TextIOWrapper(raw, encoding="cp1252")
+    monkeypatch.setattr(sys, "stdout", console)
+    assert main(["query", "2 bed apartment in Dubai Marina", "--fake"]) == 0
+    console.flush()
+    assert "area ✓" in raw.getvalue().decode("utf-8")
