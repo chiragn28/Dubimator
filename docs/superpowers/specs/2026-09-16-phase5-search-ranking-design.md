@@ -1,0 +1,454 @@
+# Phase 5 — Property Search Ranking
+
+Status: design approved in chat 2026-09-16; awaiting written-spec review
+Date: 2026-09-16
+Part of: Dubai Real Estate ML Platform (sub-project 5 of 10)
+Builds on: `docs/superpowers/specs/2026-09-16-phase4-duplicate-fraud-design.md`,
+`docs/superpowers/specs/2026-09-15-phase3-price-model-design.md`
+
+## Goal
+
+Search the Phase 4 listings corpus from a free-text query such as
+"2BR in Dubai Marina under 1.5M" and return listings in a useful order. The
+system works in stages:
+
+1. A rule parser turns the query into structured slots.
+2. Two retrieval channels (semantic and full-text) fetch about 200 candidates.
+3. Phase 4 duplicate clusters are collapsed.
+4. A learned gradient-boosted ranker orders what is left.
+
+There are no real users or click logs. Queries and relevance grades are
+therefore generated and graded by rule, and that is stated wherever results
+appear. The deliverable is the retrieval-and-ranking pipeline and an honest
+evaluation of it. It makes no claim about real user satisfaction.
+
+## Decisions (user, 2026-09-16)
+
+- **Relevance labels: rule-graded synthetic queries.** Queries are generated
+  from real listing attributes and graded 0–3 by constraint match. Simulated
+  clicks and LLM-judged relevance were considered and declined.
+- **Query understanding: rule parser plus embeddings.** A deterministic slot
+  parser handles the structured parts. It reuses Phase 2's `dld.area_aliases`.
+  The rest of the query goes to MiniLM semantic search. A learned slot tagger
+  and LLM parsing were declined.
+- **Phase 4 integration: collapse duplicates and demote flagged listings.**
+  Search shows one listing per detected duplicate cluster. The predicted
+  Phase 4 fraud flags are ranker features.
+- **Approach A: two-stage retrieval with a GBDT ranker.**
+  - Champion: XGBoost `rank:ndcg` on the GPU.
+  - Challenger: LightGBM `lambdarank`.
+  - Both are compared against three non-learned baselines.
+  - A cross-encoder challenger was declined.
+- **Hosting (affects later phases):** local Docker Compose plus a Cloudflare
+  Tunnel replaces Cloud Run. Phase 5 has no hosting work.
+
+## Source data
+
+These inputs are read-only in this phase:
+- `listings.listings`: 20,000 synthetic listings over real DLD sales. Fields:
+  area, building, project, property type and sub-type, bedrooms, size, asking
+  price and posting date.
+  - Amenities appear only in `description`, drawn from the fixed list
+    `listings.text.AMENITIES`.
+- `listings.listing_embeddings.text_embedding`: MiniLM `vector(384)` with an
+  HNSW cosine index. Queries are embedded with the same model. Listings are
+  not re-embedded.
+- The latest `listings.detect_runs` row, and for that run:
+  `listings.duplicate_pairs` where `decision`, and `listings.fraud_flags`.
+- `dld.areas` and `dld.area_aliases`, from Phase 2.
+- `models:/zestimator-price@champion`, from Phase 3. It is used only for the
+  value features.
+- The ground-truth columns `fraud_label` and `dup_group_id` are used **only**
+  by grading and evaluation, never by features, retrieval or the engine.
+
+## Architecture
+
+A new top-level package, `search/`. It has one module per job: pure functions
+first, database and model code at the edges.
+
+| Module | Job |
+|---|---|
+| `config.py` | `SearchConfig` (all constants below), `FEATURES` tuple, slot names |
+| `queries.py` | Generate synthetic queries with their true slots and a template id |
+| `grade.py` | Grade a candidate 0–3 against the true slots |
+| `parse.py` | `parse(text, lexicon) -> ParsedQuery` (pure) |
+| `lexicon.py` | Load the area, building and project lexicon from Postgres |
+| `retrieve.py` | Semantic and full-text channels, RRF fusion, duplicate collapse |
+| `features.py` | Candidate features from the parsed query and the listing |
+| `train.py` | Fit the XGBoost and LightGBM rankers with Optuna; register the winner |
+| `evaluate.py` | Metrics, baselines, bootstrap CIs, MLflow logging |
+| `engine.py` | `search(conn, text, k=10) -> SearchResult` for Phase 6 |
+| `__main__.py` | CLI `python -m search queries\|train\|evaluate\|query` |
+| `sql/schema.sql` | `search` schema and the full-text column and index |
+
+`search/` imports from `listings/` (the embedder and the price-predictor
+loader) and from `ingestion/` (`DbSettings`). Nothing in `listings/` imports
+`search/`.
+
+### New dependencies
+
+None. Every library needed is already in the project: xgboost, lightgbm,
+optuna, sentence-transformers, polars, psycopg, mlflow and matplotlib.
+
+## Queries (queries.py, deterministic under `--seed`)
+
+- **Count:** `n_queries = 6000` by default.
+- **Seeding:** each query is seeded from a real listing sampled uniformly. Its
+  slots are drawn from that listing, so every fully specified query has at
+  least one grade-3 answer.
+- **Slots:** each query fills a random subset of:
+  - area: the official name, or an alias from `dld.area_aliases` with
+    probability 0.4;
+  - building or project name (rare, p=0.1);
+  - bedrooms;
+  - property type;
+  - budget: max only, or a min–max range around the seed price with random
+    headroom of 0–30%;
+  - minimum size;
+  - 0–2 amenities taken from the seed listing's description.
+- **Query kinds**, which are stored:
+  - `specified`: 3 or more slots, 70% of queries;
+  - `vague`: 1–2 slots plus free words such as "family", "investment" or
+    "quiet", 20%;
+  - `no_match`: slots combined so that no listing satisfies them all, 10%.
+    These are checked against the corpus at generation time.
+- **Templates:** about 30 phrasing templates, each with an integer
+  `template_id`, render the slots. Examples: "2BR in {area} under {budget}",
+  "looking for a {beds} bedroom {type} around {area}, max {budget}", "{type}
+  {area} {amenity}". Numbers are rendered in several forms: "1.5M",
+  "1,500,000", "AED 1.5 million", "900k". Bedrooms appear as "2BR", "2 bed",
+  "two bedroom" or "studio".
+- **Output:** `search.queries`, with `query_id`, `text`, `template_id`, `kind`,
+  `split`, `true_slots jsonb` and `seed_listing_id`.
+- **Splits are assigned by `template_id`:**
+  - about 60% of templates go to `train`, 20% to `tune` and 20% to `report`;
+  - the assignment is deterministic under the seed;
+  - every split contains every query kind;
+  - no template appears in two splits;
+  - no exact query text appears in two splits.
+
+## Grading (grade.py)
+
+`grade(true_slots, listing) -> int in 0..3`, a pure function:
+- **3:** every stated slot holds, and the price lies within `[min, max]` where
+  given.
+- **2:** exactly one near miss, with every other slot holding. A near miss is
+  one of:
+  - bedrooms off by 1;
+  - price up to 10% over the max, or up to 10% under the min;
+  - size up to 10% under the minimum;
+  - one of two requested amenities missing.
+- **1:** the area and property type hold (where stated), but the conditions
+  for grades 2 and 3 fail.
+- **0:** anything else. A wrong area is never a near miss: DLD has no
+  coordinates, so "nearby" is undefined.
+- **Amenities** are matched as case-insensitive whole phrases in
+  `description`.
+- **Fraud cap:** listings with a non-null ground-truth `fraud_label` are
+  capped at grade 1.
+- **What gets graded:** only the retrieved candidates of each query are
+  stored with grades, in `search.judgments` (`query_id`, `listing_id`,
+  `grade`). Grade-3 listings that retrieval missed are counted separately, for
+  retrieval recall only.
+
+## Parser (parse.py, lexicon.py)
+
+- `ParsedQuery` fields: `area_ids: tuple[int, ...]`, `building`, `project`,
+  `bedrooms`, `property_type`, `budget_min`, `budget_max`, `min_size_sqm`,
+  `amenities: tuple[str, ...]`, `free_text`, `unrecognised: tuple[str, ...]`,
+  and `errors: tuple[str, ...]`.
+- **Lexicon:** official area names, `dld.area_aliases`, and the distinct
+  building and project names in the corpus. Keys are normalised with the same
+  function Phase 2 uses. Matching is greedy, longest phrase first, and the
+  lexicon is loaded once per process.
+- **Studio versus type:** "studio" sets `bedrooms=0` only. It does not set a
+  type.
+- **Money:** "under / below / max / up to / less than X", "X–Y", "between X
+  and Y", "from X". The suffixes k, K, m, M, mn, million and "AED" are
+  optional, as are thousands separators.
+- **Bedrooms:** "studio" maps to 0, plus "N BR", "N bed(room)(s)", "N-bed",
+  and the number words one to seven.
+- **Size:** "over/at least N sqm|sq m|m2|sqft|sq ft". Square feet are
+  converted with 0.092903.
+- **Type:** matched against the corpus's four listing kinds. The kinds are
+  derived the same way as `listings.generate._sub_kind`, from `property_type`
+  (`unit`/`villa`) and `property_sub_type`.
+  - "apartment" or "flat" maps to `flat`.
+  - "hotel apartment" maps to `hotel_apartment`.
+  - "townhouse" maps to `townhouse`.
+  - "villa" maps to `villa`.
+  - "plot" or "land" is not in the corpus. It goes to `unrecognised`, with the
+    note "property type not listed".
+  - Retrieval filters on the derived kind (a SQL `CASE` matching
+    `_sub_kind`), and `true_slots` stores the kind.
+- **Amenities:** matched against `AMENITIES`.
+- **Free text:** whatever is left after slot phrases are removed.
+- **Errors:** budget min > max produces
+  `errors=("budget_min_exceeds_max",)`, and both bounds are dropped. A place
+  word that isn't in the lexicon (after "in"/"at"/"near") goes to
+  `unrecognised`.
+- **Evaluation:** per-slot exact-match accuracy against `true_slots` on the
+  report split, logged as `parse.<slot>.accuracy`.
+
+## Retrieval (retrieve.py)
+
+- **Semantic channel:** MiniLM embeds the full query text. pgvector kNN
+  (`<=>`) runs on `text_embedding`, with top `semantic_k = 200`.
+  `hnsw.ef_search = 400`, and `hnsw.iterative_scan = relaxed_order` so the
+  filters don't starve the result set.
+- **Full-text channel:** a generated column
+  `listings.listings.search_tsv tsvector` over `title || ' ' || description`,
+  using the `english` configuration, with a GIN index. The column is added by
+  `search/sql/schema.sql` with `ADD COLUMN IF NOT EXISTS`. The query is
+  `websearch_to_tsquery` over `free_text` plus the amenity phrases, falling
+  back to the full text when those are empty. Ranking uses `ts_rank_cd`, with
+  top `fulltext_k = 200`.
+- **Filters on both channels:** `area_id = ANY(parsed.area_ids)` and
+  the derived kind `= parsed.property_type`, applied only when the parser
+  produced them. Bedrooms, budget and size are *not* filtered.
+- **Fusion:** reciprocal rank fusion with `rrf_k = 60`, keeping
+  `candidate_k = 200`.
+- **Duplicate collapse:**
+  - Clusters are the connected components of the latest detect run's
+    `duplicate_pairs` where `decision` is true.
+  - They are computed once per process and cached.
+  - Each cluster keeps its earliest-posted member; ties go to the lowest
+    `listing_id`.
+  - `cluster_size` is carried as a feature.
+  - Collapse happens before truncation to `candidate_k`.
+- **Fallbacks:**
+  - A query with no parsed slots and no free text returns an empty result
+    with reason `empty_query`.
+  - A query with no filters runs both channels unfiltered.
+- **Metric:** `retrieval.recall_at_200` is the share of a query's grade-3
+  listings (computed over the whole corpus by `grade`) that appear among its
+  candidates, averaged over report queries that have at least one grade-3
+  listing.
+
+## Features (features.py)
+
+`FEATURES` is an ordered tuple. It is computed from `ParsedQuery` and never
+from `true_slots`.
+
+- **Match features:**
+  - `beds_diff`: abs(listing − query), or NaN when not stated;
+  - `beds_stated`;
+  - `price_over_max`: price ÷ budget_max − 1, or NaN;
+  - `price_under_min`;
+  - `budget_stated`;
+  - `size_ratio`: size ÷ min_size, or NaN;
+  - `area_match` and `area_stated`;
+  - `type_match` and `type_stated`;
+  - `building_match`;
+  - `amenity_hits`, `amenity_asked`.
+- **Similarity features:**
+  - `semantic_cos`;
+  - `fulltext_rank`, 0 when the listing was not retrieved by that channel;
+  - `semantic_pos`, `fulltext_pos`, the position in each channel (NaN when
+    absent);
+  - `rrf_score`.
+- **Value features:**
+  - `price_to_estimate`: asking price ÷ the Phase 3 estimate;
+  - `within_interval`: whether the asking price falls inside the 80% range.
+  - Estimates are computed once for all listings and cached in
+    `search.listing_estimates` (`listing_id`, `estimate`, `low`, `high`,
+    `price_model_version`).
+  - If the price model is unavailable, both features are NaN and
+    `stats.value_features_skipped = 1`.
+- **Trust features:**
+  - `flag_bait_price`, `flag_photo_reuse`, `flag_inconsistent_relist`: the
+    predicted flags from `listings.fraud_flags`;
+  - `cluster_size`.
+- **Freshness:** `days_since_posted`, measured against the corpus's latest
+  `posted_at`, so results are reproducible.
+- **Leakage guard:** a test scans `search/` (excluding `grade.py`,
+  `evaluate.py` and `queries.py`) for `fraud_label`, `dup_group_id`,
+  `control_group_id`, `true_slots` and `is_synthetic`, in SQL and in code.
+
+## Ranker (train.py)
+
+- **Data:** one row per (query, candidate), grouped by query.
+  - Train split: fit.
+  - Tune split: Optuna objective and early stopping.
+  - Report split: never touched until evaluation.
+- **Champion candidate:** XGBoost `objective="rank:ndcg"`, `device="cuda"`,
+  `eval_metric="ndcg@10"`, `lambdarank_pair_method="topk"`.
+- **Challenger:** LightGBM `objective="lambdarank"`, `metric="ndcg"`,
+  `eval_at=[10]`, on the CPU. It relies on the `models.price` DLL preload
+  already in place.
+- **Tuning:** Optuna with `n_trials = 40` per model and a TPE sampler seeded
+  from `--seed`. The search covers depth, learning rate, number of trees
+  (with early stopping, 50 rounds), min child weight, subsample and column
+  sample.
+- **Refit:** the final model is refit on train only, with the best
+  parameters and best iteration count. The report split is never used for
+  fitting, tuning or model selection. Only the registration gate reads it,
+  once, after the winner is fixed.
+- **Winner:** the model with the higher tune NDCG@10.
+- **Registration gate:** the winner is registered as
+  `zestimator-search-ranker` with alias `@champion` only if both hold:
+  1. its report NDCG@10 exceeds the fused-retrieval baseline's;
+  2. the lower bound of its bootstrap 95% CI exceeds that baseline's point
+     estimate.
+
+  Otherwise the run logs `gate.passed = 0` and registers nothing.
+- **Model format:** an MLflow pyfunc wrapping the booster and `FEATURES`. The
+  model signature checks the feature order.
+
+## Evaluation (evaluate.py)
+
+All metrics are computed on the **report** split, unless prefixed `tune.`.
+
+- **Ranking metrics for every contender:**
+  - `ndcg_at_10`, using gains 2^g − 1;
+  - `mrr`: first result with grade ≥ 2;
+  - `precision_at_5`: grade 3.
+- **Contenders:**
+  - `xgb`;
+  - `lgbm`;
+  - `baseline_newest`: filtered candidates, newest first;
+  - `baseline_semantic`: semantic channel order;
+  - `baseline_fused`: RRF order.
+- **Bootstrap:** 1,000 resamples over queries with a fixed seed. For each
+  contender the run logs `.ci_low` and `.ci_high`.
+- **By kind:** `ndcg_at_10` per query kind for every contender. For
+  `no_match`, the metric is the mean top-10 grade, logged as
+  `kind.no_match.mean_grade_top10`.
+- **Retrieval and parser:** `retrieval.recall_at_200` and
+  `parse.<slot>.accuracy`.
+- **Phase 4 effects:**
+  - `dup.top10_removed`: the mean number of duplicates the collapse removed
+    from the top 10;
+  - `fraud.top10_share`: the share of ground-truth fraud listings in the
+    champion's top 10;
+  - the same share for an ablation ranker trained without the trust features
+    (same parameters, logged as `ablation.no_trust.*`).
+- **Undefined values** are NaN. `log_run` drops non-finite values, following
+  Phase 4.
+- **Artifacts:**
+  - `ndcg_comparison.png`: bars with CI whiskers;
+  - `feature_importance.csv`;
+  - `per_query_report.csv`: query text, kind, parsed slots, NDCG for each
+    contender;
+  - `parse_errors.csv`: the first 200 slot mismatches;
+  - `timings.json`.
+- **MLflow:** experiment `search-ranking`. Params record the seed, the
+  counts, `price_model_version` and the detect run id used.
+
+## Engine (engine.py)
+
+- **Signature:** `search(conn, text: str, k: int = 10) -> SearchResult`.
+- **`SearchResult` fields:** `parsed: ParsedQuery`, `results: list[Hit]`,
+  `ranker: str` (a model version, or `"fallback_fused"`), `notes: list[str]`,
+  and `timings_ms: dict`.
+- **`Hit` fields:** `listing_id`, `score`, `title`, `area_name`, `bedrooms`,
+  `asking_price_aed`, `size_sqm`, `reasons: list[str]`, and
+  `duplicates_hidden: int`.
+- **Reasons** are built from the match and trust features. Examples:
+  "2 bedrooms ✓", "4% over budget", "area ✓", "sea view ✓", "priced 12%
+  below estimate", "flagged: bait price".
+- **Ranker loading:** the ranker is loaded once, lazily, from
+  `models:/zestimator-search-ranker@champion`. If it is missing or fails to
+  load, the engine falls back to fused order, sets
+  `ranker="fallback_fused"`, adds a note, and logs one warning naming the
+  tracking URI.
+- **Notes also cover:**
+  - `unrecognised` places ("area not recognised: …");
+  - parser `errors`;
+  - an empty result ("no listings match; try widening the budget").
+
+## CLI (`python -m search`)
+
+- `queries [--n 6000] [--seed 7]`: generate queries, run retrieval, grade the
+  candidates, and write `search.queries` and `search.judgments`. Also fills
+  `search.listing_estimates` if it is empty.
+- `train [--trials 40]`: fit both rankers, select the winner, and register it
+  if the gate passes.
+- `evaluate`: score every contender and log to MLflow. This may be merged
+  into `train`'s run, per the plan.
+- `query "<text>" [--k 10]`: print the parsed slots and the ranked hits with
+  their reasons.
+
+Behaviour shared with Phases 2–4:
+- `load_dotenv()` and `logging.basicConfig` run before dispatch;
+- `DbSettings.from_env()` refuses an unset port;
+- each stage writes its wall-clock time to
+  `data/search/stage_timings.json`, which is gitignored.
+
+## Storage (search/sql/schema.sql)
+
+- Schema `search`, with three tables:
+  - `queries`: primary key `query_id`, with a CHECK on `split` and `kind`;
+  - `judgments`: primary key `(query_id, listing_id)`, grade CHECK 0–3;
+  - `listing_estimates`: primary key `listing_id`.
+- `listings.listings.search_tsv`: a generated stored column, plus the GIN
+  index `listings_search_tsv_idx`.
+- The `queries` stage rewrites `search.*` atomically (truncate and COPY in one
+  transaction), as Phase 4 does. It never touches the Phase 4 tables other
+  than adding the generated column and index.
+
+## Testing
+
+Tests run sequentially only, against `zestimator_test`.
+
+- **Parser:** a table of about 60 cases covering every slot form, alias
+  matching, longest match, "studio", ranges, sq ft conversion, min > max
+  error, unrecognised place, and empty string.
+- **Grading:** hand-built cases for each grade boundary, including the fraud
+  cap and the rule that a wrong area is never grade 2.
+- **Queries:**
+  - determinism under the seed;
+  - kind shares within ±3 points;
+  - `no_match` queries truly have no grade-3 listing;
+  - no template or exact text is shared across splits;
+  - every split contains every kind.
+- **Retrieval, on the test DB with `FakeEmbedder` and a small corpus:**
+  - both channels return results;
+  - filters are applied;
+  - RRF order is hand-checked;
+  - collapse keeps the earliest member and reports `cluster_size`.
+- **Features:** arithmetic hand-checked, NaN when not stated, and value
+  features NaN with a stub-less (missing) price model.
+- **Leakage scan** as described above.
+- **Ranker:** fits on a small fixture on the CPU (the test forces `device`),
+  shows NDCG improving over fused order on a constructed easy fixture, and
+  enforces the gate both ways.
+- **Evaluation:** metric values hand-checked on 2–3 toy queries, bootstrap
+  determinism, and NaN handling.
+- **Engine:** results with a registered champion (temporary MLflow), the
+  fallback when none is registered, reasons text, and notes for unrecognised
+  places and errors.
+- **CLI:** an end-to-end run on the test DB. The test asserts
+  `DbSettings.from_env().dbname == "zestimator_test"` before running.
+- **Lint and warnings:** `ruff check`, `ruff format --check`, and
+  `pytest -W error`.
+
+## Deliverables beyond code
+
+- **Real run:** 6,000 queries on the 20,000-listing corpus, with the GPU used
+  for the XGBoost ranker and query embedding. Timings are recorded per stage.
+- **README:** a "## Property search" section that includes:
+  - which data is synthetic;
+  - the report-split table of contenders with CIs, the per-kind breakdown,
+    parser accuracy and retrieval recall;
+  - the Phase 4 effects (duplicates removed, fraud share, and the ablation);
+  - the in-sample caveat on the value features;
+  - known limitations.
+
+  Every number must come from the run's logs or its MLflow run.
+- **Architecture page:** republish `docs/architecture.html` to the same
+  artifact URL.
+- **Spec amendments:** changes made during implementation are recorded at the
+  bottom of this file.
+
+## Out of scope
+
+- Real user queries, click logs, or online A/B testing.
+- Geographic proximity (no coordinates in DLD data).
+- Personalisation, pagination, query autocomplete, spelling correction.
+- Serving over HTTP. That is Phase 6, which will call `search.engine.search`.
+- Re-embedding listings or changing any Phase 4 detection logic.
+
+## Amendments during implementation
+
+(none yet)
