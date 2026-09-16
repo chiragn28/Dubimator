@@ -1,4 +1,5 @@
 import math
+from datetime import date
 
 import polars as pl
 import pytest
@@ -59,11 +60,25 @@ def test_evaluate_detection_reports_every_slice():
             "same_building_control": [False, True, True, False],
         }
     )
+    # posted_at is dense enough (6 listings, config's default train_share=0.60 /
+    # threshold_share=0.20) that the report-split cutoff (index 3 of 6 sorted dates) falls
+    # between listing 4 and listing 5: pair (1, 2)'s later date (listing 2, day 5) and pair
+    # (5, 6)'s later date (listing 6, day 6) both land in the report split by date — matching
+    # what pattern.*.recall's denominator is now computed from, independent of the `pairs`
+    # frame's own (hardcoded, retrieval-derived) split column below.
     attributes = pl.DataFrame(
         {
-            "listing_id": [1, 2, 3, 4],
-            "photo_set_id": [5, 5, 6, 6],
-            "area_id": [10, 20, 30, 30],
+            "listing_id": [1, 2, 3, 4, 5, 6],
+            "photo_set_id": [5, 5, 6, 6, 7, 7],
+            "area_id": [10, 20, 30, 30, 40, 40],
+            "posted_at": [
+                date(2023, 1, 3),
+                date(2023, 1, 5),
+                date(2023, 1, 1),
+                date(2023, 1, 2),
+                date(2023, 1, 4),
+                date(2023, 1, 6),
+            ],
         }
     )
     truth = pl.DataFrame(
@@ -82,8 +97,11 @@ def test_evaluate_detection_reports_every_slice():
     assert metrics["retrieval.recall"] == pytest.approx(0.5)  # pair (5,6) was never retrieved
     assert metrics["control.same_building.model_fp_rate"] == pytest.approx(0.5)
     assert metrics["control.same_building.baseline_fp_rate"] == pytest.approx(1.0)
-    assert metrics["pattern.exact_repost.recall"] == pytest.approx(1.0)
-    assert metrics["pattern.reworded.recall"] == pytest.approx(0.0)
+    # both planted pairs are report-split by date, so each pattern's denominator is 1.
+    assert metrics["pattern.exact_repost.pairs"] == pytest.approx(1.0)
+    assert metrics["pattern.reworded.pairs"] == pytest.approx(1.0)
+    assert metrics["pattern.exact_repost.recall"] == pytest.approx(1.0)  # (1,2) was flagged
+    assert metrics["pattern.reworded.recall"] == pytest.approx(0.0)  # (5,6) was never retrieved
     assert metrics["threshold"] == 0.5
     assert "report.pr_auc" in metrics
 
@@ -166,7 +184,15 @@ def test_log_run_writes_to_the_temporary_store(temp_mlflow, tmp_path):
 
 
 def _pairs_row(
-    listing_a, listing_b, split, score, decision, is_duplicate, ratio=None, baseline=None
+    listing_a,
+    listing_b,
+    split,
+    score,
+    decision,
+    is_duplicate,
+    ratio=None,
+    baseline=None,
+    same_building=False,
 ):
     row = {
         "listing_a": listing_a,
@@ -176,7 +202,7 @@ def _pairs_row(
         "decision": decision,
         "baseline_decision": decision if baseline is None else baseline,
         "is_duplicate": is_duplicate,
-        "same_building_control": False,
+        "same_building_control": same_building,
     }
     if ratio is not None:
         row["abs_log_price_ratio"] = ratio
@@ -263,19 +289,12 @@ def test_evaluate_detection_keeps_train_and_tune_metrics_separate_from_report():
         assert key not in metrics
 
 
-def test_evaluate_detection_scopes_pattern_recall_and_control_rates_to_report_not_pooled():
-    # (1, 2) is flagged in the TRAIN split only. A report-scoped pattern.recall must not count
-    # it as caught; pooled.pattern.* (logged for debugging, never under the bare name) does.
-    # This is the exact contamination the phase ruling calls out, one metric over from
-    # precision/recall: a decision from a model fit on train must not leak into the
-    # report-split headline.
-    #
+def test_evaluate_detection_scopes_stock_photo_control_to_report_not_pooled():
     # (11, 12) and (15, 16) share an agency photo set (100) across two different areas and are
     # not duplicates. (11, 12) sits in the report split, (15, 16) in train — so the report-scoped
     # stock-photo control count must be 1 while the pooled count is 2, and the model/baseline
     # false-positive rates over those two scopes must differ too.
     rows = [
-        _pairs_row(1, 2, "train", 0.9, True, True),
         _pairs_row(8, 9, "report", 0.9, True, True),
         _pairs_row(11, 12, "report", 0.05, False, False, baseline=True),
         _pairs_row(15, 16, "train", 0.3, False, False),
@@ -283,21 +302,15 @@ def test_evaluate_detection_scopes_pattern_recall_and_control_rates_to_report_no
     pairs = pl.DataFrame(rows)
     attributes = pl.DataFrame(
         {
-            "listing_id": [1, 2, 8, 9, 11, 12, 15, 16],
-            "photo_set_id": [1, 2, 8, 9, 100, 100, 100, 100],
-            "area_id": [1, 2, 8, 9, 50, 51, 50, 51],
+            "listing_id": [8, 9, 11, 12, 15, 16],
+            "photo_set_id": [8, 9, 100, 100, 100, 100],
+            "area_id": [8, 9, 50, 51, 50, 51],
         }
     )
-    truth = pl.DataFrame({"listing_a": [1], "listing_b": [2], "pattern": ["exact_repost"]})
+    truth = pl.DataFrame(schema={"listing_a": pl.Int64, "listing_b": pl.Int64, "pattern": pl.Utf8})
     metrics = evaluate_detection(
         type("R", (), {"pairs": pairs, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
     )
-
-    assert metrics["pattern.exact_repost.recall"] == pytest.approx(0.0)
-    assert metrics["pooled.pattern.exact_repost.recall"] == pytest.approx(1.0)
-    # no reworded pairs were planted at all: undefined, not "0% caught".
-    assert math.isnan(metrics["pattern.reworded.recall"])
-    assert math.isnan(metrics["pooled.pattern.reworded.recall"])
 
     assert metrics["control.stock_photo.pairs"] == pytest.approx(1.0)
     assert metrics["control.stock_photo.model_fp_rate"] == pytest.approx(0.0)
@@ -307,9 +320,89 @@ def test_evaluate_detection_scopes_pattern_recall_and_control_rates_to_report_no
     assert metrics["pooled.control.stock_photo.model_fp_rate"] == pytest.approx(0.0)
     assert metrics["pooled.control.stock_photo.baseline_fp_rate"] == pytest.approx(0.5)
 
-    # retrieval.recall stays pooled by design: (1, 2) was retrieved (in the train split), so
-    # it counts even though it is outside the report-scoped headline above.
-    assert metrics["retrieval.recall"] == pytest.approx(1.0)
+    # no planted pairs at all here: retrieval.recall's own empty-denominator convention is
+    # 0.0, not NaN (see the module docstring on where NaN does and doesn't apply).
+    assert metrics["retrieval.recall"] == pytest.approx(0.0)
+
+
+def test_evaluate_detection_scopes_same_building_control_to_report_not_pooled():
+    # (1, 2) is a same-building control pair in the report split; (5, 6) is another one, but
+    # in the train split. The report-scoped control.same_building.* must see only (1, 2); the
+    # pooled counterpart must see both, with different fp rates on each side — the same
+    # report-vs-pooled treatment as the stock-photo control above, previously untested for
+    # same_building since the brief's own fixture is entirely report-split.
+    rows = [
+        _pairs_row(1, 2, "report", 0.9, False, False, same_building=True, baseline=True),
+        _pairs_row(3, 4, "report", 0.9, True, True),
+        _pairs_row(5, 6, "train", 0.9, True, False, same_building=True, baseline=False),
+    ]
+    pairs = pl.DataFrame(rows)
+    attributes = pl.DataFrame(
+        {
+            "listing_id": [1, 2, 3, 4, 5, 6],
+            "photo_set_id": [1, 2, 3, 4, 5, 6],
+            "area_id": [1, 2, 3, 4, 5, 6],
+        }
+    )
+    truth = pl.DataFrame(schema={"listing_a": pl.Int64, "listing_b": pl.Int64, "pattern": pl.Utf8})
+    metrics = evaluate_detection(
+        type("R", (), {"pairs": pairs, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
+    )
+
+    assert metrics["control.same_building.pairs"] == pytest.approx(1.0)
+    assert metrics["control.same_building.model_fp_rate"] == pytest.approx(0.0)
+    assert metrics["control.same_building.baseline_fp_rate"] == pytest.approx(1.0)
+
+    assert metrics["pooled.control.same_building.pairs"] == pytest.approx(2.0)
+    assert metrics["pooled.control.same_building.model_fp_rate"] == pytest.approx(0.5)
+    assert metrics["pooled.control.same_building.baseline_fp_rate"] == pytest.approx(0.5)
+
+
+def test_evaluate_detection_pattern_recall_denominator_is_date_derived_not_retrieval():
+    # Reproduces the exact bug the reviewer demonstrated against the installed code: pattern
+    # recall must not mix a report-scoped numerator with a pooled-across-splits denominator.
+    #
+    # Two planted pairs: (1, 2)'s later posting date (listing 2, day 2) falls inside the train
+    # block, (3, 4)'s later date (listing 4, day 4) falls in the report block — per
+    # listings.detect.assign_pair_split's own date logic, not by whether/where retrieval
+    # flagged them. Both are flagged wherever they were retrieved. Labeling them with two
+    # different patterns also exercises "a pattern with zero report-split members" in the
+    # same fixture: exact_repost's only planted pair is train-split by date, so its
+    # report-scoped denominator is a real, computed zero — not "we couldn't tell" — and its
+    # recall is undefined (NaN), never the misleading 0.5 a pooled denominator used to
+    # produce here when nothing that belonged in the report split was actually missed.
+    rows = [
+        _pairs_row(1, 2, "train", 0.9, True, True),
+        _pairs_row(3, 4, "report", 0.9, True, True),
+    ]
+    pairs = pl.DataFrame(rows)
+    attributes = pl.DataFrame(
+        {
+            "listing_id": [1, 2, 3, 4],
+            "photo_set_id": [1, 2, 3, 4],
+            "area_id": [1, 2, 3, 4],
+            "posted_at": [date(2023, 1, 1), date(2023, 1, 2), date(2023, 1, 3), date(2023, 1, 4)],
+        }
+    )
+    truth = pl.DataFrame(
+        {"listing_a": [1, 3], "listing_b": [2, 4], "pattern": ["exact_repost", "reworded"]}
+    )
+    metrics = evaluate_detection(
+        type("R", (), {"pairs": pairs, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
+    )
+
+    # exact_repost's only planted pair is train-split by date: a real, computed zero-sized
+    # report-split population (not "couldn't compute"), so pairs is 0.0 and recall is NaN.
+    assert metrics["pattern.exact_repost.pairs"] == pytest.approx(0.0)
+    assert math.isnan(metrics["pattern.exact_repost.recall"])
+    # the pooled counterpart still sees the train-split hit.
+    assert metrics["pooled.pattern.exact_repost.recall"] == pytest.approx(1.0)
+
+    # reworded's planted pair is report-split by date and was flagged there: recall is a
+    # clean 1.0 — not the 0.5 a shared, unscoped denominator would have produced by also
+    # counting exact_repost's train-split pair against a pooled population of 2.
+    assert metrics["pattern.reworded.pairs"] == pytest.approx(1.0)
+    assert metrics["pattern.reworded.recall"] == pytest.approx(1.0)
 
 
 def test_evaluate_detection_price_shift_recall_gap_isolates_shifted_clones():

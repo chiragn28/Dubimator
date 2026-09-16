@@ -6,24 +6,42 @@ never be confused with the `threshold` decision-cutoff metric), and `report.*` �
 so nobody mistakes an in-sample number for a held-out one. `report.*` is the only
 headline.
 
-`pattern.{pattern}.recall` and every `control.*` rate are scored against
-report-split decisions only, for the same reason: a decision comes from a model
-fit on train and a cutoff tuned on tune, so pooling either metric across splits
-would readmit the in-sample contamination that made an earlier run's headline
-precision read 92.5% instead of the held-out number the threshold was actually
-tuned to hit. The pooled equivalents (`pooled.pattern.*`, `pooled.control.*`) are
-logged alongside them, explicitly named, for debugging — never under the bare
-name a reader would take as the held-out figure.
+`control.*` rates are scored against report-split decisions only: a control pair
+only exists in this metric because it was retrieved and evaluated, and its split
+comes straight from the same `pairs` frame the model scored, so filtering that
+frame to `split == "report"` is exact. Pooling across splits would readmit the
+in-sample contamination that made an earlier run's headline precision read 92.5%
+instead of the held-out number the threshold was actually tuned to hit.
+`pooled.control.*` is logged alongside it, explicitly named, for debugging —
+never under the bare name a reader would take as the held-out figure.
+
+`pattern.{pattern}.recall` is the fraction of PLANTED `{pattern}` clone -> source
+pairs — the full truth population, not just the ones retrieval happened to find —
+whose later listing's posting date falls in the report split (via
+`listings.detect.assign_pair_split`, applied to the truth pairs directly, not to
+`pairs`) that the detector actually flagged; `pattern.{pattern}.pairs` is that
+denominator's size. A planted pair retrieval never found still belongs in the
+denominator and still scores as a miss, so this stays a true end-to-end recall on
+held-out data rather than a number conditional on retrieval succeeding — that
+conditional question is what `retrieval.recall` measures separately, below.
+`pooled.pattern.{pattern}.recall` runs the identical numerator/denominator logic
+over every split's planted pairs at once, for debugging only, never as the
+headline.
 
 `retrieval.recall` is the one metric that stays pooled across all splits on
 purpose: candidate generation runs before any model is fit or any threshold is
 picked, so it carries no in-sample leakage, and splitting it would only shrink
 an already-small denominator (the planted pairs).
 
-A rate with no denominator (no planted pairs of a pattern, no report-split
-duplicates to bucket by price ratio) is logged as `float("nan")`, never `0.0`:
-"detector caught none of these" and "there were none of these to catch" must not
-share a representation in a module whose numbers become README copy.
+A rate whose denominator cannot be determined at all — a pattern's report-split
+population when posting dates aren't available to compute it, or too few
+report-split duplicates to price-shift-bucket — is logged as `float("nan")`,
+never `0.0`: "caught none of these" and "there were none of these to catch" must
+not share a representation. This governs `pattern.*.recall`, `pattern.*.pairs`
+and `price_shift.*`. It does NOT extend to the per-split precision/recall/f1 from
+`pair_metrics` (`train.*`/`tune.*`/`report.*`) or to `retrieval.recall` with no
+planted pairs at all — both of those fall back to `0.0` on an empty/zero
+denominator, inherited from `pair_metrics`' own convention.
 """
 
 from pathlib import Path
@@ -33,6 +51,7 @@ import polars as pl
 from sklearn.metrics import average_precision_score
 
 from listings.config import DetectConfig
+from listings.detect import assign_pair_split
 from listings.truth import load_duplicate_truth  # noqa: F401  (re-exported for the CLI)
 
 # The `split` column's data values (unchanged — assign_pair_split in detect.py still writes
@@ -68,8 +87,18 @@ def pair_metrics(labels, decisions) -> dict[str, float]:
 def stock_photo_control_pairs(pairs: pl.DataFrame, attributes: pl.DataFrame) -> pl.Series:
     """Unrelated listings that happen to share an agency photo set: must not be flagged."""
     lookup = attributes.select("listing_id", "photo_set_id", "area_id")
-    joined = pairs.join(lookup, left_on="listing_a", right_on="listing_id", how="left").join(
-        lookup, left_on="listing_b", right_on="listing_id", how="left", suffix="_b"
+    # maintain_order="left": the caller filters the ORIGINAL `pairs` frame with this mask, so
+    # it must stay row-aligned with `pairs` — detect.py's own join of this shape pins order
+    # the same way, and an unordered join has bitten a previous task in this phase.
+    joined = pairs.join(
+        lookup, left_on="listing_a", right_on="listing_id", how="left", maintain_order="left"
+    ).join(
+        lookup,
+        left_on="listing_b",
+        right_on="listing_id",
+        how="left",
+        suffix="_b",
+        maintain_order="left",
     )
     mask = (
         (pl.col("photo_set_id") == pl.col("photo_set_id_b"))
@@ -145,6 +174,25 @@ def _pattern_recall(subset: list[tuple[int, int]], flagged: set[tuple[int, int]]
     return float(sum(pair in flagged for pair in subset) / len(subset))
 
 
+def _report_split_truth(
+    truth_pairs: pl.DataFrame, attributes: pl.DataFrame, config: DetectConfig
+) -> pl.DataFrame | None:
+    """Planted pairs restricted to the report split, with the split derived from posting
+    dates via `listings.detect.assign_pair_split` applied to the truth pairs directly —
+    never from the retrieved `pairs` frame. A planted pair retrieval never found still
+    needs a split assigned so it still counts in the report-split denominator; scoping by
+    what was retrieved instead would silently drop retrieval misses from the denominator
+    and turn `pattern.*.recall` into a number conditional on retrieval succeeding.
+
+    Returns None when the split cannot be determined at all: `assign_pair_split` indexes
+    into attributes' sorted `posted_at` column and raises `IndexError` on an empty frame,
+    and needs that column to exist in the first place.
+    """
+    if truth_pairs.is_empty() or attributes.is_empty() or "posted_at" not in attributes.columns:
+        return None
+    return assign_pair_split(truth_pairs, attributes, config).filter(pl.col("split") == "report")
+
+
 def evaluate_detection(
     result, truth_pairs: pl.DataFrame, attributes: pl.DataFrame, config: DetectConfig
 ) -> dict[str, float]:
@@ -190,10 +238,28 @@ def evaluate_detection(
     patterns = truth_pairs["pattern"].to_list() if truth_pairs.height else []
     report_flagged = _flagged_pairs(report)
     pooled_flagged = _flagged_pairs(pairs)
+
+    report_truth = _report_split_truth(truth_pairs, attributes, config)
+    if report_truth is not None:
+        report_planted = list(
+            zip(report_truth["listing_a"].to_list(), report_truth["listing_b"].to_list())
+        )
+        report_patterns = report_truth["pattern"].to_list()
+    else:
+        report_planted = report_patterns = None
+
     for pattern in PATTERNS:
-        subset = [pair for pair, kind in zip(planted, patterns) if kind == pattern]
-        metrics[f"pattern.{pattern}.recall"] = _pattern_recall(subset, report_flagged)
-        metrics[f"pooled.pattern.{pattern}.recall"] = _pattern_recall(subset, pooled_flagged)
+        pooled_subset = [pair for pair, kind in zip(planted, patterns) if kind == pattern]
+        metrics[f"pooled.pattern.{pattern}.recall"] = _pattern_recall(pooled_subset, pooled_flagged)
+        if report_planted is None:
+            metrics[f"pattern.{pattern}.pairs"] = _NAN
+            metrics[f"pattern.{pattern}.recall"] = _NAN
+            continue
+        report_subset = [
+            pair for pair, kind in zip(report_planted, report_patterns) if kind == pattern
+        ]
+        metrics[f"pattern.{pattern}.pairs"] = float(len(report_subset))
+        metrics[f"pattern.{pattern}.recall"] = _pattern_recall(report_subset, report_flagged)
 
     metrics |= _control_rates(report, report["same_building_control"], "control.same_building")
     metrics |= _control_rates(pairs, pairs["same_building_control"], "pooled.control.same_building")
