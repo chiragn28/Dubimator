@@ -37,6 +37,7 @@ WHERE instance_date >= %(sales_from)s
   AND (property_type = 'villa'
        OR (property_type = 'unit' AND property_sub_type IN %(unit_sub_types)s))
   AND price_aed > 0 AND area_sqm > 0 AND area_id IS NOT NULL
+ORDER BY transaction_id
 """
 AREAS_SQL = "SELECT area_id, name_en, name_ar FROM dld.areas ORDER BY area_id"
 AREAS_SCHEMA = {"area_id": pl.Int64, "name_en": pl.Utf8, "name_ar": pl.Utf8}
