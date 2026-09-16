@@ -242,7 +242,8 @@
   .pill[data-state="active"] { background: var(--active-soft); color: var(--active); }
 
   /* Panels -------------------------------------------------------------- */
-  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  @media (max-width: 760px) { .cols { grid-template-columns: 1fr; } }
   .panel {
     background: var(--surface);
     border: 1px solid var(--rule);
@@ -355,8 +356,8 @@
       Land Department transactions. Ten phases, built one at a time — each with its own spec, plan, tests and review.</p>
     <div class="meta">
       <span>as of <b>16 Sep 2026</b></span>
-      <span><b>70</b> commits</span>
-      <span><b>273</b> tests</span>
+      <span><b>88</b> commits</span>
+      <span><b>344</b> tests</span>
       <span>estimates as of <b>Q1 2023</b> (data ends 2023-03-17)</span>
       <span>runs on <b>Docker + one RTX 3060</b></span>
     </div>
@@ -365,14 +366,14 @@
   <section>
     <div class="section-head">
       <h2>Build status</h2>
-      <p>Three phases shipped, one in flight. Phase 4 is 4 tasks into 11.</p>
+      <p>Four phases shipped. Search ranking is next.</p>
     </div>
-    <div class="strip" role="img" aria-label="Phase progress: phases 1 to 3 complete, phase 4 in progress, phases 5 to 10 planned">
+    <div class="strip" role="img" aria-label="Phase progress: phases 1 to 4 complete, phase 5 next, phases 6 to 10 planned">
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
-      <div class="seg" data-state="active"></div>
-      <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+      <div class="seg" data-state="done"></div>
+      <div class="seg" data-state="active"></div><div class="seg"></div><div class="seg"></div>
       <div class="seg"></div><div class="seg"></div><div class="seg"></div>
     </div>
     <div class="strip-key">
@@ -438,24 +439,24 @@
       <div class="lane">
         <div class="lane-label">Listings</div>
         <div class="stations">
-          <div class="station" data-state="active">
-            <div class="name">Corpus generator</div>
-            <div class="detail">20,000 synthetic listings · labelled</div>
+          <div class="station">
+            <div class="name"><code>listings build</code></div>
+            <div class="detail">20,000 synthetic listings · labelled · 56 s</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div class="station" data-state="active">
-            <div class="name">Embeddings</div>
-            <div class="detail">CLIP 512-d · MiniLM 384-d</div>
+          <div class="station">
+            <div class="name"><code>listings embed</code></div>
+            <div class="detail">CLIP 512-d · MiniLM 384-d · GPU · 227 s</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div class="station" data-state="active">
-            <div class="name">schema <code>listings</code></div>
-            <div class="detail">pgvector HNSW · cosine</div>
+          <div class="station">
+            <div class="name"><code>listings detect</code></div>
+            <div class="detail">pgvector HNSW · 3 retrieval channels · 12 signals</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div class="station" data-state="active">
-            <div class="name">Duplicate &amp; fraud</div>
-            <div class="detail">12 signals · 98% precision floor</div>
+          <div class="station">
+            <div class="name">Fraud flags</div>
+            <div class="detail">bait price · photo reuse · inconsistent relist</div>
           </div>
         </div>
       </div>
@@ -479,8 +480,8 @@
           </div>
           <div class="arrow" aria-hidden="true">→</div>
           <div class="station" data-state="planned">
-            <div class="name">Cloud Run + Evidently</div>
-            <div class="detail">phases 8–9</div>
+            <div class="name">Cloudflare Tunnel + Evidently</div>
+            <div class="detail">phases 8–9 · local Docker, public link</div>
           </div>
         </div>
       </div>
@@ -518,20 +519,21 @@
         <div class="pill" data-state="done">shipped</div>
       </article>
 
-      <article class="phase" data-state="active">
+      <article class="phase" data-state="done">
         <div class="num">04</div>
-        <div class="what"><b>Duplicate &amp; fraud</b><span>in progress · 4 of 11 tasks</span></div>
+        <div class="what"><b>Duplicate &amp; fraud</b><span>16 Sep 2026</span></div>
         <div class="detail">Synthetic listings over real sales, with planted reposts and two kinds of listing that must
-          <em>not</em> be flagged. Candidates come from pgvector, decisions from twelve signals.</div>
-        <div class="pill" data-state="active">building</div>
+          <em>not</em> be flagged. Candidates come from pgvector, decisions from twelve signals, fraud flags from the
+          price model and the photo graph.</div>
+        <div class="pill" data-state="done">shipped</div>
       </article>
 
-      <article class="phase" data-state="planned">
+      <article class="phase" data-state="active">
         <div class="num">05</div>
         <div class="what"><b>Search ranking</b><span>next</span></div>
         <div class="detail">Natural-language property search — “2BR in Dubai Marina under 1.5M” — with a learned ranker
           over semantic retrieval.</div>
-        <div class="pill">planned</div>
+        <div class="pill" data-state="active">up next</div>
       </article>
 
       <article class="phase" data-state="planned">
@@ -559,7 +561,8 @@
       <article class="phase" data-state="planned">
         <div class="num">09</div>
         <div class="what"><b>Deploy &amp; monitor</b></div>
-        <div class="detail">Cloud Run on the free tier, with Evidently watching for drift and a billing alert.</div>
+        <div class="detail">The Docker Compose stack shared through a free Cloudflare Tunnel (live while the host PC is
+          on), with Evidently watching for drift. The container stays Cloud Run-compatible.</div>
         <div class="pill">planned</div>
       </article>
 
@@ -619,9 +622,35 @@
           <div class="fact"><span>Edited-photo copies</span><b>900</b></div>
           <div class="fact"><span>Bait-priced listings</span><b>600</b></div>
           <div class="fact"><span>Pairs if compared naively</span><b>200M</b></div>
+          <div class="fact"><span>Candidate pairs scored</span><b>213,244</b></div>
+          <div class="fact"><span>Planted duplicates retrieved (pooled)</span><b>97.1%</b></div>
+          <div class="fact"><span>Text index vs exact scan</span><b>7.9 s vs 156 s</b></div>
         </div>
         <p class="note">Locations, sizes and prices are real DLD sales. Text, agents, dates and every duplicate are
           invented and labelled — stated plainly wherever results appear.</p>
+      </div>
+
+      <div class="panel">
+        <h3>Duplicate &amp; fraud results <em>phase 04</em></h3>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>Held-out listings</th><th class="n">Model</th><th class="n">Photo rule</th></tr>
+            </thead>
+            <tbody>
+              <tr class="best"><td>Precision (target 98%)</td><td class="n">98.3%</td><td class="n">0.6%</td></tr>
+              <tr><td>Recall</td><td class="n">21.1%</td><td class="n">91.0%</td></tr>
+              <tr><td>Same-building pairs flagged</td><td class="n">0.0%</td><td class="n">48.9%</td></tr>
+              <tr><td>Stock-photo pairs flagged</td><td class="n">0.0%</td><td class="n">99.7%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="facts">
+          <div class="fact"><span>Bait price · precision / recall</span><b>45.2% / 96.5%</b></div>
+          <div class="fact"><span>Inconsistent relist · precision / recall</span><b>90.8% / 56.2%</b></div>
+        </div>
+        <p class="note">The model almost never flags an innocent listing but finds only one planted duplicate in five
+          (20.4% end to end). Bait-price results are in-sample for the price model, so they are optimistic.</p>
       </div>
 
     </div>
@@ -635,11 +664,11 @@
     <div class="tree">
       <b>ingestion/</b><span>read the DLD file, normalise it, classify every row, load Postgres</span>
       <b>models/price/</b><span>features, market index, location priors, training, the DB-free predictor</span>
-      <b>listings/</b><span>photo pool, corpus generator, embeddings, pgvector retrieval, detection</span>
+      <b>listings/</b><span>photo pool, corpus generator, embeddings, pgvector retrieval, detection, fraud flags, evaluation, <code>python -m listings</code></span>
       <b>dags/</b><span>Airflow: the ingestion pipeline, triggered by hand</span>
       <b>api/</b><span data-state="planned">FastAPI service — phase 6</span>
       <b>demo/</b><span data-state="planned">Streamlit app — phase 7</span>
-      <b>tests/</b><span>273 tests, including one per non-negotiable edge case</span>
+      <b>tests/</b><span>344 tests, including one per non-negotiable edge case</span>
       <b>docs/</b><span>a spec and an implementation plan for every phase, plus this page</span>
     </div>
   </section>
@@ -647,7 +676,8 @@
   <section>
     <div class="section-head">
       <h2>Stack and cost</h2>
-      <p>Everything runs locally on free, open tools. Cloud costs arrive in phase 9 and get documented here.</p>
+      <p>Everything runs locally on free, open tools. Hosting stays free too: the public link in phase 9 is a Cloudflare
+        Tunnel to this machine.</p>
     </div>
     <div class="scroll">
       <table>
@@ -669,6 +699,13 @@
   <section>
     <div class="section-head"><h2>Build log</h2></div>
     <div class="log">
+      <div class="entry">
+        <time>16 Sep 2026</time>
+        <p><b>Phase 4 shipped.</b> 20,000 listings embedded on the GPU and checked in about 21 minutes end to end. The
+          final review found a relist flag that could never fire and same-building controls easier than the spec
+          asked for; both were fixed and the corpus rebuilt. Precision now meets the 98% target; recall fell to 21%
+          and the README says so. Hosting switched from Cloud Run to a free Cloudflare Tunnel.</p>
+      </div>
       <div class="entry">
         <time>16 Sep 2026</time>
         <p><b>Phase 4 under way.</b> Photo pool, corpus generator and the listings schema are in. Reviews caught four
