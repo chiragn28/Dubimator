@@ -5,7 +5,7 @@ estimation, duplicate/fraud listing detection, and search ranking, built
 on real Dubai Land Department (DLD) transaction data.
 
 > **Status:** Phase 4 (duplicate and fraud detection) complete. See
-> `docs/superpowers/specs/` for the full 10-phase build plan.
+> `docs/superpowers/specs/` for the full build plan (11 phases; price forecasting was added as Phase 6 on 2026-09-16).
 
 ## Architecture (current)
 
@@ -409,8 +409,8 @@ On this corpus the next fixes are:
 | Price model training (local RTX 3060) | $0 — runs on your machine |
 | Photo dataset + embedding models (one-off download) | $0 — about 0.8 GB on disk |
 
-Cloud costs are introduced in Phase 9 (deployment) and documented here as
-they're added.
+Hosting stays at $0: Phase 10 (deploy and monitor) shares the local Docker stack
+through a free Cloudflare Tunnel instead of a cloud service.
 
 ## Module layout
 
@@ -419,6 +419,7 @@ they're added.
 - `scripts/` — maintenance scripts (test-fixture builder)
 - `models/price/` — home price model: features, training, evaluation, predictor (`python -m models.price`)
 - `listings/` — synthetic listings corpus, duplicate detection, fraud flags (`python -m listings`)
-- `api/` — FastAPI service (Phase 6)
-- `demo/` — Streamlit app (Phase 7)
+- `models/forecast/` — 3-month / 1-year / 3-year price forecasts (Phase 6, planned; brief in `docs/superpowers/briefs/`)
+- `api/` — FastAPI service (Phase 7)
+- `demo/` — Streamlit app (Phase 8)
 - `data/raw/` — drop DLD CSVs here (gitignored)

@@ -121,7 +121,7 @@
   .section-head p { color: var(--ink-soft); max-width: 68ch; }
 
   /* Phase progress strip ------------------------------------------------ */
-  .strip { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+  .strip { display: grid; grid-template-columns: repeat(11, 1fr); gap: 4px; }
   .strip .seg {
     height: 8px;
     border-radius: 2px;
@@ -353,7 +353,7 @@
     <p class="eyebrow">Dubai Land Department · machine learning platform</p>
     <h1>Zestimator</h1>
     <p class="lede">Price estimation, duplicate &amp; fraud detection, and property search over 1,047,965 real Dubai
-      Land Department transactions. Ten phases, built one at a time — each with its own spec, plan, tests and review.</p>
+      Land Department transactions. Eleven phases, built one at a time — each with its own spec, plan, tests and review.</p>
     <div class="meta">
       <span>as of <b>16 Sep 2026</b></span>
       <span><b>88</b> commits</span>
@@ -368,12 +368,12 @@
       <h2>Build status</h2>
       <p>Four phases shipped. Search ranking is next.</p>
     </div>
-    <div class="strip" role="img" aria-label="Phase progress: phases 1 to 4 complete, phase 5 next, phases 6 to 10 planned">
+    <div class="strip" role="img" aria-label="Phase progress: phases 1 to 4 complete, phase 5 next, phases 6 to 11 planned">
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
-      <div class="seg" data-state="active"></div><div class="seg"></div><div class="seg"></div>
+      <div class="seg" data-state="active"></div><div class="seg"></div><div class="seg"></div><div class="seg"></div>
       <div class="seg"></div><div class="seg"></div><div class="seg"></div>
     </div>
     <div class="strip-key">
@@ -470,18 +470,23 @@
           </div>
           <div class="arrow" aria-hidden="true">→</div>
           <div class="station" data-state="planned">
-            <div class="name">FastAPI</div>
-            <div class="detail">phase 6</div>
+            <div class="name">Price forecasting</div>
+            <div class="detail">phase 6 · 3m / 1y / 3y</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
           <div class="station" data-state="planned">
-            <div class="name">Streamlit demo</div>
+            <div class="name">FastAPI</div>
             <div class="detail">phase 7</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
           <div class="station" data-state="planned">
+            <div class="name">Streamlit demo</div>
+            <div class="detail">phase 8</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station" data-state="planned">
             <div class="name">Cloudflare Tunnel + Evidently</div>
-            <div class="detail">phases 8–9 · local Docker, public link</div>
+            <div class="detail">phases 9–10 · local Docker, public link</div>
           </div>
         </div>
       </div>
@@ -491,7 +496,7 @@
 
   <section>
     <div class="section-head">
-      <h2>The ten phases</h2>
+      <h2>The eleven phases</h2>
       <p>Order matters here: each phase consumes what the one before it produced.</p>
     </div>
     <div class="ledger">
@@ -538,28 +543,36 @@
 
       <article class="phase" data-state="planned">
         <div class="num">06</div>
-        <div class="what"><b>API</b></div>
-        <div class="detail">One FastAPI service: price estimate, duplicate check, search. Loads the champion model as a
-          single MLflow artifact.</div>
+        <div class="what"><b>Price forecasting</b><span>added 16 Sep 2026</span></div>
+        <div class="detail">Separate 3-month, 1-year and 3-year models with walk-forward validation, conformal ranges and
+          sourced infrastructure-pipeline features. A horizon ships only if it beats its accuracy gate.</div>
         <div class="pill">planned</div>
       </article>
 
       <article class="phase" data-state="planned">
         <div class="num">07</div>
-        <div class="what"><b>Demo UI</b></div>
-        <div class="detail">Streamlit: area map, estimator form, search bar.</div>
+        <div class="what"><b>API</b></div>
+        <div class="detail">One FastAPI service: price estimate, forecast, duplicate check, search. Loads each champion
+          model as a single MLflow artifact.</div>
         <div class="pill">planned</div>
       </article>
 
       <article class="phase" data-state="planned">
         <div class="num">08</div>
+        <div class="what"><b>Demo UI</b></div>
+        <div class="detail">Streamlit: area map, estimator and forecast form, search bar.</div>
+        <div class="pill">planned</div>
+      </article>
+
+      <article class="phase" data-state="planned">
+        <div class="num">09</div>
         <div class="what"><b>CI/CD</b></div>
         <div class="detail">GitHub Actions for tests and lint, plus scheduled retraining.</div>
         <div class="pill">planned</div>
       </article>
 
       <article class="phase" data-state="planned">
-        <div class="num">09</div>
+        <div class="num">10</div>
         <div class="what"><b>Deploy &amp; monitor</b></div>
         <div class="detail">The Docker Compose stack shared through a free Cloudflare Tunnel (live while the host PC is
           on), with Evidently watching for drift. The container stays Cloud Run-compatible.</div>
@@ -567,7 +580,7 @@
       </article>
 
       <article class="phase" data-state="planned">
-        <div class="num">10</div>
+        <div class="num">11</div>
         <div class="what"><b>Documentation</b></div>
         <div class="detail">Final README, this diagram, and the cost breakdown.</div>
         <div class="pill">planned</div>
@@ -666,8 +679,8 @@
       <b>models/price/</b><span>features, market index, location priors, training, the DB-free predictor</span>
       <b>listings/</b><span>photo pool, corpus generator, embeddings, pgvector retrieval, detection, fraud flags, evaluation, <code>python -m listings</code></span>
       <b>dags/</b><span>Airflow: the ingestion pipeline, triggered by hand</span>
-      <b>api/</b><span data-state="planned">FastAPI service — phase 6</span>
-      <b>demo/</b><span data-state="planned">Streamlit app — phase 7</span>
+      <b>api/</b><span data-state="planned">FastAPI service — phase 7</span>
+      <b>demo/</b><span data-state="planned">Streamlit app — phase 8</span>
       <b>tests/</b><span>344 tests, including one per non-negotiable edge case</span>
       <b>docs/</b><span>a spec and an implementation plan for every phase, plus this page</span>
     </div>
@@ -676,7 +689,7 @@
   <section>
     <div class="section-head">
       <h2>Stack and cost</h2>
-      <p>Everything runs locally on free, open tools. Hosting stays free too: the public link in phase 9 is a Cloudflare
+      <p>Everything runs locally on free, open tools. Hosting stays free too: the public link in phase 10 is a Cloudflare
         Tunnel to this machine.</p>
     </div>
     <div class="scroll">
