@@ -1,0 +1,314 @@
+# Phase 4 — Duplicate and Fraud Listing Detection
+
+Status: design approved in chat 2026-09-16; awaiting written-spec review
+Date: 2026-09-16
+Part of: Dubai Real Estate ML Platform (sub-project 4 of 10)
+Builds on: `docs/superpowers/specs/2026-09-15-phase3-price-model-design.md`
+
+## Goal
+
+Detect duplicate property listings and suspicious postings using image and
+text similarity. DLD transactions carry no photos or descriptions, so Phase 4
+generates a labelled synthetic listings corpus on top of real DLD sales,
+embeds photos and text on the GPU, retrieves candidates through pgvector, and
+decides with several signals in agreement. Every planted duplicate, every
+must-not-flag control and every fraud case has a ground-truth label, so
+precision and recall are measured rather than asserted.
+
+## Decisions (user, 2026-09-16)
+
+- **Supplementary data: synthetic listings over real DLD sales.** Real
+  locations, sizes and price levels; invented text, agents, posting dates,
+  duplicates and fraud. Labelled as synthetic in the database and the README.
+- **Photos: [emanhamed/Houses-dataset](https://github.com/emanhamed/Houses-dataset)**
+  — 2,140 real photos, 535 properties × 4 rooms (`<id>_<bathroom|bedroom|frontal|kitchen>.jpg`),
+  about 176 MB, fetched by a script with no login. No formal licence is
+  stated, so the images are never committed, and the README cites the paper
+  (Ahmed & Moustafa, 2016).
+- **Corpus size: 20,000 listings.**
+- **Planted patterns:** the user chose exact reposts; the controller added
+  reworded text, edited photos, and the two must-not-flag controls
+  (same building/different unit, stock-photo reuse), because the master
+  prompt makes multi-signal agreement and stock-photo false positives
+  non-negotiable. The user agreed in chat.
+
+## Source data (profiled 2026-09-16)
+
+From `dld.market_sales`, homes sold on or after 2021-01-01
+(`villa`, or `unit` with sub-type `Flat`, `Hotel Apartment`,
+`Stacked Townhouses`):
+
+- 145,857 sales, 111 areas, 2,397 buildings, 27,694 of them villas.
+- 2,224 buildings have 4 or more sales (125,369 rows), which is where the
+  same-building controls come from.
+- Photo pool: 535 property sets × 4 rooms.
+
+## Architecture
+
+```
+listings/
+  __init__.py
+  __main__.py     CLI: python -m listings build|embed|detect|evaluate  (load_dotenv first)
+  config.py       CorpusConfig / DetectConfig — every constant below
+  photos.py       fetch the photo dataset, verify it, build edited variants
+  text.py         description templates (deterministic, seeded)
+  generate.py     corpus generation from DLD sales + planted patterns + labels
+  embed.py        Embedder protocol, CLIP + MiniLM implementations (GPU/CPU)
+  sql/schema.sql  listings schema, tables, HNSW indexes
+  load.py         COPY the corpus and vectors into Postgres
+  candidates.py   pgvector retrieval (text kNN + photo kNN) -> candidate pairs
+  features.py     pair features (no labels)
+  detect.py       train/apply the pair model, thresholds, write duplicate_pairs
+  fraud.py        fraud flags, including the Phase 3 price check
+  evaluate.py     metrics against ground truth, PR curve, timings
+scripts/build_listings_fixture.py
+tests/listings/...
+```
+
+Runs from the host CLI through `uv run`. Scheduling is Phase 8; the API and
+UI are Phases 6–7.
+
+### New dependencies
+
+`sentence-transformers` (pulls `torch`; CUDA build for the GPU), `pillow`
+(photo variants), `requests` (already a dev dependency; promoted if needed).
+Exact pins land in `pyproject.toml`. The CPU fallback path must keep working.
+
+**Disk:** the CUDA `torch` wheel is about 2.5 GB, the two models about 600 MB,
+and the photo dataset about 176 MB. The C: drive has roughly 35 GB free, so
+this fits, but the first task checks free space before installing and reports
+if it is short.
+
+## Corpus generation (generate.py, deterministic under `--seed`)
+
+20,000 listings, composed of:
+
+| Part | Count | How |
+|---|---|---|
+| Base listings | 17,000 | distinct DLD sales sampled from 2021-01-01 on, stratified so at least 1,500 come from buildings with ≥ 4 sales |
+| Exact reposts | 1,200 | clone of a base listing: same photos, same text, different agent, 1–30 days later |
+| Reworded text | 900 | same photos, description regenerated with a different template seed |
+| Edited photos | 900 | same text, photos cropped to 85%, resized to 70%, re-saved at JPEG quality 60 |
+
+Every clone shares its source's `dup_group_id`; base listings have none.
+
+Each listing carries: `listing_id`, `source_transaction_id`, `agent_id`
+(1 of 400), `posted_at` (2023-01-01 … 2023-06-30), `title`, `description`,
+`asking_price_aed`, `area_id`, `area_name`, `building_name`, `project_name`,
+`property_type`, `size_sqm`, `bedrooms`, and the label columns
+(`dup_group_id`, `control_group_id`, `fraud_label`, `is_synthetic` = true).
+
+**Asking price** = the DLD sale price × a factor drawn from 1.00–1.08,
+rounded to the nearest 10,000, so asking prices sit above settled prices as
+they do in reality.
+
+**Photo assignment.** 40 of the 535 sets are marked "agency stock" and are
+reused by about 25% of listings across at least 5 areas each; the rest are
+drawn without that bias. A listing gets one set (4 photos).
+
+**Controls, labelled `control_group_id`, expected NOT to be flagged:**
+- *Same building, different unit:* listings drawn from the same
+  (area, building) with ≥ 4 sales, different transactions, prices within 20%,
+  and — for half of them — the same developer photo set. This is the hardest
+  legitimate near-duplicate.
+- *Stock-photo reuse:* listings in different areas sharing an agency stock
+  set, with unrelated text and prices.
+
+**Fraud cases, labelled `fraud_label`:**
+- `bait_price`: 600 listings whose asking price is 35–60% below the DLD sale
+  price.
+- The other two flags (`photo_reuse`, `inconsistent_relist`) are properties of
+  the corpus rather than planted rows: they are derived at detection time and
+  evaluated against the stock-photo control and duplicate clusters whose
+  asking prices are deliberately spread (300 of the exact reposts get a
+  ±15–30% price change).
+
+Generation writes the corpus and any edited photo variants under
+`data/listings/` (gitignored), then loads Postgres.
+
+## Text (text.py)
+
+Templates assembled from seeded choices: an opener, the property facts
+(bedrooms, size, area, building), 2–5 amenities from a fixed vocabulary, an
+agent blurb and a call to action. Area names come from `dld.areas`, including
+Arabic names, so UTF-8 is exercised end to end. Reworded duplicates use the
+same facts with a different phrasing seed. No text is copied from any real
+listing.
+
+## Embeddings (embed.py)
+
+- **Photos:** CLIP ViT-B/32 (`sentence-transformers/clip-ViT-B-32`), 512
+  dimensions, L2-normalised. The 2,140 pool photos plus the edited variants
+  are embedded once.
+- **Text:** `sentence-transformers/all-MiniLM-L6-v2`, 384 dimensions,
+  L2-normalised, over title + description.
+- `Embedder` is a protocol with `embed_images(paths) -> np.ndarray` and
+  `embed_texts(texts) -> np.ndarray`. The real implementations load
+  sentence-transformers; tests inject a deterministic fake, so the suite needs
+  no model download and no GPU. One opt-in test runs the real CLIP on four
+  photos and is skipped when the model isn't cached.
+- Device selection mirrors Phase 3: `auto` → CUDA when `torch.cuda.is_available()`,
+  else CPU; `--device` overrides.
+- A listing's image vector is the L2-normalised mean of its photo vectors.
+
+## Storage (sql/schema.sql)
+
+Schema `listings`, separate from `dld`:
+
+| Table | Columns (essentials) |
+|---|---|
+| `listings` | listing_id PK, source_transaction_id, agent_id, posted_at, title, description, asking_price_aed, area_id, area_name, building_name, project_name, property_type, size_sqm, bedrooms, dup_group_id, control_group_id, fraud_label, is_synthetic, corpus_run_id |
+| `photos` | photo_id PK, path, source_set_id, room, variant_of, variant_kind, embedding vector(512) |
+| `listing_photos` | listing_id, photo_id, position (PK listing_id, position) |
+| `listing_embeddings` | listing_id PK, text_embedding vector(384), image_embedding vector(512) |
+| `duplicate_pairs` | listing_a, listing_b (a < b), score, decision, signals jsonb, detect_run_id |
+| `fraud_flags` | listing_id, flag, detail jsonb, detect_run_id |
+| `corpus_runs` | corpus_run_id, created_at, seed, counts jsonb, photo_dataset_sha |
+
+HNSW indexes with `vector_cosine_ops` (m = 16, ef_construction = 64) on
+`photos.embedding`, `listing_embeddings.text_embedding` and
+`listing_embeddings.image_embedding`. Loads are one transaction, following
+Phase 2's pattern: truncate, COPY, verify counts.
+
+**Labels never reach detection.** `candidates.py`, `features.py`, `detect.py`
+and `fraud.py` select explicit column lists that exclude `dup_group_id`,
+`control_group_id` and `fraud_label`; only `evaluate.py` reads them. A test
+asserts the label columns appear in no detection-path SQL, mirroring Phase 3's
+feature allowlist test.
+
+## Candidate retrieval (candidates.py)
+
+For each listing:
+- top 20 nearest by text embedding (cosine), `hnsw.ef_search = 100`;
+- for each of its photos, top 10 nearest photos, mapped back to their listings.
+
+The union, minus self, minus pairs already seen, is the candidate set. Pairs
+are canonical: `listing_a < listing_b`. Expected 20–40 candidates per listing.
+
+**Retrieval recall is measured and reported:** the share of planted duplicate
+pairs that appear as candidates. A duplicate missed here can never be
+recovered, so this is a first-class metric, not a diagnostic.
+
+## Pair features (features.py)
+
+Twelve features, computed from listing content and vectors only:
+
+`text_cosine`, `image_max_cosine` (best photo-to-photo match),
+`image_mean_cosine` (listing image vectors), `shared_photo_count`,
+`abs_log_price_ratio`, `abs_log_size_ratio`, `same_area`, `same_building`,
+`same_project`, `bedrooms_equal`, `days_apart`, `same_agent`.
+
+## Decision (detect.py)
+
+- **Split by `posted_at`:** train on the first 60% of the posting window,
+  choose the threshold on the next 20%, report on the last 20%. A pair is
+  assigned to the split of its **later** listing, which is the realistic
+  question ("is this new listing a repost of something already up?"), so a
+  pair may legitimately reference an earlier listing from an earlier split.
+  No pair is scored in more than one split.
+- **Model:** `LogisticRegression(class_weight="balanced", max_iter=1000)` on
+  the twelve features, with a `StandardScaler`. A linear model keeps every
+  decision explainable, which is the point of the signals column.
+- **Threshold:** the lowest score whose validation precision is ≥ 0.98.
+  Recall at that threshold is the headline number.
+- **Single-signal baseline:** `image_max_cosine ≥ 0.95` alone, scored the same
+  way. The comparison is what demonstrates the master prompt's multi-signal
+  requirement — the baseline is expected to fire on the same-building and
+  stock-photo controls.
+- Decisions are written to `duplicate_pairs` with the twelve signals in
+  `signals`, so Phases 6–7 can explain any flag.
+
+## Fraud flags (fraud.py)
+
+- `bait_price`: the Phase 3 champion model (`models:/zestimator-price@champion`)
+  estimates the home; a listing is flagged when its asking price is more than
+  10% below the 80% range's lower bound. If the model can't be loaded, the
+  flag is skipped with a logged warning and the run continues — the detector
+  must not depend on MLflow being up.
+- `photo_reuse`: a photo set used by listings in 5 or more distinct areas.
+- `inconsistent_relist`: a duplicate cluster whose asking prices differ by
+  more than 20%.
+
+Each flag row carries the evidence in `detail`.
+
+## Evaluation (evaluate.py)
+
+Pair-level, on the reporting split, against ground truth:
+- precision, recall, F1 at the chosen threshold; PR-AUC
+- retrieval recall of planted duplicate pairs
+- **false-positive rate on each control** (same-building, stock-photo),
+  reported separately for the model and the single-signal baseline
+- per-pattern recall (exact repost, reworded, edited photos)
+- fraud flags: precision and recall for `bait_price` against its label
+- **timing:** measured candidate retrieval for the full corpus against a
+  measured brute-force comparison on a 2,000-listing subset, with the implied
+  full-corpus cost (200M listing pairs; about 3.2B photo comparisons) stated.
+
+Everything is logged to MLflow experiment `listing-dedup`: parameters,
+metrics, the PR curve, the threshold table, the confusion matrix and the
+timing table.
+
+## CLI (`python -m listings`)
+
+- `build [--listings 20000] [--seed 42]` — fetch photos if absent, generate,
+  load Postgres
+- `embed [--device auto|cuda|cpu]`
+- `detect` — retrieve candidates, score, write `duplicate_pairs` and
+  `fraud_flags`
+- `evaluate` — metrics and MLflow logging
+
+`load_dotenv()` runs before any settings are read (`DbSettings.from_env()`
+refuses to run without `POSTGRES_PORT` since Phase 3).
+
+## Testing
+
+Unit tests, with a deterministic fake embedder and a small fixture corpus
+(200 listings, 20 photos, built by `scripts/build_listings_fixture.py`):
+
+- **Leakage:** no detection-path SQL selects a label column; features are
+  computed without labels.
+- **Generation:** same seed → identical corpus (bit-for-bit); planted counts
+  match the config; every clone shares its source's `dup_group_id`; controls
+  are labelled; Arabic area names survive the round trip.
+- **Photos:** variants differ from their source but keep the link; a missing
+  or corrupt download fails loudly with a clear message.
+- **Embedding:** the fake embedder's vectors are normalised and shaped
+  correctly; device resolution falls back to CPU; the opt-in CLIP test is
+  skipped without the model.
+- **Retrieval:** planted duplicates appear as candidates (recall ≥ 0.99 on the
+  fixture); pairs are canonical and never duplicated; a listing with no
+  neighbours yields no pairs.
+- **Multi-signal:** same-building and stock-photo control pairs are not
+  flagged by the model, while the single-signal baseline does flag them —
+  both asserted.
+- **Patterns:** reworded-text and edited-photo duplicates are detected.
+- **Index correctness:** on the fixture, HNSW retrieval agrees with an exact
+  brute-force search (recall ≥ 0.95 of true nearest neighbours).
+- **Fraud:** `bait_price` fires below the bound and not above it; an
+  unavailable price model skips the flag without failing the run;
+  `photo_reuse` and `inconsistent_relist` fire on constructed cases.
+- **Metrics:** precision, recall, F1, PR-AUC and the control false-positive
+  rate against hand-computed values.
+- **Integration:** build → embed (fake) → detect → evaluate end to end on the
+  fixture against the throwaway `zestimator_test` database, asserting rows in
+  `duplicate_pairs` and metrics in the temporary MLflow store.
+
+## Deliverables beyond code
+
+README gains a "Duplicate and fraud detection" section: what's real and what's
+synthetic (explicitly), how to build and run, the results table (precision,
+recall, PR-AUC, per-pattern recall, control false-positive rates for model
+versus single-signal baseline), the retrieval-versus-brute-force timing with
+the reason approximate search is used, the photo dataset citation, and the
+half-page write-up (business problem, metric optimised, what would change with
+real listings).
+
+## Out of scope
+
+- Real scraped listing data.
+- A scheduled DAG (Phase 8), API endpoints (Phase 6), UI (Phase 7).
+- Watermark detection and OCR.
+- Cross-language duplicate detection (descriptions are English with Arabic
+  place names).
+- Any claim that measured precision or recall transfers to real portal data;
+  the README states that these are synthetic-corpus numbers.
