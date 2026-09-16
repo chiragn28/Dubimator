@@ -18,9 +18,11 @@ from search.features import (
     feature_table,
     load_listing_attributes,
     load_predicted_flags,
+    meets_every_slot,
     query_frame,
     reference_date,
     refresh_estimates,
+    rule_grade,
 )
 from search.lexicon import load_lexicon
 from search.parse import ParsedQuery
@@ -147,6 +149,48 @@ def test_feature_values(table, row, expected):
         assert _same(values[name], value), name
 
 
+def _slot_frame(**columns) -> pl.DataFrame:
+    base = {
+        "area_match": NAN, "type_match": NAN, "building_match": NAN, "beds_diff": NAN,
+        "beds_stated": 0.0, "price_over_max": NAN, "price_under_min": NAN, "size_ratio": NAN,
+        "amenity_hits": 0.0, "amenity_asked": 0.0,
+    }  # fmt: skip
+    rows = max((len(value) for value in columns.values()), default=1)
+    data = {name: [value] * rows for name, value in base.items()}
+    data.update(columns)
+    return pl.DataFrame(data, schema={name: pl.Float64 for name in data})
+
+
+def _rules(frame: pl.DataFrame) -> list:
+    return frame.select(rule_grade().alias("grade"), meets_every_slot().alias("meets")).rows()
+
+
+def test_nothing_stated_meets_every_slot():
+    assert _rules(_slot_frame()) == [(3.0, True)]
+
+
+def test_rule_grade_mirrors_the_grading_rules_on_parsed_slots():
+    frame = _slot_frame(
+        beds_stated=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        beds_diff=[0.0, 1.0, 1.0, 2.0, 0.0, NAN, 0.0],
+        price_over_max=[-0.1, 0.05, 0.05, -0.1, -0.1, -0.1, -0.1],
+        area_match=[1.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+        amenity_asked=[2.0, 2.0, 2.0, 2.0, 2.0, 2.0, 1.0],
+        amenity_hits=[2.0, 2.0, 1.0, 2.0, 2.0, 2.0, 0.0],
+    )
+    assert _rules(frame) == [
+        (3.0, True),  # every slot exact
+        (1.0, False),  # two near misses (bedrooms, budget)
+        (1.0, False),  # three near misses
+        (1.0, False),  # bedrooms off by two: not even near
+        (1.0, False),  # wrong area
+        (1.0, False),  # stated bedrooms, listing has none
+        (1.0, False),  # one of one amenity missing: not near
+    ]
+    one_miss = _slot_frame(size_ratio=[0.95], price_under_min=[0.0])
+    assert _rules(one_miss) == [(2.0, False)]
+
+
 def test_within_interval_is_one_inside_the_range():
     estimates = ESTIMATES.with_columns(pl.lit(900_000.0).alias("low"))
     out = build_features(
@@ -268,11 +312,15 @@ def test_feature_table_covers_every_judgment(search_db, fake_embedder):
 def test_no_search_module_outside_the_label_readers_names_a_label():
     """Labels, true slots and generator flags must never reach features, retrieval or the engine."""
     package = Path(features_module.__file__).parent
-    exempt = {*LABEL_READERS, "config.py"}  # config.py only declares the forbidden list
+    # exactly search/<name>.py: a same-named file in a subpackage is still scanned
+    exempt = {package / name for name in (*LABEL_READERS, "config.py")}  # config: the list
     pattern = re.compile(r"\b(" + "|".join(SEARCH_FORBIDDEN) + r")\b")
     offenders = {
-        path.name: sorted(set(pattern.findall(path.read_text(encoding="utf-8"))))
+        path.relative_to(package).as_posix(): sorted(
+            set(pattern.findall(path.read_text(encoding="utf-8")))
+        )
         for path in package.rglob("*.py")
-        if path.name not in exempt and pattern.search(path.read_text(encoding="utf-8"))
+        if path not in exempt and pattern.search(path.read_text(encoding="utf-8"))
     }
     assert offenders == {}
+    assert {"seed_listing_id", "n_grade3"} <= set(SEARCH_FORBIDDEN)

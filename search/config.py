@@ -31,8 +31,12 @@ TRUST_FEATURES = (
 )  # fmt: skip
 
 # Ground truth and generator internals. Only the modules in LABEL_READERS may name these.
-SEARCH_FORBIDDEN = ("fraud_label", "dup_group_id", "control_group_id", "true_slots", "is_synthetic")
-# store.py only persists the query set; its read_queries() leaves true_slots out.
+SEARCH_FORBIDDEN = (
+    "fraud_label", "dup_group_id", "control_group_id", "true_slots", "is_synthetic",
+    "seed_listing_id", "n_grade3",
+)  # fmt: skip
+# search/<name>.py for each name. store.py persists the query set; its read_queries() leaves
+# the labels out, and only evaluate.py calls read_query_labels().
 LABEL_READERS = ("grade.py", "queries.py", "evaluate.py", "store.py")
 
 

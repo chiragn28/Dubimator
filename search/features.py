@@ -263,6 +263,67 @@ def build_features(
     )
 
 
+def _holds(column: str, test) -> pl.Expr:
+    """A feature is NaN when its slot was not stated: a NaN check holds."""
+    value = pl.col(column).fill_nan(None)
+    return (value.is_null() | test(value)).fill_null(False)
+
+
+def slot_matches(near_margin: float = 0.10) -> tuple[pl.Expr, list[tuple[pl.Expr, pl.Expr]]]:
+    """(hard, [(exact, near), ...]) over a feature frame, for the PARSED query's slots.
+
+    The same shape as the grading rules, computed from features only: hard = area, type and
+    building all match; the soft slots are bedrooms, budget, size and amenities. A slot the
+    query did not state always holds. A stated bedroom count against a listing with no
+    bedroom count holds neither exactly nor nearly.
+    """
+    beds = pl.col("beds_diff").fill_nan(None)
+    beds_unstated = pl.col("beds_stated") == 0.0
+    asked, hits = pl.col("amenity_asked"), pl.col("amenity_hits")
+    hard = (
+        _holds("area_match", lambda v: v == 1.0)
+        & _holds("type_match", lambda v: v == 1.0)
+        & _holds("building_match", lambda v: v == 1.0)
+    )
+    soft = [
+        (
+            beds_unstated | (beds == 0).fill_null(False),
+            beds_unstated | (beds <= 1).fill_null(False),
+        ),
+        (
+            _holds("price_over_max", lambda v: v <= 0)
+            & _holds("price_under_min", lambda v: v <= 0),
+            _holds("price_over_max", lambda v: v <= near_margin)
+            & _holds("price_under_min", lambda v: v <= near_margin),
+        ),
+        (
+            _holds("size_ratio", lambda v: v >= 1),
+            _holds("size_ratio", lambda v: v >= 1 - near_margin),
+        ),
+        (hits >= asked, hits >= asked - (asked == 2.0).cast(pl.Float64)),
+    ]
+    return hard, soft
+
+
+def meets_every_slot(near_margin: float = 0.10) -> pl.Expr:
+    hard, soft = slot_matches(near_margin)
+    return hard & pl.all_horizontal([exact for exact, _ in soft])
+
+
+def rule_grade(near_margin: float = 0.10) -> pl.Expr:
+    """3, 2 or 1 from the parsed slots, mirroring the grading rules' 3 / 2 / otherwise."""
+    hard, soft = slot_matches(near_margin)
+    all_near = pl.all_horizontal([near for _, near in soft])
+    misses = pl.sum_horizontal([(~exact & near).cast(pl.Int64) for exact, near in soft])
+    return (
+        pl.when(hard & all_near & (misses == 0))
+        .then(3.0)
+        .when(hard & all_near & (misses == 1))
+        .then(2.0)
+        .otherwise(1.0)
+    )
+
+
 def feature_table(conn, lexicon: Lexicon) -> pl.DataFrame:
     """Every stored judgment with its query's split and kind, its grade, and the features."""
     queries = read_queries(conn)

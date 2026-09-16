@@ -19,7 +19,11 @@ QUERY_SCHEMA = {
     "n_grade3": pl.Int64,
     "corpus_run_id": pl.Int64,
 }
-QUERY_COLUMNS = tuple(name for name in QUERY_SCHEMA if name != "true_slots")
+# What features and training may read. Ground truth (true_slots) and the generator's seed and
+# answer count (seed_listing_id, n_grade3) are left out; evaluation reads the latter two
+# through read_query_labels().
+QUERY_COLUMNS = ("query_id", "text", "template_id", "kind", "split", "corpus_run_id")
+LABEL_COLUMNS = ("query_id", "seed_listing_id", "n_grade3")
 JUDGMENT_SCHEMA = {
     "query_id": pl.Int64,
     "listing_id": pl.Int64,
@@ -67,9 +71,8 @@ def replace_query_set(conn, queries: pl.DataFrame, judgments: pl.DataFrame) -> N
                 raise LoadInvariantError(f"{table}: loaded {loaded} rows but expected {expected}")
 
 
-def read_queries(conn, splits: tuple[str, ...] | None = None) -> pl.DataFrame:
-    columns = ", ".join(QUERY_COLUMNS)
-    sql = f"SELECT {columns} FROM search.queries"
+def _read_query_columns(conn, columns, splits) -> pl.DataFrame:
+    sql = f"SELECT {', '.join(columns)} FROM search.queries"
     params: tuple = ()
     if splits is not None:
         sql += " WHERE split = ANY(%s)"
@@ -77,8 +80,18 @@ def read_queries(conn, splits: tuple[str, ...] | None = None) -> pl.DataFrame:
     with conn.cursor() as cur:
         cur.execute(sql + " ORDER BY query_id", params)
         rows = cur.fetchall()
-    schema = {name: QUERY_SCHEMA[name] for name in QUERY_COLUMNS}
+    schema = {name: QUERY_SCHEMA[name] for name in columns}
     return pl.DataFrame(rows, schema=schema, orient="row")
+
+
+def read_queries(conn, splits: tuple[str, ...] | None = None) -> pl.DataFrame:
+    """The query set without any label: safe for features and training."""
+    return _read_query_columns(conn, QUERY_COLUMNS, splits)
+
+
+def read_query_labels(conn, splits: tuple[str, ...] | None = None) -> pl.DataFrame:
+    """Each query's seed listing and its corpus-wide grade-3 count. Evaluation only."""
+    return _read_query_columns(conn, LABEL_COLUMNS, splits)
 
 
 def read_judgments(conn, query_ids: list[int] | None = None) -> pl.DataFrame:
