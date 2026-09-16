@@ -45,6 +45,10 @@ class CorpusConfig:
     stock_min_areas: int = 5
     min_building_sales: int = 4
     n_from_busy_buildings: int = 1_500
+    # Same-building controls (spec): members of a group are priced within this spread of each
+    # other, and this share of the groups use one developer photo set for every member.
+    control_price_spread: float = 0.20
+    control_shared_set_share: float = 0.5
     asking_factor: tuple[float, float] = (1.00, 1.08)
     bait_factor: tuple[float, float] = (0.40, 0.65)
     price_shift: tuple[float, float] = (0.15, 0.30)

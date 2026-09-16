@@ -132,13 +132,41 @@ def _sample_base_sales(sales: pl.DataFrame, config: CorpusConfig) -> pl.DataFram
         .filter(pl.col("len") >= config.min_building_sales)
         .select(key)
     )
-    ranked = (
+    # Spec: a control group's members are priced within control_price_spread of each other.
+    # Asking prices are the sale price times a factor in asking_factor, rounded to the nearest
+    # 10,000, so take `per_building` price-adjacent sales whose WORST-CASE asking prices (top
+    # sale at the highest factor rounded up, bottom sale at the lowest rounded down) still sit
+    # inside the spread. A building with no such run of sales supplies no control group.
+    low, high = config.asking_factor
+    half_step = 5_000.0
+    by_price = (
         with_building.join(busy, on=key, how="inner", maintain_order="left")
-        .with_columns(pl.col("transaction_id").hash(seed=config.seed).alias("__h"))
+        .sort([*key, "price_aed", "transaction_id"])
+        .with_columns(
+            pl.col("price_aed").shift(-(per_building - 1)).over(key).alias("__top"),
+            pl.col("transaction_id").hash(seed=config.seed).alias("__h"),
+            pl.int_range(pl.len()).over(key).alias("__pos"),
+        )
+    )
+    fits = pl.col("__top").is_not_null() & (
+        pl.col("__top") * high + half_step
+        <= (1.0 + config.control_price_spread) * (pl.col("price_aed") * low - half_step)
+    )
+    # Among the qualifying runs, the one starting at the lowest seeded hash: deterministic,
+    # and not biased toward the cheapest or dearest units in the building.
+    starts = (
+        by_price.filter(fits)
         .sort([*key, "__h"])
-        .with_columns(pl.int_range(pl.len()).over(key).alias("__rank"))
-        .filter(pl.col("__rank") < per_building)
-        .drop("__h", "__rank")
+        .group_by(key, maintain_order=True)
+        .agg(pl.col("__pos").first().alias("__start"))
+    )
+    ranked = (
+        by_price.join(starts, on=key, how="inner", maintain_order="left")
+        .filter(
+            (pl.col("__pos") >= pl.col("__start"))
+            & (pl.col("__pos") < pl.col("__start") + per_building)
+        )
+        .drop("__top", "__h", "__pos", "__start")
     )
     # Take the busy buildings in seeded-hash order, not area/building order: sorted order would
     # fill the control groups from the lowest area ids only, and a control false-positive rate
@@ -230,6 +258,33 @@ def _plain_sets_by_area(plain: list[int], area_ids: list[int], config: CorpusCon
     return by_area
 
 
+def _control_photo_plan(
+    base: pl.DataFrame, plain_by_area: dict, plain: list[int], config: CorpusConfig
+) -> tuple[dict[str, int], random.Random]:
+    """Which same-building control groups share one developer photo set, and which set.
+
+    Spec: half of the same-building controls share the developer photo set. Groups are taken
+    in seeded-hash order and every other one (for a 0.5 share) gets a local, non-stock set for
+    all of its members, so the shared share holds per pair as well as per group.
+    """
+    rng = random.Random(config.seed + 23)
+    groups = (
+        base.filter(pl.col("control_group_id").is_not_null())
+        .group_by("control_group_id")
+        .agg(pl.col("area_id").first())
+        .with_columns(pl.col("control_group_id").hash(seed=config.seed + 29).alias("__h"))
+        .sort(["__h", "control_group_id"])
+    )
+    shared: dict[str, int] = {}
+    share = config.control_shared_set_share
+    for index, (group, area_id) in enumerate(
+        zip(groups["control_group_id"].to_list(), groups["area_id"].to_list())
+    ):
+        if int((index + 1) * share) > int(index * share):
+            shared[group] = rng.choice(plain_by_area.get(area_id) or plain)
+    return shared, rng
+
+
 def _build_base_listings(
     base: pl.DataFrame,
     areas: pl.DataFrame,
@@ -243,19 +298,25 @@ def _build_base_listings(
     span = (date.fromisoformat(config.posted_to) - start).days - config.repost_days[1]
     if span <= 0:
         raise ValueError("posting window is shorter than the repost delay")
-    if config.n_bait_price > base.height:
-        raise ValueError(
-            f"n_bait_price={config.n_bait_price} exceeds the {base.height} base listings"
-        )
     plain_by_area = _plain_sets_by_area(plain, base["area_id"].unique().to_list(), config)
     # Bait multiplies the DLD sale price, per the spec — not the asking price, which would
     # compound the two factors into an effective 0.40-0.70x. Chosen up front so the factor can
     # be applied where the sale price is still in hand; the sale price is never stored.
+    # Never on a same-building control: a bait price would break the group's price band.
+    control_ids = base["control_group_id"].to_list()
+    eligible = [index + 1 for index, group in enumerate(control_ids) if group is None]
+    if config.n_bait_price > len(eligible):
+        raise ValueError(
+            f"n_bait_price={config.n_bait_price} exceeds the {len(eligible)} base listings "
+            "outside the same-building controls"
+        )
     bait_rng = random.Random(config.seed + 17)
     bait_factors = {
         listing_id: bait_rng.uniform(*config.bait_factor)
-        for listing_id in bait_rng.sample(range(1, base.height + 1), config.n_bait_price)
+        for listing_id in bait_rng.sample(eligible, config.n_bait_price)
     }
+    group_sets, control_rng = _control_photo_plan(base, plain_by_area, plain, config)
+    used_by_group: dict[str, set[int]] = {}
     rows = []
     for index, sale in enumerate(base.iter_rows(named=True)):
         listing_id = index + 1
@@ -265,6 +326,19 @@ def _build_base_listings(
             # Falls back to the whole plain pool only if an area got no home set at all;
             # _validate then fails loudly rather than letting the spread go unnoticed.
             photo_set = rng.choice(plain_by_area.get(sale["area_id"]) or plain)
+        group = sale["control_group_id"]
+        if group in group_sets:
+            photo_set = group_sets[group]  # one developer set for the whole group
+        elif group is not None:
+            # The other controls must NOT share a set, or the shared share drifts upward.
+            used = used_by_group.setdefault(group, set())
+            if photo_set in used:
+                local = plain_by_area.get(sale["area_id"]) or plain
+                spare = sorted((set(local) | set(stock)) - used)
+                if not spare:
+                    raise ValueError(f"no unused photo set left for control group {group}")
+                photo_set = control_rng.choice(spare)
+            used.add(photo_set)
         # Always drawn, so which listings are bait does not perturb the rest of the stream.
         factor = rng.uniform(*config.asking_factor)
         bait = bait_factors.get(listing_id)
@@ -444,6 +518,17 @@ def _plant_clones(
 def _validate(listings: pl.DataFrame, photos: pl.DataFrame, config: CorpusConfig) -> None:
     if listings.height != config.n_listings:
         raise ValueError(f"generated {listings.height} listings, expected {config.n_listings}")
+    wide_controls = (
+        listings.filter(pl.col("control_group_id").is_not_null())
+        .group_by("control_group_id")
+        .agg((pl.col("asking_price_aed").max() / pl.col("asking_price_aed").min() - 1.0).alias("s"))
+        .filter(pl.col("s") > config.control_price_spread)
+    )
+    if wide_controls.height:
+        raise ValueError(
+            f"same-building control groups must be priced within {config.control_price_spread:.0%}"
+            f"; too wide: {wide_controls.head(5).to_dicts()}"
+        )
     stock_sets = photos.filter(pl.col("is_stock"))["set_id"].unique().to_list()
     spread = _area_spread(listings, stock_sets)
     thin = spread.filter(pl.col("areas") < config.stock_min_areas)

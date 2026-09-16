@@ -139,6 +139,71 @@ def test_same_building_controls_are_labelled_in_groups(
     assert (groups["sales"] == groups["members"]).all()  # different units, not the same sale
 
 
+def _control_pairs(listings: pl.DataFrame) -> pl.DataFrame:
+    """Every within-group pair of same-building control listings."""
+    controls = listings.filter(pl.col("control_group_id").is_not_null()).select(
+        "listing_id", "control_group_id", "asking_price_aed", "photo_set_id"
+    )
+    return (
+        controls.join(controls, on="control_group_id", suffix="_b")
+        .filter(pl.col("listing_id") < pl.col("listing_id_b"))
+        .with_columns(
+            (
+                pl.max_horizontal("asking_price_aed", "asking_price_aed_b")
+                / pl.min_horizontal("asking_price_aed", "asking_price_aed_b")
+                - 1.0
+            ).alias("spread"),
+            (pl.col("photo_set_id") == pl.col("photo_set_id_b")).alias("shared_set"),
+        )
+    )
+
+
+@pytest.mark.parametrize("seed", [42, 7, 1234])
+def test_same_building_control_pairs_are_priced_within_the_spread(
+    sales_frame, areas_frame, small_corpus_config, seed
+):
+    """Spec: same-building controls are priced within 20% of each other.
+
+    Otherwise price alone separates them and the control is not the hard negative it claims.
+    """
+    import dataclasses
+
+    config = dataclasses.replace(small_corpus_config, seed=seed)
+    pairs = _control_pairs(build(sales_frame, areas_frame, config).listings)
+    assert pairs.height > 0
+    assert pairs["spread"].max() <= config.control_price_spread, pairs.sort("spread").tail(3)
+
+
+@pytest.mark.parametrize("seed", [42, 7, 1234])
+def test_half_of_the_control_pairs_share_a_developer_photo_set(
+    sales_frame, areas_frame, small_corpus_config, seed
+):
+    """Spec: half of the same-building controls share the same developer photo set."""
+    import dataclasses
+
+    config = dataclasses.replace(small_corpus_config, seed=seed)
+    corpus = build(sales_frame, areas_frame, config)
+    pairs = _control_pairs(corpus.listings)
+    share = pairs["shared_set"].mean()
+    assert 0.4 <= share <= 0.6, f"{share:.2f} of {pairs.height} control pairs share a photo set"
+    # A developer set is a local (non-stock) set: sharing an agency stock set is the other,
+    # cross-area control and must not be what makes these pairs look alike.
+    stock = set(corpus.photos.filter(pl.col("is_stock"))["set_id"].to_list())
+    shared = pairs.filter(pl.col("shared_set"))
+    assert not set(shared["photo_set_id"].to_list()) & stock
+
+
+def test_bait_is_never_planted_on_a_same_building_control(
+    sales_frame, areas_frame, small_corpus_config
+):
+    """A bait price inside a control group would break the controls' price band."""
+    listings = build(sales_frame, areas_frame, small_corpus_config).listings
+    bait_controls = listings.filter(
+        (pl.col("fraud_label") == "bait_price") & pl.col("control_group_id").is_not_null()
+    )
+    assert bait_controls.height == 0
+
+
 def test_stock_photo_sets_span_several_areas(sales_frame, areas_frame, small_corpus_config):
     config = small_corpus_config
     corpus = build(sales_frame, areas_frame, config)
