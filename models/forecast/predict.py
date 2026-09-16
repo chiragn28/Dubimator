@@ -166,6 +166,28 @@ def build_snapshot(rows: pl.DataFrame, data_end: date, projects: pl.DataFrame) -
     )
 
 
+def block_reason(
+    name: str, model: ForecastModel, gates: dict[str, dict[str, str]], data_end: date
+) -> str | None:
+    """Why a loaded champion must not be served: a failed latest gate or stale data.
+
+    Shared by `Forecaster` (which must never serve a blocked champion) and the `evaluate`
+    CLI command (which still re-scores a blocked champion, but warns first).
+    """
+    gate = gates.get(name, {})
+    status = gate.get("status")
+    if status in ("failed", "insufficient_data"):
+        return gate.get("reason") or f"the latest {name} gate {status}"
+    model_end = model.metadata.get("data_end")
+    data_end_text = data_end.isoformat()
+    if model_end != data_end_text:
+        return (
+            f"the {name} model was trained on data ending {model_end}; "
+            f"retrain it on data ending {data_end_text}"
+        )
+    return None
+
+
 def resolve_area(request: PriceRequest, areas: pl.DataFrame, aliases: pl.DataFrame) -> int:
     if (request.area is None) == (request.area_id is None):
         raise PriceInputError("area", "give exactly one of area or area_id")
@@ -196,7 +218,8 @@ class Forecaster:
         self.blocked = {
             name: reason
             for name, (model, _) in models.items()
-            if model is not None and (reason := self._block_reason(name, model)) is not None
+            if model is not None
+            and (reason := block_reason(name, model, gates, data_end)) is not None
         }
         self.models = {
             name: (None, None) if name in self.blocked else entry for name, entry in models.items()
@@ -204,20 +227,6 @@ class Forecaster:
         self.price = price
         self.excluded = excluded
         self.config = config
-
-    def _block_reason(self, name: str, model: ForecastModel) -> str | None:
-        """Why a loaded champion must not be served: a failed latest gate or stale data."""
-        gate = self.gates.get(name, {})
-        if gate.get("status") in ("failed", "insufficient_data"):
-            return gate.get("reason")
-        model_end = model.metadata.get("data_end")
-        data_end = self.data_end.isoformat()
-        if model_end != data_end:
-            return (
-                f"the {name} model was trained on data ending {model_end}; "
-                f"retrain it on data ending {data_end}"
-            )
-        return None
 
     @classmethod
     def build(

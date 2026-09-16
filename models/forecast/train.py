@@ -102,7 +102,8 @@ def _run_fold(frame, horizon, fold, params, categories, device, config):
     return val, predict_rounds(booster, val, categories, rounds), rounds
 
 
-def tune(frame, horizon, folds, categories, device, config) -> dict:
+def tune(frame, horizon, folds, categories, device, config) -> tuple[dict, dict]:
+    """(best params, study summary) — the summary is logged so tuning leaves a trace."""
     label = f"growth_{horizon.name}"
     tuning = [fold for fold in folds if fold.role == "tune"]
     optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -126,7 +127,13 @@ def tune(frame, horizon, folds, categories, device, config) -> dict:
         return float(np.mean(scores)) if scores else float("inf")
 
     study.optimize(objective, n_trials=config.n_trials)
-    return dict(study.best_params)
+    completed = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    summary = {
+        "trials": len(completed),
+        "best_value": float(study.best_value),
+        "best_trial": int(study.best_trial.number),
+    }
+    return dict(study.best_params), summary
 
 
 @dataclass
@@ -140,6 +147,7 @@ class HorizonResult:
     coverage: dict[str, float] = dataclasses.field(default_factory=dict)
     upper: float | None = None
     model: ForecastModel | None = None
+    tuning: dict | None = None  # {"trials", "best_value", "best_trial", "final_rounds"}
     seconds: float = 0.0
 
     def metrics(self) -> dict[str, float]:
@@ -163,6 +171,11 @@ class HorizonResult:
                 out[f"{name}.folds.{model}.median_ape_mean"] = median
         if self.model is not None:
             out[f"{name}.capped_rounds"] = self.model.metadata.get("capped_rounds", 0)
+        if self.tuning is not None:
+            out[f"{name}.tune.trials"] = self.tuning["trials"]
+            out[f"{name}.tune.best_value"] = self.tuning["best_value"]
+            out[f"{name}.tune.best_trial"] = self.tuning["best_trial"]
+            out[f"{name}.final_rounds"] = self.tuning["final_rounds"]
         for segment, share in self.coverage.items():
             out[f"{name}.coverage.{segment}"] = share
         if self.upper is not None:
@@ -189,7 +202,7 @@ def run_horizon(
     if reason is not None:
         return insufficient(reason)
     categories = fit_categories(train, config)
-    params = tune(frame, horizon, folds, categories, device, config)
+    params, tune_summary = tune(frame, horizon, folds, categories, device, config)
 
     scores, calibration_segments, calibration_errors, rounds = [], [], [], []
     for fold in folds[:-1]:
@@ -214,6 +227,7 @@ def run_horizon(
         return insufficient(f"too few calibration rows for the {1 - config.alpha:.0%} range")
     capped = sum(used >= config.n_estimators for used in rounds)
     final_rounds = max(1, round(float(np.mean(rounds)))) if rounds else config.n_estimators
+    tuning = {**tune_summary, "final_rounds": final_rounds}
 
     booster, _ = fit_booster(train, None, params, categories, device, config, label, final_rounds)
     actual = test[label].to_numpy()
@@ -241,6 +255,7 @@ def run_horizon(
             "test_rows": test.height,
             "gate": dict(verdict.checks),
             "capped_rounds": int(capped),
+            "tuning": tuning,
         },
     )
     return HorizonResult(
@@ -253,6 +268,7 @@ def run_horizon(
         coverage=coverage,
         upper=upper,
         model=model,
+        tuning=tuning,
         seconds=time.perf_counter() - started,
     )
 

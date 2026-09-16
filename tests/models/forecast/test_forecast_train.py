@@ -53,6 +53,14 @@ def test_a_learnable_horizon_passes_its_gate(passed):
     capped = passed.model.metadata["capped_rounds"]
     assert isinstance(capped, int) and 0 <= capped <= FAST.tune_folds
     assert metrics["3m.capped_rounds"] == capped
+    assert passed.tuning is not None
+    assert passed.tuning["trials"] >= 1
+    assert passed.tuning["final_rounds"] == passed.model.rounds
+    assert passed.model.metadata["tuning"] == passed.tuning
+    assert metrics["3m.tune.trials"] == passed.tuning["trials"]
+    assert metrics["3m.tune.best_value"] == passed.tuning["best_value"]
+    assert metrics["3m.tune.best_trial"] == passed.tuning["best_trial"]
+    assert metrics["3m.final_rounds"] == passed.tuning["final_rounds"]
     assert set(passed.fold_scores["role"].unique()) <= {"score", "tune", "gap"}
     assert "gap" in set(passed.fold_scores["role"])
     assert passed.model.metadata["test_cutoff"] == passed.folds[-1].cutoff.isoformat()
@@ -111,7 +119,9 @@ def test_too_few_calibration_rows_is_insufficient_data(dataset, monkeypatch):
 
 def test_capped_rounds_counts_tune_fits_that_hit_the_round_limit(dataset):
     frame, _, _, data_end = dataset
-    tiny = dataclasses.replace(FAST, n_estimators=3)
+    # n_estimators=1 guarantees every tune fit hits the round cap, regardless of the
+    # synthetic dataset's loss curve.
+    tiny = dataclasses.replace(FAST, n_estimators=1)
     result = run_horizon(frame, THREE_M, "cpu", tiny, data_end)
     tuning = sum(fold.role == "tune" for fold in result.folds)
     assert result.model.metadata["capped_rounds"] == tuning == tiny.tune_folds

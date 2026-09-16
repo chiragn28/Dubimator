@@ -21,7 +21,7 @@ from models.forecast.features import build_dataset, feature_coverage
 from models.forecast.folds import usable_rows
 from models.forecast.infra import fetch_reference, load_projects, project_lines, validate_projects
 from models.forecast.model import latest_gates, load_champion
-from models.forecast.predict import Forecaster
+from models.forecast.predict import Forecaster, block_reason
 from models.forecast.rows import excluded_summary, load_rows
 from models.forecast.train import run_training
 from models.price.predictor import PriceInputError
@@ -242,14 +242,21 @@ def _evaluate(args: argparse.Namespace) -> int:
     try:
         champions = {name: load_champion(f"{config.model_prefix}-{name}") for name in HORIZONS}
         gates = latest_gates(config.experiment)
-        frame = None
+        frame, data_end = None, None
         if any(model is not None for model, _ in champions.values()):
-            frame = _dataset(config, stages)[0]
+            frame, _, _, _, data_end = _dataset(config, stages)
         for name, (model, version) in champions.items():
             if model is None:
-                reason = gates[name]["reason"] or f"no registered {name} model"
+                gate = gates[name]
+                if gate["status"] in ("failed", "insufficient_data"):
+                    reason = gate["reason"] or f"the latest {name} gate {gate['status']}"
+                else:
+                    reason = f"no registered {name} model"
                 print(f"{name}: not deployed ({reason})")
                 continue
+            reason = block_reason(name, model, gates, data_end)
+            if reason is not None:
+                print(f"{name}: WARNING champion would not be served ({reason})")
             horizon = HORIZON_SPECS[name]
             start = date.fromisoformat(model.metadata["test_cutoff"])
             end = date.fromisoformat(model.metadata["test_end"])

@@ -62,6 +62,8 @@ def _positive(column: str) -> pl.Expr:
 
 
 def _in_date_order(rows: pl.DataFrame) -> pl.DataFrame:
+    # transaction_id sorts as a string (lexicographic order): deterministic, but only an
+    # approximation of true recency when ids being compared differ in length.
     return rows.sort("instance_date", "transaction_id", nulls_last=True, maintain_order=True)
 
 
@@ -83,7 +85,9 @@ def validate_rows(rows: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, int], pl.
 
     Rows are put in (instance_date, transaction_id) order first, so duplicate ids keep the
     earliest sale and repeat sales keep the largest transaction_id on their date (DLD has no
-    source-row number, so that is what "latest" means).
+    source-row number, so that is what "latest" means). transaction_id is ordered
+    lexicographically (as a string): deterministic, but only an approximation of true
+    recency when the ids being compared differ in length.
     """
     dropped = {}
     checks = (

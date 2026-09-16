@@ -116,6 +116,23 @@ def test_a_champion_whose_latest_gate_failed_is_not_served(world):
     assert blocked == {"status": "not_deployed", "reason": "3m: only 1 folds"}
 
 
+def test_a_blocked_champion_with_no_gate_reason_falls_back_to_a_generic_message(world):
+    model = world[3]
+    empty = {**GATES, "3m": {"status": "failed", "reason": ""}}
+    result = forecaster(world, models={"3m": (model, "4")}, gates=empty).forecast(MARINA_FLAT)
+    assert result["forecast_3m"] == {
+        "status": "not_deployed",
+        "reason": "the latest 3m gate failed",
+    }
+    insufficient = {**GATES, "3m": {"status": "insufficient_data", "reason": ""}}
+    blocked = forecaster(world, models={"3m": (model, "4")}, gates=insufficient).forecast(
+        MARINA_FLAT
+    )
+    assert blocked["forecast_3m"] == {
+        "status": "not_deployed", "reason": "the latest 3m gate insufficient_data",
+    }  # fmt: skip
+
+
 def test_a_stale_champion_is_not_served(world):
     _rows, data_end, _projects, model = world
     stale = dataclasses.replace(model, metadata={"data_end": "2022-12-31"})

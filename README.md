@@ -809,6 +809,9 @@ real run. The MLflow run is `abundant-whale-824`, id
   against 42,430 built-up ones — plot pricing is **42%** of villa sales,
   enough that mixing the two would have biased both the outlier screen and
   the model's location keys.
+- **`building_key` ignores `market_kind`**, so a plot-priced and a built-up
+  villa sold under the same building name share a building-level base. This
+  is rare in practice, because villas mostly have no building name.
 
 **Rows and exclusions** (`build`, real run, `data/forecast/quality.json`):
 

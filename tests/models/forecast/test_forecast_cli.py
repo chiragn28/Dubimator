@@ -238,6 +238,56 @@ def test_train_end_to_end_then_evaluate_and_predict(monkeypatch, tmp_path, capsy
     assert result["model_versions"]["forecast_3m"] == "1"
 
 
+def test_evaluate_reports_no_registered_model_when_gate_passed(monkeypatch, tmp_path, capsys):
+    quiet(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "load_champion", lambda name: (None, None))
+    monkeypatch.setattr(
+        cli, "latest_gates",
+        lambda experiment: {h: {"status": "passed", "reason": "passed"} for h in cli.HORIZONS},
+    )  # fmt: skip
+    assert cli.main(["evaluate"]) == 0
+    out = capsys.readouterr().out
+    assert "3m: not deployed (no registered 3m model)" in out
+    assert "3m: WARNING" not in out
+
+
+def test_evaluate_warns_before_rescoring_a_blocked_champion(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+
+    quiet(monkeypatch, tmp_path)
+    model = SimpleNamespace(
+        metadata={"test_cutoff": "2023-01-01", "test_end": "2023-02-01", "top_areas": [1]},
+        predict_growth=lambda test: [0.0] * test.height,
+    )
+    champions = {"3m": (model, "5"), "1y": (None, None), "3y": (None, None)}
+    monkeypatch.setattr(cli, "load_champion", lambda name: champions[name.rsplit("-", 1)[-1]])
+    gates = {
+        "3m": {"status": "failed", "reason": "3m resale MAPE 16.0% exceeds"},
+        "1y": {"status": "unknown", "reason": ""},
+        "3y": {"status": "unknown", "reason": ""},
+    }
+    monkeypatch.setattr(cli, "latest_gates", lambda experiment: gates)
+    frame = pl.DataFrame({"instance_date": [date(2023, 1, 15)], "growth_3m": [0.01]})
+    monkeypatch.setattr(
+        cli, "_dataset", lambda config, stages: (frame, None, None, None, date(2023, 3, 1))
+    )
+    monkeypatch.setattr(cli, "usable_rows", lambda frame, horizon: frame)
+    monkeypatch.setattr(
+        cli, "segment_table",
+        lambda *a, **k: pl.DataFrame(
+            {"segment": ["all"], "model": ["model"], "mape": [0.1], "median_ape": [0.1], "rows": [1]}
+        ),
+    )  # fmt: skip
+    monkeypatch.setattr(cli, "format_table", lambda name, table: ["  fake table line"])
+    monkeypatch.setattr(cli, "baseline_growth", lambda test, horizon: {})
+    assert cli.main(["evaluate"]) == 0
+    out = capsys.readouterr().out
+    assert "3m: WARNING champion would not be served (3m resale MAPE 16.0% exceeds)" in out
+    assert "3m champion v5" in out
+    assert "fake table line" in out
+    assert "1y: not deployed (no registered 1y model)" in out
+
+
 def test_train_exits_2_when_nothing_passes(monkeypatch, tmp_path, capsys):
     from types import SimpleNamespace
 
