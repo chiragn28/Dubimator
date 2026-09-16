@@ -3,7 +3,7 @@
 import os
 from dataclasses import dataclass
 
-COMPONENTS = ("price", "forecast", "search", "listings")
+COMPONENTS = ("price", "forecast", "search", "listings", "areas")
 
 
 def _csv(value: str | None) -> tuple[str, ...]:

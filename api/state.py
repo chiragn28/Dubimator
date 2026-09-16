@@ -167,8 +167,17 @@ def _load_listings(settings: ApiSettings, context: dict) -> LoadedComponent:
     return LoadedComponent(value=checker, version=f"pair:{pair.version}", close=conn.close)
 
 
+def _load_areas(settings: ApiSettings, context: dict) -> LoadedComponent:
+    from api.areas import AreaStats
+    from ingestion.config import DbSettings
+
+    stats = AreaStats.load(DbSettings.from_env())
+    return LoadedComponent(value=stats, version=f"data_end:{stats.data_end}")
+
+
 def default_loaders() -> dict[str, Loader]:
-    """The real loaders for `python -m api serve`: `price`, `forecast`, `search`, `listings`.
+    """The real loaders for `python -m api serve`: `price`, `forecast`, `search`, `listings`,
+    `areas`.
 
     Each imports its heavy modules lazily, inside the function body, so `import api` stays
     light — importing this module must not pull in mlflow, sentence-transformers or psycopg2.
@@ -178,4 +187,5 @@ def default_loaders() -> dict[str, Loader]:
         "forecast": _load_forecast,
         "search": _load_search,
         "listings": _load_listings,
+        "areas": _load_areas,
     }

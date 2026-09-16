@@ -3,6 +3,7 @@
 import threading
 import warnings
 from contextlib import contextmanager
+from datetime import date
 
 from starlette.exceptions import StarletteDeprecationWarning
 
@@ -115,13 +116,46 @@ class FakeChecker:
         return {"listing_id": listing_id, "detect_run_id": 1, "duplicates": [], "flags": []}
 
 
+class FakeAreas:
+    """A stand-in for `api.areas.AreaStats`: one area with a history a 404 sentinel."""
+
+    data_end = date(2023, 3, 17)
+
+    def summary_records(self):
+        return [
+            {
+                "area_id": 1,
+                "name": "Dubai Marina",
+                "median_ppsm_12m": 15250.0,
+                "change_12m": 0.032,
+                "sales_12m": 412,
+            }
+        ]
+
+    def history_records(self, area_id):
+        # `area_id == 404` is the fixture's "unknown" sentinel (matching FakeChecker.stored).
+        if area_id == 404:
+            return None
+        return {
+            "area_id": area_id,
+            "name": "Dubai Marina",
+            "data_end": self.data_end.isoformat(),
+            "series": [
+                {
+                    "market_kind": "apartment",
+                    "points": [{"month": "2023-03", "median_ppsm": 15250.0, "sales": 40}],
+                }
+            ],
+        }
+
+
 def fake_loaders(**overrides):
     """Loaders producing the fakes above, each versioned by how many times it has run.
 
     Versions change on every `build_state` call (startup, then each reload), so a
     reload test can tell the new state apart from the old one.
     """
-    counts = {"price": 0, "forecast": 0, "search": 0, "listings": 0}
+    counts = {"price": 0, "forecast": 0, "search": 0, "listings": 0, "areas": 0}
 
     def _loader(name, value_factory):
         def load(settings, context):
@@ -135,6 +169,7 @@ def fake_loaders(**overrides):
         "forecast": _loader("forecast", FakeForecaster),
         "search": _loader("search", FakeEngine),
         "listings": _loader("listings", FakeChecker),
+        "areas": _loader("areas", FakeAreas),
     }
     loaders.update(overrides)
     return loaders
