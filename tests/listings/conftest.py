@@ -128,3 +128,10 @@ def small_corpus_config():
         min_building_sales=4,
         stock_min_areas=3,
     )
+
+
+@pytest.fixture
+def fake_embedder():
+    from listings.embed import FakeEmbedder
+
+    return FakeEmbedder()
