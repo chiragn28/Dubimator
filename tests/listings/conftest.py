@@ -1,11 +1,29 @@
 import io
 import math
 import zipfile
+from datetime import date, timedelta
 
+import polars as pl
 import pytest
 from PIL import Image
 
-from listings.config import PHOTO_DATASET_DIR, PHOTO_ROOMS
+from listings.config import PHOTO_DATASET_DIR, PHOTO_ROOMS, CorpusConfig
+from listings.generate import LISTING_SCHEMA  # noqa: F401  (schema sanity at import time)
+
+SALES_SCHEMA = {
+    "transaction_id": pl.Utf8,
+    "instance_date": pl.Date,
+    "property_type": pl.Utf8,
+    "property_sub_type": pl.Utf8,
+    "reg_type": pl.Utf8,
+    "area_id": pl.Int64,
+    "area_name": pl.Utf8,
+    "building_name": pl.Utf8,
+    "project_name": pl.Utf8,
+    "bedrooms": pl.Int64,
+    "area_sqm": pl.Float64,
+    "price_aed": pl.Float64,
+}
 
 
 def make_image(seed: int, size: tuple[int, int] = (256, 192)) -> Image.Image:
@@ -44,8 +62,69 @@ def photo_archive():
 @pytest.fixture
 def photo_pool(tmp_path):
     """An extracted 6-set pool under tmp_path, ready for ensure_pool to find."""
-    from listings.config import CorpusConfig
     from listings.photos import ensure_pool
 
     data = build_archive(range(1, 7))
     return ensure_pool(CorpusConfig(), data_dir=tmp_path, fetch=lambda _url: data)
+
+
+def build_sales(n: int = 3_000, areas: int = 12, buildings_per_area: int = 5) -> pl.DataFrame:
+    """Synthetic DLD-shaped sales: every building gets enough sales to be 'busy'."""
+    rows = []
+    for index in range(n):
+        area_id = index % areas + 1
+        building = index // areas % buildings_per_area + 1
+        villa = index % 7 == 0
+        rows.append(
+            {
+                "transaction_id": f"t{index}",
+                "instance_date": date(2021, 1, 1) + timedelta(days=index % 800),
+                "property_type": "villa" if villa else "unit",
+                "property_sub_type": None if villa else "Flat",
+                "reg_type": "off_plan" if index % 5 == 0 else "ready",
+                "area_id": area_id,
+                "area_name": f"Area {area_id}",
+                "building_name": None if villa else f"Tower {area_id}-{building}",
+                "project_name": f"Project {area_id}-{building}",
+                "bedrooms": None if villa else index % 4,
+                "area_sqm": 60.0 + (index % 40) * 5.0,
+                "price_aed": 700_000.0 + (index % 50) * 25_000.0,
+            }
+        )
+    return pl.DataFrame(rows, schema=SALES_SCHEMA)
+
+
+@pytest.fixture
+def sales_frame():
+    return build_sales
+
+
+@pytest.fixture
+def areas_frame():
+    return pl.DataFrame(
+        {
+            "area_id": list(range(1, 13)),
+            "name_en": [f"Area {i}" for i in range(1, 13)],
+            "name_ar": [f"منطقة {i}" for i in range(1, 13)],
+        },
+        schema={"area_id": pl.Int64, "name_en": pl.Utf8, "name_ar": pl.Utf8},
+    )
+
+
+@pytest.fixture
+def small_corpus_config():
+    """A 300-listing corpus: same shape as production, small enough for unit tests."""
+    return CorpusConfig(
+        n_listings=300,
+        n_base=240,
+        n_exact_repost=30,
+        n_reworded=15,
+        n_edited_photo=15,
+        n_bait_price=12,
+        n_price_shifted_reposts=8,
+        n_from_busy_buildings=40,
+        n_stock_sets=2,
+        n_agents=25,
+        min_building_sales=4,
+        stock_min_areas=3,
+    )
