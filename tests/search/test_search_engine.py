@@ -67,10 +67,10 @@ def test_reasons_for_exact_matches_and_quiet_values():
         "size ✓",
         "flagged: inconsistent relist",
     )
-    # _row()'s own baseline sets price_to_estimate=0.8 and flag_bait_price=1.0 (used deliberately
-    # by other assertions in this file), so a query that only asks about bedrooms still picks up
-    # the unconditional Value and Flags reasons; check index 0 like the two asserts below it.
-    assert reasons(ParsedQuery(bedrooms=1), _row(beds_diff=0.0, bedrooms=1))[0] == "1 bedroom ✓"
+    assert reasons(
+        ParsedQuery(bedrooms=1),
+        _row(beds_diff=0.0, bedrooms=1, price_to_estimate=NAN, flag_bait_price=0.0),
+    ) == ("1 bedroom ✓",)
     assert reasons(ParsedQuery(bedrooms=2), _row(beds_diff=NAN, bedrooms=None))[0] == (
         "bedrooms not listed"
     )

@@ -120,6 +120,14 @@ def query_notes(parsed: ParsedQuery) -> list[str]:
 
 
 class SearchEngine:
+    """One engine holds one database connection, and loads the lexicon, clusters, attributes,
+    flags, estimates and ranker once, at construction time. Reuse one long-lived engine per
+    worker process rather than building a new one per request.
+
+    Not safe for concurrent use from multiple threads: it shares one psycopg2 connection.
+    Serialize access to a shared engine, or give each worker its own engine (and connection).
+    """
+
     def __init__(
         self,
         conn,
@@ -226,7 +234,13 @@ _ENGINES: dict[int, SearchEngine] = {}
 
 
 def search(conn, text: str, k: int = 10) -> SearchResult:
-    """One engine per connection object, with the real MiniLM embedder on the best device."""
+    """One engine per connection object, with the real MiniLM embedder on the best device.
+
+    The `_ENGINES` cache is keyed by connection object and never evicts: every entry keeps its
+    connection, its loaded data and its own MiniLM embedder alive for as long as the process
+    runs. Pass the same long-lived connection on every call — never a fresh per-request
+    connection, which would leak an engine (and a connection) on each call.
+    """
     engine = _ENGINES.get(id(conn))
     if engine is None:
         embedder = SentenceTransformerEmbedder(device=resolve_device("auto"))
