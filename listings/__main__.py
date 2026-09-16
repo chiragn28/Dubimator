@@ -41,6 +41,7 @@ from listings.load import (
     write_listing_embeddings,
     write_photo_embeddings,
 )
+from listings.pairmodel import PAIR_MODEL_NAME, register_pair_model
 from listings.photos import DATA_DIR, ensure_pool
 from listings.truth import load_duplicate_truth, load_relist_truth, load_truth
 
@@ -184,6 +185,15 @@ def _detect(args) -> int:
         conn.commit()
     finally:
         conn.close()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            version = register_pair_model(result, detect_run_id, Path(tmp))
+            print(f"pair model registered as {PAIR_MODEL_NAME} v{version}")
+        except Exception as exc:  # noqa: BLE001 — results are already stored; the API reports the gap
+            print(
+                f"WARNING: pair model registration failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
     if fraud.stats.get("bait_price_skipped"):
         print(
             "WARNING: bait_price check was SKIPPED — the champion price model "

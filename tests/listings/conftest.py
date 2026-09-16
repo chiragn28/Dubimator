@@ -198,6 +198,7 @@ def temp_mlflow(tmp_path, monkeypatch):
     # mlflow.set_tracking_uri() writes this module global; monkeypatch restores it after the test.
     monkeypatch.setattr("mlflow.tracking._tracking_service.utils._tracking_uri", uri)
     monkeypatch.setattr("mlflow.tracking.fluent._active_experiment_id", None)
+    mlflow.search_experiments()  # touch the store now: alembic resets logging handlers on first touch
     yield {"tracking_uri": uri, "artifact_location": (tmp_path / "artifacts").as_uri()}
     while mlflow.active_run():
         mlflow.end_run()
