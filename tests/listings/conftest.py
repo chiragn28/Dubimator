@@ -135,3 +135,37 @@ def fake_embedder():
     from listings.embed import FakeEmbedder
 
     return FakeEmbedder()
+
+
+@pytest.fixture
+def loaded_corpus(pg_test_db, sales_frame, areas_frame, small_corpus_config, photo_pool, tmp_path):
+    """A small corpus in Postgres with fake embeddings and HNSW indexes built."""
+    from listings.embed import FakeEmbedder, embed_listings, embed_photos
+    from listings.generate import generate_corpus, render_variants
+    from listings.load import (
+        create_vector_indexes,
+        load_corpus,
+        write_listing_embeddings,
+        write_photo_embeddings,
+    )
+
+    config = small_corpus_config
+    # The 6-set pool leaves 4 non-stock sets, so the sales must span at most 4 areas for every
+    # area to get a local plain set (see generate._plain_sets_by_area).
+    corpus = generate_corpus(sales_frame(areas=4), areas_frame, photo_pool.set_ids, config)
+    data_dir = photo_pool.root.parent
+    render_variants(corpus, photo_pool, config, data_dir / "variants")
+    corpus_run_id = load_corpus(pg_test_db, corpus, seed=config.seed, photo_dataset_sha="test")
+
+    embedder = FakeEmbedder()
+    photo_frame, photo_vectors = embed_photos(corpus.photos, embedder, data_dir)
+    listing_frame = embed_listings(corpus.listings, corpus.listing_photos, photo_vectors, embedder)
+    conn = pg_test_db.connect()
+    try:
+        write_photo_embeddings(conn, photo_frame)
+        write_listing_embeddings(conn, listing_frame)
+        create_vector_indexes(conn)
+        conn.commit()
+    finally:
+        conn.close()
+    return pg_test_db, corpus, corpus_run_id
