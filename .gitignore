@@ -5,6 +5,7 @@ __pycache__/
 data/raw/*
 !data/raw/.gitkeep
 data/listings/
+data/search/
 mlruns/
 .pytest_cache/
 .ruff_cache/
