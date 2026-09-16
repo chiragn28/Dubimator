@@ -89,7 +89,13 @@ def fit_pair_model(features: pl.DataFrame, labels: np.ndarray, config: DetectCon
 
 
 def choose_threshold(scores: np.ndarray, labels: np.ndarray, target_precision: float) -> float:
-    """The lowest score at which running precision still meets the target."""
+    """The lowest score at which running precision still meets the target.
+
+    A threshold always stays inside [0, 1], the range of a probability: it is stored in a
+    double column and compared against predict_proba output. When nothing reaches the target
+    the cut sits just above the best score so that nothing is flagged, clamped to 1.0 — a
+    score of exactly 1.0 does then flag, which is the one degenerate case worth the tidy range.
+    """
     scores = np.asarray(scores, dtype=float)
     labels = np.asarray(labels, dtype=bool)
     if scores.size == 0:
@@ -99,7 +105,7 @@ def choose_threshold(scores: np.ndarray, labels: np.ndarray, target_precision: f
     precision = np.cumsum(ranked_labels) / np.arange(1, scores.size + 1)
     acceptable = np.flatnonzero(precision >= target_precision)
     if acceptable.size == 0:
-        return float(ranked_scores[0]) + 1e-9  # nothing reaches the target: flag nothing
+        return min(float(ranked_scores[0]) + 1e-9, 1.0)
     return float(ranked_scores[acceptable[-1]])
 
 
@@ -157,6 +163,11 @@ def run_detection(conn, config: DetectConfig) -> DetectionResult:
         "retrieval_seconds": candidate_stats.seconds,
         "detect_seconds": time.perf_counter() - started,
         "train_pairs": float(train.height),
+        # Positives per split: a threshold block with no duplicates in it flags nothing, and
+        # without these counts that run looks exactly like a broken one.
+        "train_positives": float(train["is_duplicate"].sum()),
+        "threshold_pairs": float(validation.height),
+        "threshold_positives": float(validation["is_duplicate"].sum()),
         "flagged": float(labelled["decision"].sum()),
     }
     return DetectionResult(labelled, threshold, model, PAIR_FEATURES, stats)
@@ -165,8 +176,10 @@ def run_detection(conn, config: DetectConfig) -> DetectionResult:
 def write_detection(conn, result: DetectionResult, corpus_run_id: int) -> int:
     """Record the run and store the flagged pairs with the signals behind each decision."""
     flagged = result.pairs.filter(pl.col("decision"))
+    # allow_nan=False: a non-finite feature fails here, with the row in hand, rather than
+    # producing NaN/Infinity literals that jsonb rejects halfway through the COPY.
     signals = [
-        json.dumps({name: row[name] for name in PAIR_FEATURES})
+        json.dumps({name: row[name] for name in PAIR_FEATURES}, allow_nan=False)
         for row in flagged.iter_rows(named=True)
     ]
     with conn.cursor() as cur:

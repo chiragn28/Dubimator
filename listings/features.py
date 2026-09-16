@@ -110,7 +110,9 @@ def _photo_similarity(
         shared[index] = len(sets.get(a, set()) & sets.get(b, set()))
         left, right = matrices.get(a), matrices.get(b)
         if left is not None and right is not None:
-            best[index] = float((left @ right.T).max())
+            # Clipped at 0: a listing with no photos scores 0, so photos that actively
+            # disagree must not rank below having no photos at all.
+            best[index] = max(float((left @ right.T).max()), 0.0)
     return best, shared
 
 

@@ -115,12 +115,12 @@ def test_write_detection_stores_flagged_pairs_with_their_signals(loaded_corpus):
         conn.close()
 
     flagged = result.pairs.filter(pl.col("decision"))
+    assert flagged.height > 0, "the fixture must flag something, or this test proves nothing"
     assert len(rows) == flagged.height
     assert all(row[0] < row[1] for row in rows)
     assert all(row[3] is True for row in rows)
-    if rows:
-        signals = rows[0][4]
-        signals = json.loads(signals) if isinstance(signals, str) else signals
-        assert set(signals) == set(PAIR_FEATURES)
+    signals = rows[0][4]
+    signals = json.loads(signals) if isinstance(signals, str) else signals
+    assert set(signals) == set(PAIR_FEATURES)
     assert run[0] == corpus_run_id
     assert run[1] == pytest.approx(result.threshold)
