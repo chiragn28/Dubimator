@@ -2,7 +2,7 @@ import json
 from datetime import date
 
 import polars as pl
-from forecast_fixtures import fake_load_rows, prepared_history
+from forecast_fixtures import fake_load_rows, prepared_history, project_table
 
 from models.forecast import __main__ as cli
 from models.forecast.rows import EXCLUDED_SCHEMA, DataQuality, excluded_summary
@@ -14,6 +14,7 @@ def quiet(monkeypatch, tmp_path):
     monkeypatch.setattr(cli, "load_dotenv", lambda: None)
     monkeypatch.setattr(cli, "DATA_DIR", tmp_path)
     monkeypatch.setattr(cli, "_settings", lambda: None)
+    monkeypatch.setattr(cli, "load_projects", lambda: project_table(tmp_path))
 
 
 def test_build_prints_the_report_and_writes_quality_json(monkeypatch, tmp_path, capsys):
@@ -36,8 +37,9 @@ def test_build_prints_the_report_and_writes_quality_json(monkeypatch, tmp_path, 
     assert payload["sample_rows"] == 500
     assert payload["targets"]["rows"] == HISTORY[0].height
     assert set(payload) >= {"quality", "excluded", "targets", "feature_coverage"}
+    assert "infra_active_metro_rail" in payload["feature_coverage"]
     timings = json.loads((tmp_path / "stage_timings.json").read_text(encoding="utf-8"))
-    assert set(timings["build"]) == {"load_rows", "targets", "features"}
+    assert set(timings["build"]) == {"load_rows", "dataset"}
 
 
 def test_build_stops_when_too_many_rows_are_dropped(monkeypatch, tmp_path, capsys):
@@ -67,6 +69,18 @@ def test_build_reports_errors(monkeypatch, tmp_path, capsys):
     assert "Build failed: RuntimeError: database unreachable" in capsys.readouterr().err
 
 
+def test_build_stops_on_an_invalid_infrastructure_table(monkeypatch, tmp_path, capsys):
+    quiet(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "load_rows", fake_load_rows(HISTORY))
+    monkeypatch.setattr(
+        cli, "load_projects", lambda: project_table(tmp_path, affected_area_ids="9")
+    )
+    assert cli.main(["build"]) == 1
+    err = capsys.readouterr().err
+    assert "Build stopped: the infrastructure table has problems" in err
+    assert "P00: area id 9 is not in dld.areas" in err
+
+
 def test_excluded_summary_counts_by_segment():
     excluded = pl.DataFrame(
         {
@@ -87,12 +101,24 @@ def test_excluded_summary_counts_by_segment():
 def test_build_runs_on_the_test_database(pg_test_db, monkeypatch, tmp_path, capsys):
     from pathlib import Path
 
+    from forecast_fixtures import project_record, write_projects
+
     from ingestion.pipeline import run_pipeline
+    from models.forecast.infra import load_projects
 
     run_pipeline(Path("tests/fixtures/price_sample.csv"), pg_test_db)
+    conn = pg_test_db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT area_id FROM dld.areas ORDER BY area_id LIMIT 2")
+            ids = ";".join(str(row[0]) for row in cur.fetchall())
+    finally:
+        conn.close()
+    path = write_projects(tmp_path, [project_record(i, affected_area_ids=ids) for i in range(15)])
     monkeypatch.setattr(cli, "load_dotenv", lambda: None)
     monkeypatch.setattr(cli, "DATA_DIR", tmp_path)
     monkeypatch.setattr(cli, "_settings", lambda: pg_test_db)
+    monkeypatch.setattr(cli, "load_projects", lambda: load_projects(path))
     assert cli.main(["build", "--sample", "1000"]) == 0
     assert "Dropped" in capsys.readouterr().out
     payload = json.loads((tmp_path / "quality.json").read_text(encoding="utf-8"))
@@ -100,8 +126,6 @@ def test_build_runs_on_the_test_database(pg_test_db, monkeypatch, tmp_path, caps
 
 
 def test_infra_check_lists_a_valid_table(monkeypatch, tmp_path, capsys):
-    from forecast_fixtures import project_table
-
     quiet(monkeypatch, tmp_path)
     monkeypatch.setattr(cli, "load_projects", lambda: project_table(tmp_path))
     monkeypatch.setattr(
@@ -117,8 +141,6 @@ def test_infra_check_lists_a_valid_table(monkeypatch, tmp_path, capsys):
 
 
 def test_infra_check_fails_on_problems(monkeypatch, tmp_path, capsys):
-    from forecast_fixtures import project_table
-
     quiet(monkeypatch, tmp_path)
     monkeypatch.setattr(
         cli, "load_projects", lambda: project_table(tmp_path, affected_area_ids="5")

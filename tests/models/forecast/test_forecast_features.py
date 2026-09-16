@@ -160,3 +160,35 @@ def test_feature_coverage():
     assert set(coverage) == set(CORE_FEATURES)
     assert coverage["log_area_sqm"] == 1.0
     assert 0.0 < coverage["area_mom_36m"] < 1.0
+
+
+def test_build_dataset_matches_the_allowlist(tmp_path):
+    from forecast_fixtures import project_table
+
+    from models.forecast.config import FEATURES, FORBIDDEN_FEATURES
+    from models.forecast.features import build_dataset
+
+    frame, report = build_dataset(ROWS, DATA_END, project_table(tmp_path))
+    assert report.rows == ROWS.height
+    matrix = to_matrix(frame, fit_categories(frame, ForecastConfig()))
+    assert list(matrix.columns) == list(FEATURES)
+    assert not set(matrix.columns) & set(FORBIDDEN_FEATURES)
+    assert frame["infra_active_metro_rail"].sum() > 0  # project_table covers areas 1 and 2
+
+
+def test_full_features_never_look_at_sales_on_or_after_t(tmp_path):
+    from forecast_fixtures import project_table
+
+    from models.forecast.config import FEATURES
+    from models.forecast.features import build_dataset
+
+    projects = project_table(tmp_path)
+    cutoff = date(2019, 6, 1)
+    later = pl.col("instance_date") >= cutoff
+    changed = ROWS.with_columns(
+        pl.when(later).then(pl.col("ppsm") * 3).otherwise(pl.col("ppsm")).alias("ppsm")
+    ).filter(~later | (pl.col("row_id") % 3 == 0))
+    columns = ["transaction_id", *FEATURES]
+    before = build_dataset(ROWS, DATA_END, projects)[0].filter(~later).select(columns)
+    after = build_dataset(changed, DATA_END, projects)[0].filter(~later).select(columns)
+    assert before.sort("transaction_id").equals(after.sort("transaction_id"))

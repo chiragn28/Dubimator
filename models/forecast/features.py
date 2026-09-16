@@ -5,6 +5,8 @@ query rows) never count. Spec: "Features" in
 docs/superpowers/specs/2026-09-16-phase6-price-forecasting-design.md.
 """
 
+from datetime import date
+
 import pandas as pd
 import polars as pl
 
@@ -17,7 +19,8 @@ from models.forecast.config import (
     TRAILING_DAYS,
     ForecastConfig,
 )
-from models.forecast.targets import rolling_stats
+from models.forecast.infra import add_infra_features
+from models.forecast.targets import TargetReport, build_targets, rolling_stats
 
 DAYS_PER_YEAR = 365.25
 OTHER_PROJECT = "(other)"
@@ -177,3 +180,11 @@ def to_matrix(
 def feature_coverage(frame: pl.DataFrame, features) -> dict[str, float]:
     total = max(frame.height, 1)
     return {name: 1.0 - frame[name].null_count() / total for name in features}
+
+
+def build_dataset(
+    rows: pl.DataFrame, data_end: date, projects: pl.DataFrame
+) -> tuple[pl.DataFrame, TargetReport]:
+    """Targets plus every model feature, as of each sale."""
+    frame, report = build_targets(rows, data_end)
+    return add_infra_features(add_core_features(frame), projects), report

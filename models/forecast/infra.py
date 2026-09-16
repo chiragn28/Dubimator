@@ -129,6 +129,63 @@ def fetch_reference(settings: DbSettings) -> tuple[dict[int, str], date]:
     return names, data_end
 
 
+MONTH_DAYS = 30.4375
+COMPLETED_WINDOW_DAYS = 730
+
+
+def add_infra_features(frame: pl.DataFrame, projects: pl.DataFrame) -> pl.DataFrame:
+    """As-of infrastructure features for each row's area at its sale date."""
+    links = (
+        projects.select(
+            "type",
+            "announced_date",
+            "planned_completion_date",
+            "actual_completion_date",
+            pl.col("area_ids").alias("area_id"),
+        )
+        .explode("area_id", empty_as_null=True)
+        .drop_nulls("area_id")
+    )
+    day = pl.col("instance_date")
+    opened = pl.col("actual_completion_date")
+    completed = opened.is_not_null() & (opened <= day)
+    active = (pl.col("announced_date") <= day) & ~completed
+    months = (
+        pl.max_horizontal((pl.col("planned_completion_date") - day).dt.total_days(), pl.lit(0))
+        / MONTH_DAYS
+    )
+    recent = completed & (opened > day.dt.offset_by(f"-{COMPLETED_WINDOW_DAYS}d"))
+    stats = (
+        frame.select("area_id", "instance_date")
+        .unique()
+        .join(links, on="area_id", how="inner")
+        .group_by("area_id", "instance_date")
+        .agg(
+            *(
+                (active & (pl.col("type") == kind))
+                .sum()
+                .cast(pl.Float64)
+                .alias(f"infra_active_{kind}")
+                for kind in INFRA_TYPES
+            ),
+            pl.when(active).then(months).min().alias("infra_months_to_next"),
+            recent.any().cast(pl.Float64).alias("infra_completed_24m"),
+        )
+    )
+    counts = [f"infra_active_{kind}" for kind in INFRA_TYPES]
+    total = pl.sum_horizontal(counts)
+    out = frame.join(stats, on=["area_id", "instance_date"], how="left").with_columns(
+        pl.col(*counts, "infra_completed_24m").fill_null(0.0)
+    )
+    return out.with_columns(
+        pl.when(total > 0)
+        .then(pl.col(f"infra_active_{kind}") / total)
+        .otherwise(0.0)
+        .alias(f"infra_mix_{kind}")
+        for kind in INFRA_TYPES
+    ).sort("row_id")
+
+
 def project_lines(projects: pl.DataFrame, area_names: dict[int, str]) -> list[str]:
     lines = []
     for row in projects.iter_rows(named=True):

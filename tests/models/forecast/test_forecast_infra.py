@@ -1,5 +1,6 @@
-from datetime import date
+from datetime import date, timedelta
 
+import polars as pl
 import pytest
 from forecast_fixtures import project_record, project_table, write_projects
 
@@ -7,6 +8,7 @@ from models.forecast.config import INFRA_TYPES
 from models.forecast.infra import (
     MIN_PROJECTS,
     InfraTableError,
+    add_infra_features,
     load_projects,
     project_lines,
     validate_projects,
@@ -92,3 +94,80 @@ def test_project_lines_name_the_areas(tmp_path):
     assert project_lines(project_table(tmp_path, count=1, affected_area_ids="7"), {})[0].endswith(
         "areas: ? (7)"
     )
+
+
+ANNOUNCED = date(2018, 1, 1)
+PLANNED = date(2020, 1, 1)
+ACTUAL = date(2020, 6, 1)
+
+
+def rows_on(days_and_areas):
+    return pl.DataFrame(
+        {
+            "row_id": list(range(len(days_and_areas))),
+            "instance_date": [day for day, _ in days_and_areas],
+            "area_id": [area for _, area in days_and_areas],
+        },
+        schema={"row_id": pl.Int64, "instance_date": pl.Date, "area_id": pl.Int64},
+    )
+
+
+def one_metro(tmp_path, **overrides):
+    record = project_record(
+        0,
+        type="metro_rail",
+        announced_date=str(ANNOUNCED),
+        planned_completion_date=str(PLANNED),
+        actual_completion_date=str(ACTUAL),
+        affected_area_ids="1",
+        **overrides,
+    )
+    return load_projects(write_projects(tmp_path, [record]))
+
+
+def test_a_project_counts_only_from_its_announcement(tmp_path):
+    frame = rows_on([(ANNOUNCED - timedelta(days=1), 1), (ANNOUNCED, 1), (date(2020, 3, 1), 1)])
+    out = add_infra_features(frame, one_metro(tmp_path))
+    assert out["infra_active_metro_rail"].to_list() == [0.0, 1.0, 1.0]
+    assert out["infra_mix_metro_rail"].to_list() == [0.0, 1.0, 1.0]
+    months = out["infra_months_to_next"].to_list()
+    assert months[0] is None
+    assert months[1] == pytest.approx((PLANNED - ANNOUNCED).days / 30.4375)
+    assert months[2] == 0.0  # planned date passed but not yet open: delayed, not negative
+
+
+def test_a_completion_counts_only_from_its_opening(tmp_path):
+    days = [
+        ACTUAL - timedelta(days=1),
+        ACTUAL,
+        ACTUAL + timedelta(days=729),
+        ACTUAL + timedelta(days=730),
+    ]
+    out = add_infra_features(rows_on([(day, 1) for day in days]), one_metro(tmp_path))
+    assert out["infra_active_metro_rail"].to_list() == [1.0, 0.0, 0.0, 0.0]
+    assert out["infra_completed_24m"].to_list() == [0.0, 1.0, 1.0, 0.0]
+    assert out["infra_months_to_next"].to_list()[1:] == [None, None, None]
+
+
+def test_unaffected_areas_and_order(tmp_path):
+    frame = rows_on([(date(2019, 1, 1), 2), (date(2019, 1, 1), 1), (date(2014, 1, 1), 1)])
+    out = add_infra_features(frame, one_metro(tmp_path))
+    assert out["row_id"].to_list() == [0, 1, 2]
+    assert out["infra_active_metro_rail"].to_list() == [0.0, 1.0, 0.0]
+    for kind in INFRA_TYPES:
+        assert out[f"infra_mix_{kind}"].null_count() == 0
+    assert out["infra_completed_24m"].to_list() == [0.0, 0.0, 0.0]
+
+
+def test_the_type_mix_splits_active_projects(tmp_path):
+    records = [
+        project_record(0, type="metro_rail", affected_area_ids="1", actual_completion_date=""),
+        project_record(1, type="mall", affected_area_ids="1", actual_completion_date=""),
+        project_record(2, type="mall", affected_area_ids="1", actual_completion_date=""),
+    ]
+    projects = load_projects(write_projects(tmp_path, records))
+    out = add_infra_features(rows_on([(date(2017, 1, 1), 1)]), projects)
+    assert out["infra_active_mall"][0] == 2.0
+    assert out["infra_mix_mall"][0] == pytest.approx(2 / 3)
+    assert out["infra_mix_metro_rail"][0] == pytest.approx(1 / 3)
+    assert out["infra_mix_park"][0] == 0.0

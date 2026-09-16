@@ -12,11 +12,10 @@ import polars as pl
 from dotenv import load_dotenv
 
 from ingestion.config import DbSettings
-from models.forecast.config import DATA_DIR, ForecastConfig
-from models.forecast.features import CORE_FEATURES, add_core_features, feature_coverage
+from models.forecast.config import DATA_DIR, FEATURES, ForecastConfig
+from models.forecast.features import build_dataset, feature_coverage
 from models.forecast.infra import fetch_reference, load_projects, project_lines, validate_projects
 from models.forecast.rows import excluded_summary, load_rows
-from models.forecast.targets import build_targets
 
 DEFAULTS = ForecastConfig()  # parser defaults, fixed at import (tests replace ForecastConfig)
 
@@ -83,7 +82,7 @@ def _build(args: argparse.Namespace) -> int:
     stages = Stages("build")
     try:
         with stages.stage("load_rows"):
-            rows, quality, data_end, _, _ = load_rows(_settings(), config)
+            rows, quality, data_end, areas, _ = load_rows(_settings(), config)
         _print(quality.lines())
         if quality.drop_share > config.max_drop_share:
             print(
@@ -92,11 +91,16 @@ def _build(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        with stages.stage("targets"):
-            frame, report = build_targets(rows, data_end)
-        with stages.stage("features"):
-            frame = add_core_features(frame)
-        coverage = feature_coverage(frame, CORE_FEATURES)
+        projects = load_projects()
+        problems = validate_projects(projects, set(areas["area_id"].to_list()))
+        if problems:
+            print("Build stopped: the infrastructure table has problems:", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return 1
+        with stages.stage("dataset"):
+            frame, report = build_dataset(rows, data_end, projects)
+        coverage = feature_coverage(frame, FEATURES)
     except Exception as exc:  # noqa: BLE001 — CLI boundary: report and exit 1
         print(f"Build failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
