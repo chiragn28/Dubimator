@@ -348,4 +348,177 @@ Tests run sequentially against `zestimator_test`, use the `temp_mlflow` pattern,
 
 ## Amendments during implementation
 
-(none yet)
+**Planning rulings 1–16** (controller, before implementation; see the
+ledger `.superpowers/sdd/2026-09-16-phase6-price-forecasting/progress.md`):
+
+- **Day-count windows (ruling 1).** Every window (base, target, momentum,
+  trailing) is a fixed day count, not a calendar month: 1 month =
+  30.4375 days, rounded. Base `[T − 92d, T)`; 3m target `[T + 76d,
+  T + 107d]`; 1y target `[T + 335d, T + 396d]`; 3y target `[T + 1065d,
+  T + 1126d]`; momentum lags 91d/365d/1096d; trailing counts 365d. This
+  makes every window exact and lets Polars `rolling` compute them.
+- **Median of ppsm, then ln (ruling 2).** Base and target growth take the
+  median of price/m² first, then ln, rather than the median of ln(ppsm).
+  The two differ only for even sale counts; this matches how the spec
+  phrases it.
+- **Tuning capped at the last 4 folds (ruling 3).** Optuna tunes on at
+  most the last 4 non-test, non-`gap` folds per horizon
+  (`config.tune_folds`). Every fold is still scored and reported with the
+  final parameters, and the tuning-fold refits provide conformal
+  calibration.
+- **Fixed-round final model (ruling 4).** The final model is refit with
+  `n_estimators` = the mean best iteration over the tuning-fold refits,
+  with no early stopping, because the test fold must never guide
+  training.
+- **The 3y horizon was expected to be `insufficient_data` (ruling 5).**
+  With 24 months of history before the first cutoff, the first 3y cutoff
+  is about 2019-02, and its validation targets need to reach 2022–23 —
+  past the 2023-03-17 data end. Reported, not worked around; the README
+  explains that a newer DLD file fixes it.
+- **The 10,000-row `--sample` build is seeded and random (ruling 6).** It
+  reports data quality only; because building windows are sparse in a
+  sample, most sampled rows end up `no_base`, and the report says so.
+- **`as_of` fixed to the data end (ruling 7).** Forecasts are computed at
+  T = data_end + 1 day, so the base window includes the last day of data.
+  `as_of` in the JSON is always `data_end`; any other `as_of` is rejected
+  (ruling 16).
+- **Key drivers come from the 1y model (ruling 8)** when it is deployed,
+  otherwise from the 3m model, otherwise the list is empty.
+- **The CLI end-to-end test monkeypatches `load_rows` and the area-id
+  lookup (ruling 9)**, using synthetic history, matching Phase 3's CLI
+  tests. The real SQL path is covered by a separate database test that
+  loads `tests/fixtures/price_sample.csv` through Phase 2's
+  `run_pipeline`.
+- **Project names become a categorical only above 20 training rows
+  (ruling 10).** All others map to `"(other)"`, keeping XGBoost's
+  category count bounded.
+- **The `window_open` status (ruling 11).** A target window that ends
+  after the data end gets its own status, alongside `no_base` and
+  `no_target`. A partly observed window would bias the median.
+- **Categories fitted once per horizon (ruling 12),** on the test fold's
+  training rows, and used for every fold. Unused category levels are
+  harmless; this keeps one encoding per model.
+- **`planned_completion_date` is the date stated at announcement (ruling
+  13).** Later revisions would leak hindsight into older rows.
+- **Early stopping and fold scoring share each fold's validation rows
+  (ruling 14),** as the spec states. The test fold never guides training
+  (ruling 4).
+- **Ranges cover growth uncertainty only (ruling 15).** A forecast's range
+  is `estimate × exp(growth ± half-width)`; the current estimate's own
+  range is reported separately as `current_range_80`.
+- **Not-deployed reasons (ruling 16).** A missing champion is reported as
+  `not_deployed`. The reason is the latest run's gate reason when that
+  run failed or had too little data; otherwise it is `"no registered <h>
+  model"`.
+
+**Task 2 rulings.**
+- **T2-a:** `rolling_stats` joins its window stats back on `(key,
+  instance_date)` instead of a positional hstack, because Polars can
+  reorder group blocks under parallelism; rows sharing key and date share
+  a window, so the join is exact.
+- **T2-b:** the history test's all-building assertion excludes the first
+  `BASE_DAYS`, because cold-start rows legitimately fall back to area
+  level.
+
+**Task 5 rulings (infrastructure table).**
+- **T5-a (USER, 2026-09-17):** `planned_completion_date` may carry year or
+  quarter precision, mapped to that period's midpoint (year → YYYY-07-01;
+  quarter → the 1st of its middle month: Q1 02-01, Q2 05-01, Q3 08-01, Q4
+  11-01; "late YYYY"/"end of YYYY" → YYYY-11-01; "early YYYY" →
+  YYYY-02-01; "mid YYYY" → YYYY-07-01), and flagged in `notes` as
+  "planned precision: year|quarter|part-year". `announced_date` and
+  `actual_completion_date` still need at least month precision. Cost:
+  `months_to_next_completion` off by up to ~6 months for flagged rows.
+- **T5-b:** accept removal of 2 unused imports in
+  `test_forecast_infra.py` (ruff); no behavioural cost.
+- **T5-c:** "second half of YYYY" maps to YYYY-10-01 (the H2 midpoint,
+  consistent with T5-a), and Coca-Cola Arena is filed as `mixed_use`
+  because it has no dedicated venue type.
+
+**Final-review fix round (F1–F5).** The final whole-feature review found
+4 Important issues; all were fixed before the real run:
+- **F1 — never serve a horizon whose latest gate did not pass.**
+  `run_training` removes the `champion` alias
+  (`MlflowClient().delete_registered_model_alias`, missing model/alias
+  treated as a no-op) whenever a horizon's status is not `passed`.
+  `latest_gates` reads only runs with `attributes.status = 'FINISHED' and
+  tags.gate_run = 'true'`, so a crashed or non-training run is never
+  "latest". The `Forecaster` treats a loaded champion as `not_deployed`
+  when its gate is `failed`/`insufficient_data` (reason: the gate reason)
+  or when `model.metadata["data_end"]` differs from the current data end
+  (reason: `"the {h} model was trained on data ending {model_end};
+  retrain it on data ending {data_end}"`).
+- **F2 — purge tuning, calibration and round selection away from the test
+  targets.** A new fold role, `gap`: every non-test fold whose target
+  window can still reach the test period
+  (`fold.end + timedelta(days=horizon.end_days) > test.cutoff`) is scored
+  and reported only, never used for Optuna, conformal calibration or
+  `final_rounds`. Roles are assigned in order: `test` (the last fold),
+  `gap`, `tune` (up to `config.tune_folds` of the latest remaining
+  folds), `score` (the rest). `insufficiency` also reports "no tuning
+  fold ends before the test period's target windows" when there is no
+  `tune` fold.
+- **F3 — plot-priced villas get their own market.** Real data has 30,870
+  plot-basis villa sales against 42,430 built-up ones (42% of villa
+  sales). `rows.prepare_rows` adds `market_kind` (`"villa_plot"` for
+  plot-basis villas, `sub_kind` otherwise) before outlier screening;
+  outlier groups, `area_key`/`city_key` and the model's `CATEGORICAL`
+  column all key on `market_kind` in place of `sub_kind`; the interval
+  segment stays `{reg_type}_{villa|unit}`, computed from `sub_kind`; the
+  `Forecaster` computes `market_kind` from the request's kind and
+  `size_basis`.
+- **F4 — anchor the fold grid backwards from the last usable T.**
+  `last = add_months(month_start(last_t), -(horizon.step_months - 1))`,
+  so the test period `[last, last + step)` is a full step containing
+  `last_t`; cutoffs step backward from `last` by `step`, keeping those
+  `>= earliest` (the original forward-computed first cutoff), in
+  ascending order.
+- **F5 — batched minor fixes:** `bad_price`/`bad_size` also drop
+  non-finite values; `validate_rows` sorts by `(instance_date,
+  transaction_id)` before dedup, so `keep="first"`/`keep="last"` are
+  deterministic ("latest" = the largest `transaction_id` on that date,
+  since DLD has no source-row number); `repeat_sale` exclusions are
+  logged with the same `EXCLUDED_SCHEMA` as outliers, written to
+  `excluded.csv` and logged as an MLflow artifact; `fold_scores` also
+  records `median_ape`; `fit_intervals` raising `ValueError` (too few
+  calibration rows) is reported as `insufficient_data` with reason
+  `f"{h}: too few calibration rows for the 80% range"` instead of
+  crashing; the full gate reason list is logged as `{h}/gate.json`;
+  `evaluate.gate`'s `strongest` baseline is NaN-safe; `train.suggest_params`'
+  learning-rate floor is 0.03 so early stopping can fire within 500
+  rounds, and `metadata["capped_rounds"]` records how many tune-fold fits
+  hit `n_estimators`; `predict.driver_text` renders `area_code`,
+  `market_kind` and `project_code` readably; `Forecaster._features` nulls
+  `bedrooms` for a penthouse request, matching training; a snapshot-parity
+  test and the missing `predict` tests (`PriceInputError`, an
+  `area_id`-only request) were added; a same-day-sale test confirms a
+  same-day sale never enters the anchor's own base window.
+
+**USER-2 (2026-09-17).** Per-task code review is skipped from Task 6
+onward, at the user's request ("check everything at the end"). The
+controller runs the full forecast test suite plus ruff after each task
+lands; one whole-Phase-6 review happens at the end, followed by a fix
+round and a re-review. Cost: defects surface later than a per-task review
+would catch them.
+
+**Documented-only items** (already ruled; out of scope for further
+implementation, recorded here for completeness):
+- **LOW confidence.** Given the base confidence rules, LOW effectively
+  triggers only when an area has fewer than 50 training rows.
+- **Project inference.** A request's project is never inferred from its
+  building.
+- **Early stopping and calibration.** Conformal calibration shares the
+  `tune` folds' validation rows with early stopping.
+- **Score folds.** `score` folds are scored with parameters tuned on
+  later folds.
+
+**Not yet adopted — flagged for user approval (STOP 3, 2026-09-17).** The
+3m champion registered from the real run has only 3 boosting rounds
+(early stopping hit its minimum in every tuning fold), making it close to
+a drift predictor. The controller accepted the passing gate result as-is
+(it beats both baselines and every primary segment) rather than treat
+this as a failure, and flagged for the user's future decision: adding a
+"trailing mean growth" baseline to the 3m gate. This would be a spec
+change, since it could cause a future champion to fail against a
+stronger, still-trivial baseline — not adopted without the user's
+approval.

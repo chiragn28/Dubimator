@@ -4,8 +4,10 @@ Portfolio-grade ML platform for Dubai real estate: property price
 estimation, duplicate/fraud listing detection, and search ranking, built
 on real Dubai Land Department (DLD) transaction data.
 
-> **Status:** Phase 5 (property search ranking) complete. See
-> `docs/superpowers/specs/` for the full build plan (11 phases; price forecasting was added as Phase 6 on 2026-09-16).
+> **Status:** Phase 6 (multi-horizon price forecasting) complete — the 3-month
+> horizon is deployed; 1-year and 3-year did not clear their gates (see
+> "Price forecasting" below). See `docs/superpowers/specs/` for the full
+> build plan (11 phases).
 
 ## Architecture (current)
 
@@ -36,6 +38,12 @@ graph LR
     SCLI --> SEARCH
     SEARCH -->|"graded candidates"| SCLI
     SCLI -->|"search-ranking runs + zestimator-search-ranker@champion"| ML
+    FCLI["python -m models.forecast<br/>(build, infra-check, train, evaluate, predict)"]
+    INFRA[("reference/infrastructure_projects.csv")]
+    PG -->|"home sales"| FCLI
+    INFRA --> FCLI
+    ML -.->|"zestimator-price@champion"| FCLI
+    FCLI -->|"price-forecast runs + zestimator-forecast-3m@champion"| ML
 ```
 
 More components (ingestion pipeline, models, FastAPI service, Streamlit
@@ -745,6 +753,272 @@ fraud share (a read-only probe, not a logged contender). Further weaknesses:
 - add geographic proximity;
 - measure warm latency behind the Phase 7 API.
 
+## Price forecasting
+
+Forecasts a Dubai home's market growth over three horizons — 3 months, 1
+year and 3 years — **as of 2023-03-17**, the last date in the DLD data.
+Each forecast is the Phase 3 current estimate × e^(predicted growth), with
+its own conformal 80% range and a confidence label. A horizon that does not
+pass its own accuracy gate is **not served**: it reports `not_deployed`
+with the reason, in place of a number. There is no single overall accuracy
+figure — only per-horizon, per-segment ones (below).
+
+```bash
+uv run python -m models.forecast build                            # ~11s: rows, targets, features, data-quality report
+uv run python -m models.forecast infra-check                      # validates reference/infrastructure_projects.csv
+uv run python -m models.forecast train --device cuda               # ~319s (5.3 min) on an RTX 3060 Laptop GPU: folds, Optuna, final fits, gates, MLflow, registration
+uv run python -m models.forecast evaluate                          # ~11s: re-scores registered champions on their test periods
+uv run python -m models.forecast predict --area "Dubai Marina" --kind apartment --status ready --size 85 --bedrooms 1
+```
+
+Timings are from `data/forecast/stage_timings.json` (`build`: load_rows
+2.57s + dataset 8.41s; `train`: load_rows 2.47s + dataset 8.75s + training
+308.07s; `evaluate`: load_rows 2.61s + dataset 8.68s), from the 2026-09-17
+real run. The MLflow run is `abundant-whale-824`, id
+`af509861beb74dd18886aafd61d782a3`, in experiment `price-forecast`.
+
+**Data and limits.**
+- The DLD data ends **2023-03-17**. Every window and feature is computed
+  relative to that date.
+- **Last usable T per horizon** (`quality.json`): 3m 2022-11-30, 1y
+  2022-02-14, 3y 2020-02-13. A row's sale date T must leave room for its
+  target window to close before the data ends.
+- **The 3y horizon is `insufficient_data`: only 1 walk-forward fold
+  (needs 2).** The fold grid is anchored backwards from the last usable T
+  (2020-02-13); with the 12-month step and the 24-month training warm-up,
+  there is only enough history left for the test fold itself, so no fold
+  precedes it. A newer DLD file (the Kaggle mirror, reportedly updated
+  2026-02-03 with about 1.51M rows, or data.dubai) fixes this: dropping a
+  new `data/raw/Transactions.csv` and re-running Phases 2–6 needs no code
+  change, unless DLD changed its columns.
+- **Infrastructure is mapped at area level.** DLD has no coordinates, so
+  every infrastructure feature is an area-level count or flag, never a
+  distance. `infra_active_airport` is always 0: the 15-project reference
+  table has no `airport`-type row.
+- **`planned_completion_date` is the date stated at announcement**, never a
+  later revision (ruling 13) — a later revision would leak hindsight into
+  older rows. Where a source gives only year or quarter precision, the date
+  is mapped to that period's midpoint (ruling T5-a: year → July 1; quarter
+  → the 1st of its middle month; "late/end of YYYY" → Nov 1; "early YYYY" →
+  Feb 1; "mid YYYY" / "second half of YYYY" → the year's or H2's midpoint),
+  flagged in the table's `notes` column. `announced_date` and
+  `actual_completion_date` still need at least month precision.
+- **Plot-priced villas are a separate market.** `market_kind` is
+  `villa_plot` when a villa is priced on its plot area, and `sub_kind`
+  otherwise (ruling F3). Real data has 30,870 plot-basis villa sales
+  against 42,430 built-up ones — plot pricing is **42%** of villa sales,
+  enough that mixing the two would have biased both the outlier screen and
+  the model's location keys.
+
+**Rows and exclusions** (`build`, real run, `data/forecast/quality.json`):
+
+`Dropped 29,545 of 366,132 rows (8.1%)`
+
+| Reason | Rows |
+|---|---|
+| `not_clean` (Phase 2's own exclusion) | 536 |
+| `bad_price` (≤ 0, null or non-finite) | 0 |
+| `bad_size` (≤ 0, null or non-finite) | 0 |
+| `bad_date` (unparseable) | 0 |
+| `missing_area` (null `area_id`) | 0 |
+| `duplicate_transaction_id` | 0 |
+| `repeat_sale` (same building, date, size, price — keep the row with the largest `transaction_id` on that date) | 12,567 |
+| `outlier` (\|robust z\| > 3 within area × `market_kind` × month, using the median and MAD × 1.4826) | 16,442 |
+
+**Kept: 336,587 rows.** 6,434 area × `market_kind` × month groups had
+fewer than 10 sales and were not screened for outliers (counted, not
+excluded). `build` exits 1 if more than 30% of rows are dropped (config
+`max_drop_share=0.30`); the real run dropped 8.1%.
+
+Per-horizon target status, out of the kept 336,587 rows:
+
+| Horizon | `usable` | `no_base` | `no_target` | `window_open` |
+|---|---|---|---|---|
+| 3m | 206,069 | 5,768 | 98,002 | 26,748 |
+| 1y | 168,838 | 5,768 | 77,732 | 84,249 |
+| 3y | 104,516 | 5,768 | 70,944 | 155,359 |
+
+`no_base` rows have fewer than 5 sales in their building's (or, failing
+that, area's) 92-day base window. `no_target` rows have fewer than 5 sales
+in the horizon's target window. `window_open` rows have a target window
+that ends after 2023-03-17: nothing is imputed, and a partly observed
+window is excluded rather than biasing the median (ruling 11).
+
+**Features.** Every feature uses only sales dated strictly before T, or
+infrastructure dates on or before T — enforced by a leakage test that
+perturbs only same-day-or-later sales and checks every feature is
+unchanged.
+
+| Group | Features | As-of rule |
+|---|---|---|
+| Momentum | `area_mom_3m/12m/36m`, `city_mom_3m/12m/36m`, `area_share_12m` | ln change of the area/city × `market_kind` median ppsm over the trailing 91/365/1,096 days before T |
+| Base context | `ln_base_ppsm`, `base_level_building`, `base_n`, `days_since_building_sale`, `building_sales_12m`, `area_sales_12m` | the base window is `[T − 92d, T)`, strictly before T |
+| Property | `off_plan`, `log_area_sqm`, `bedrooms`, `building_age_proxy_years` | row-level fields as known at T; `bedrooms` is null for a penthouse request, matching training (ruling F5-j); `building_age_proxy_years` is years since the building's first DLD sale before T, null if none |
+| Location | `market_kind`, `area_code`, `project_code` (categoricals) | known at T; a project becomes its own category only with ≥ 20 training rows, else `"(other)"` (ruling 10) |
+| Infrastructure | `infra_active_<type>`, `infra_months_to_next`, `infra_completed_24m`, `infra_mix_<type>` (metro_rail/mall/school/park/mixed_use/airport) | counts only a project with `announced_date ≤ T` and not yet completed; `infra_completed_24m` counts only `actual_completion_date ≤ T` |
+
+**Forbidden columns** (`FORBIDDEN_FEATURES` in `models/forecast/config.py`,
+enforced by an allowlist test): every target column (`growth_<h>`,
+`target_ppsm_<h>`, `target_n_<h>`), `ppsm`, `is_clean`, and Phase 3's
+forbidden set — `price_per_sqm_aed`, `price_robust_z`, `peer_tier`,
+`exclusion_reason`, `source_row`, `ingest_run_id`, `procedure_name`,
+`price_aed`, and DLD's **`nearest_metro`**, **`nearest_mall`** and
+`nearest_landmark`. Those three are present-day snapshots — DLD reports
+the nearest metro, mall and landmark as of today, not as of the sale date —
+so using them would leak the future into older rows.
+
+**Validation.** Walk-forward folds only; the test fold (the most recent
+one) is never used to tune, calibrate or select the final round count.
+
+- **The target-window guard:** a training row needs `T + horizon.end_days <
+  cutoff` — its target window must close before the fold's cutoff.
+- **The fold grid is anchored backwards from the last usable T** (ruling
+  F4): the test period is the full step ending after the last usable T,
+  and cutoffs step backward from there (3 months for 3m, 6 for 1y, 12 for
+  3y), kept only while at least 24 months of training history remain.
+- **Roles**, assigned in this order (ruling F2): the last fold is `test`;
+  every remaining fold whose target window can still reach the test
+  period's cutoff is `gap` — scored and reported, but never used for
+  Optuna, conformal calibration or picking the final round count; up to
+  `config.tune_folds = 4` of the latest remaining folds are `tune`; the
+  rest are `score`.
+- **Real fold counts** (`train_output.txt`): 3m 26 folds (19 score, 4
+  tune, 2 gap, 1 test); 1y 10 folds (2 score, 4 tune, 3 gap, 1 test); 3y 1
+  fold (0 score, 0 tune, 0 gap, 1 test — the test fold itself, hence
+  `insufficient_data`).
+- **3m's test period:** 2022-09-01 to 2022-12-01, 13,848 rows
+  (`evaluate_output.txt`).
+
+**Results.**
+
+*3m — passed.*
+
+```text
+3m  segment          rows        model    no_change   area_trend  model MdAPE  flag
+    all            13,848        8.22%        8.54%       12.72%        5.57%
+    off_plan        7,994        7.05%        7.29%       12.48%        5.20%
+    ready           5,854        9.82%       10.26%       13.06%        6.53%
+    top5            5,098        7.21%        7.69%       10.28%        5.40%
+    rest            8,750        8.82%        9.04%       14.15%        5.93%
+    age_lt1         5,424        5.38%        5.57%       11.65%        3.78%
+    age_1to5        1,898       10.18%       10.78%       12.36%        7.99%
+    age_gt5         3,338       10.41%       10.72%       14.93%        6.52%
+    age_unknown     3,188        9.61%        9.99%       12.45%        8.94%
+    age_gt2         4,892       10.41%       10.84%       14.05%        7.07%
+```
+
+80% range coverage on test: all 79.9%, off_plan_unit 78.0%, off_plan_villa
+75.1%, ready_unit 82.5%, ready_villa 86.0%. Mean fold MAPE: area_trend
+14.16%, model 9.32%, no_change 9.40%.
+
+**Gate: passed.** All three primary segments clear the 15% bar (ready
+9.82%, top5 7.21%, age_gt2 10.41%); the model's `all` MAPE (8.22%) beats
+both baselines (no_change 8.54%, area_trend 12.72%); and the bootstrap 95%
+upper bound of the model's `all` MAPE — 8.37%, per the ledger's STOP-3 note
+— is below the stronger baseline (8.54%). Registered as
+`zestimator-forecast-3m` v1 with alias `champion`.
+
+**Finding, not a failure: the champion is a drift predictor.** Its final
+model has only **3 boosting rounds** — early stopping hit its configured
+minimum in every tuning fold, so it has barely learned beyond an
+intercept. In practice it forecasts **about +1.4% growth for nearly every
+home**, which is also why `key_drivers` is empty in the example below: no
+feature reaches the 0.005 |SHAP| threshold in log growth. It still clears
+the approved gate — it beats both baselines and every primary segment —
+but the pass mostly reflects the horizon's genuinely low 3-month
+volatility, not a model that has learned property-specific structure.
+Flagged for the user (STOP 3, 2026-09-17, decided by the controller while
+the user was asleep): consider adding a "trailing mean growth" baseline to
+the 3m gate — a spec change that needs approval, since it would let a
+future champion be rejected against a stronger, still-trivial baseline —
+and re-run on a newer DLD file once available.
+
+*1y — failed, not deployed.*
+
+```text
+1y  segment          rows        model    no_change   area_trend  model MdAPE  flag
+    all            19,728       18.51%       12.70%       26.28%       17.17%
+    off_plan       10,767       16.23%       11.28%       23.96%       15.37%
+    ready           8,961       21.25%       14.39%       29.07%       20.72%
+    top5            7,363       19.50%       12.97%       34.51%       17.93%
+    rest           12,365       17.92%       12.54%       21.38%       16.93%
+    age_lt1         3,591       14.71%       10.27%       30.63%       12.33%
+    age_1to5        5,194       16.70%       13.76%       24.40%       14.79%
+    age_gt5         4,997       21.99%       14.09%       33.57%       21.51%
+    age_unknown     5,946       19.46%       12.06%       19.16%       19.06%
+    age_gt2         9,365       19.71%       14.05%       29.14%       17.47%
+```
+
+80% range coverage on test: all 55.9%, off_plan_unit 63.8%, off_plan_villa
+23.7%, ready_unit 62.0%, ready_villa 61.1%. Mean fold MAPE: area_trend
+21.11%, model 15.22%, no_change 15.80%.
+
+**Gate: failed**, on all three conditions (`train_output.txt`):
+- `1y resale MAPE 21.3% exceeds the 20% gate`
+- `1y MAPE 18.5% does not beat the no_change baseline (12.7%)`
+- `1y MAPE 95% upper bound 18.7% is not below the stronger baseline (12.7%)`
+
+Not registered. The 1y test targets fall inside the 2022–23 price surge —
+a regime shift the training folds only saw the leading edge of.
+`no_change` (12.70%) beats the model precisely because the model
+extrapolates a trend that the market then ran past. Coverage tells the
+same story: only 55.9% of test rows land in their 80% range (target 80%),
+and `off_plan_villa` coverage collapses to 23.7%.
+
+*3y — insufficient_data, not deployed.*
+
+`3y: only 1 walk-forward folds (needs 2)`
+
+The backward-anchored fold grid (ruling F4) leaves only the test fold
+itself: the 24-month training warm-up and the 3y target window (35–37
+months) run out of history against the 2020-02-13 last usable T. No
+score, tune or gap folds exist, so there is nothing to tune, calibrate or
+gate on. The fix is the same as for 1y: a newer DLD file with data past
+2023-03-17 re-opens enough history for real 3y folds.
+
+**Example** (`predict_example.json`; Dubai Marina apartment, ready, 85 m²,
+1 bedroom; `models:/zestimator-price@champion` version
+`bc816911870f4af1b6e8cacf1d9bb29e`):
+
+```json
+{
+  "property_id": null,
+  "as_of": "2023-03-17",
+  "current_estimate_aed": 1455490,
+  "current_range_80": [1056469, 2005219],
+  "forecast_3m": {"point": 1475833, "ci_low": 1237937, "ci_high": 1759445, "confidence": "MEDIUM"},
+  "forecast_1y": {"status": "not_deployed", "reason": "1y resale MAPE 21.3% exceeds the 20% gate"},
+  "forecast_3y": {"status": "not_deployed", "reason": "3y: only 1 walk-forward folds (needs 2)"},
+  "key_drivers": [],
+  "exclusions_applied": [
+    "Dropped 30 off-plan outliers in Marsa Dubai",
+    "Dropped 418 off-plan repeat sales in Marsa Dubai",
+    "Dropped 516 ready outliers in Marsa Dubai",
+    "Dropped 369 ready repeat sales in Marsa Dubai"
+  ],
+  "model_versions": {"price": "bc816911870f4af1b6e8cacf1d9bb29e", "forecast_3m": "1"}
+}
+```
+
+`forecast_1y` and `forecast_3y` carry their gate/insufficiency reasons
+instead of numbers, and `key_drivers` is empty for the reason given above.
+`exclusions_applied` lists Marsa Dubai's own drop counts, split by
+`off_plan`/`ready`; `repeat_sale` renders as "repeat sale(s)" (ruling
+F5-c).
+
+**Infrastructure table**
+(`models/forecast/reference/infrastructure_projects.csv`): 15 real,
+sourced projects. 2 were announced after the data end — P05 Dubai Metro
+Blue Line (announced 2024-12-19) and P06 Dubai Metro Gold Line (announced
+2026-04-22) — and stay in the table but affect no row before 2023-03-17.
+No row is type `airport`, which is why `infra_active_airport` is always 0.
+Every row cites a public `source_url` (RTA/Dubai Media Office
+announcements, Gulf News, The National, Khaleej Times, and
+Alstom/Emaar/Nakheel press releases, each with a `source_accessed` date);
+`infra-check` validates that sources are present, `announced_date ≤
+planned_completion_date`, area ids exist in `dld.areas`, and types are
+known.
+
 ## Cost breakdown (current)
 
 | Component | Cost |
@@ -753,6 +1027,7 @@ fraud share (a read-only probe, not a logged contender). Further weaknesses:
 | Price model training (local RTX 3060) | $0 — runs on your machine |
 | Photo dataset + embedding models (one-off download) | $0 — about 0.8 GB on disk |
 | Search queries, embeddings and ranker tuning (local RTX 3060) | $0 — GPU time on your machine |
+| Price forecast training (local RTX 3060, CUDA) | $0 — GPU time on your machine |
 
 Hosting stays at $0: Phase 10 (deploy and monitor) shares the local Docker stack
 through a free Cloudflare Tunnel instead of a cloud service.
@@ -765,7 +1040,7 @@ through a free Cloudflare Tunnel instead of a cloud service.
 - `models/price/` — home price model: features, training, evaluation, predictor (`python -m models.price`)
 - `listings/` — synthetic listings corpus, duplicate detection, fraud flags (`python -m listings`)
 - `search/` — query parser, two-channel retrieval, learning-to-rank ranker, search engine (`python -m search`)
-- `models/forecast/` — 3-month / 1-year / 3-year price forecasts (Phase 6, planned; brief in `docs/superpowers/briefs/`)
+- `models/forecast/` — 3-month / 1-year / 3-year price-growth forecasts: rows, targets, features, walk-forward folds, XGBoost per horizon, conformal ranges, predictor (`python -m models.forecast`)
 - `api/` — FastAPI service (Phase 7)
 - `demo/` — Streamlit app (Phase 8)
 - `data/raw/` — drop DLD CSVs here (gitignored)
