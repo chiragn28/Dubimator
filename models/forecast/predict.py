@@ -13,7 +13,14 @@ import polars as pl
 
 from ingestion.config import DbSettings
 from ingestion.normalize import match_key
-from models.forecast.config import CATEGORICAL, FEATURES, HORIZONS, INFRA_TYPES, ForecastConfig
+from models.forecast.config import (
+    CATEGORICAL,
+    FEATURES,
+    HORIZONS,
+    INFRA_TYPES,
+    PLOT_VILLA,
+    ForecastConfig,
+)
 from models.forecast.features import PROPERTY_FEATURES, add_core_features
 from models.forecast.infra import add_infra_features, load_projects
 from models.forecast.intervals import confidence, low_message
@@ -50,7 +57,7 @@ LABELS = {
     "building_age_proxy_years": "Years since the building's first sale",
     "infra_months_to_next": "Months until the next nearby project completes",
     "infra_completed_24m": "Nearby project completions",
-    "sub_kind": "Property kind",
+    "market_kind": "Property kind",
     "area_code": "Location",
     "project_code": "Project",
 }
@@ -110,20 +117,15 @@ def driver_text(feature: str, value, contribution: float, horizon: str) -> str:
 
 
 def query_rows(rows: pl.DataFrame, day: date) -> pl.DataFrame:
-    """One ppsm-less row per building and per area x kind, dated `day`."""
+    """One ppsm-less row per building and per area x market kind, dated `day`."""
+    kinds = ["area_id", "sub_kind", "market_kind"]
     buildings = (
-        rows.filter(pl.col("building_name").is_not_null())
-        .select("area_id", "sub_kind", "building_name")
-        .unique()
+        rows.filter(pl.col("building_name").is_not_null()).select(*kinds, "building_name").unique()
     )
     areas = (
-        rows.select("area_id", "sub_kind")
-        .unique()
-        .with_columns(pl.lit(None, dtype=pl.Utf8).alias("building_name"))
+        rows.select(kinds).unique().with_columns(pl.lit(None, dtype=pl.Utf8).alias("building_name"))
     )
-    queries = pl.concat([buildings, areas]).sort(
-        "area_id", "sub_kind", "building_name", nulls_last=True
-    )
+    queries = pl.concat([buildings, areas]).sort(*kinds, "building_name", nulls_last=True)
     start = int(rows["row_id"].max()) + 1 if rows.height else 0
     index = pl.int_range(pl.len(), dtype=pl.Int64)
     return queries.with_columns(
@@ -140,8 +142,8 @@ def build_snapshot(rows: pl.DataFrame, data_end: date, projects: pl.DataFrame) -
     frame = add_infra_features(add_core_features(add_base(add_keys(frame))), projects)
     return (
         frame.filter(pl.col("ppsm").is_null())
-        .select("area_id", "sub_kind", "building_key", *SNAPSHOT_COLUMNS)
-        .unique(["area_id", "sub_kind", "building_key"], keep="first", maintain_order=True)
+        .select("area_id", "market_kind", "building_key", *SNAPSHOT_COLUMNS)
+        .unique(["area_id", "market_kind", "building_key"], keep="first", maintain_order=True)
     )
 
 
@@ -231,7 +233,8 @@ class Forecaster:
         estimate = self.price.predict_one(request)
         area_id = resolve_area(request, self.areas, self.aliases)
         _, sub_kind = KIND_TO_TYPE[request.property_kind]
-        features = self._features(request, area_id, sub_kind)
+        plot = sub_kind == "villa" and request.size_basis == "plot"
+        features = self._features(request, area_id, PLOT_VILLA if plot else sub_kind)
         base = features.row(0, named=True)
         building = base["base_level"] == "building"
         context = {
@@ -261,8 +264,8 @@ class Forecaster:
         }
         return out
 
-    def _features(self, request: PriceRequest, area_id: int, sub_kind: str) -> pl.DataFrame:
-        same = (pl.col("area_id") == area_id) & (pl.col("sub_kind") == sub_kind)
+    def _features(self, request: PriceRequest, area_id: int, market_kind: str) -> pl.DataFrame:
+        same = (pl.col("area_id") == area_id) & (pl.col("market_kind") == market_kind)
         key = match_key(request.building) if request.building else None
         found = self.snapshot.filter(same & (pl.col("building_key") == f"{area_id}|{key}"))
         if key is None or found.height == 0:
@@ -279,6 +282,7 @@ class Forecaster:
             pl.lit(float(request.status == "off_plan")).alias("off_plan"),
             pl.lit(math.log(request.size_sqm)).alias("log_area_sqm"),
             pl.lit(request.bedrooms, dtype=pl.Float64).alias("bedrooms"),
+            pl.lit(market_kind).alias("market_kind"),
             pl.lit(str(area_id)).alias("area_code"),
             pl.lit(request.project, dtype=pl.Utf8).alias("project_code"),
         )

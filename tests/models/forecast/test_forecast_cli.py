@@ -86,6 +86,7 @@ def test_excluded_summary_counts_by_segment():
         {
             "area_id": [1, 1, 2],
             "sub_kind": ["flat", "flat", "villa"],
+            "market_kind": ["flat", "flat", "villa_plot"],
             "reg_type": ["off_plan", "off_plan", "ready"],
             "month": [date(2020, 1, 1)] * 3,
             "reason": ["outlier"] * 3,

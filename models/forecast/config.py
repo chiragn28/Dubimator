@@ -34,7 +34,8 @@ HORIZON_SPECS = {
 }
 HORIZONS = tuple(HORIZON_SPECS)
 
-CATEGORICAL = ("sub_kind", "area_code", "project_code")
+PLOT_VILLA = "villa_plot"  # market_kind of a villa priced on its plot area
+CATEGORICAL = ("market_kind", "area_code", "project_code")
 FEATURES = (
     "ln_base_ppsm", "base_level_building", "base_n",
     "area_mom_3m", "area_mom_12m", "area_mom_36m",

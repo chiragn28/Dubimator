@@ -12,7 +12,15 @@ from models.forecast.config import (
     HORIZONS,
     ForecastConfig,
 )
-from models.forecast.rows import DataQuality, prepare_rows, screen_outliers, validate_rows
+from models.forecast.rows import (
+    EXCLUDED_SCHEMA,
+    DataQuality,
+    prepare_rows,
+    screen_outliers,
+    validate_rows,
+)
+from models.price.data import RAW_SCHEMA
+from models.price.features import derive_segments
 
 SMALL = build_history(areas=2, buildings_per_area=2, start=date(2020, 1, 6), end=date(2020, 6, 29))
 
@@ -64,7 +72,10 @@ def test_validate_rows_keeps_the_last_of_a_repeat_sale():
 
 
 def test_outliers_are_screened_within_area_kind_month():
-    frame = SMALL.with_columns((pl.col("price_aed") / pl.col("area_sqm")).alias("ppsm"))
+    frame = SMALL.with_columns(
+        (pl.col("price_aed") / pl.col("area_sqm")).alias("ppsm"),
+        pl.col("sub_kind").alias("market_kind"),
+    )
     in_march = (pl.col("instance_date").dt.month() == 3) & pl.col("building_name").is_not_null()
     victim = frame.filter(in_march).row(0, named=True)
     frame = frame.with_columns(
@@ -79,6 +90,43 @@ def test_outliers_are_screened_within_area_kind_month():
     assert set(excluded["reason"]) == {"outlier"}
     assert victim["transaction_id"] not in kept["transaction_id"].to_list()
     assert unscreened > 0  # villa groups have ~4 sales a month, under the 10-sale minimum
+
+
+def villa_month(built_up=20, plot=10):
+    """One area and month of villa sales: built-up at ~10,000/m2, plot-priced at ~20,000/m2."""
+    template = SMALL.filter(pl.col("property_type") == "villa").row(0, named=True)
+    records = []
+    for index in range(built_up + plot):
+        is_plot = index >= built_up
+        ppsm = (20_000.0 if is_plot else 10_000.0) * (1 + 0.01 * (index % 5 - 2))
+        records.append(
+            {
+                **template,
+                "transaction_id": f"villa{index}",
+                "instance_date": date(2020, 3, 2 + index % 20),
+                "property_sub_type": None if is_plot else "Villa",
+                "area_sqm": 300.0,
+                "price_aed": ppsm * 300.0,
+            }
+        )
+    raw = pl.DataFrame(records, schema=SMALL.schema).select(list(RAW_SCHEMA))
+    return derive_segments(raw)
+
+
+def test_plot_priced_villas_are_their_own_market():
+    rows, quality = prepare_rows(villa_month(), ForecastConfig())
+    assert quality.dropped["outlier"] == 0  # each market is consistent on its own
+    kinds = dict(zip(rows["transaction_id"], rows["market_kind"], strict=True))
+    assert kinds["villa0"] == "villa"
+    assert kinds["villa29"] == "villa_plot"
+    assert set(rows.filter(pl.col("market_kind") == "villa_plot")["size_basis"]) == {"plot"}
+    flats = prepare_rows(SMALL, ForecastConfig())[0]
+    assert (flats["market_kind"] == flats["sub_kind"]).all()
+    # Pooled with the built-up villas, the plot-priced ones would all be flagged.
+    pooled = rows.with_columns(pl.col("sub_kind").alias("market_kind"))
+    _kept, excluded, _ = screen_outliers(pooled, ForecastConfig())
+    assert excluded.height == 10
+    assert list(excluded.columns) == list(EXCLUDED_SCHEMA)
 
 
 def test_prepare_rows_reports_drops_and_adds_ids():

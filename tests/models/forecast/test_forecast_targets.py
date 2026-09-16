@@ -5,6 +5,7 @@ import polars as pl
 import pytest
 
 from models.forecast.config import BASE_DAYS
+from models.forecast.rows import market_kind
 from models.forecast.targets import (
     STATUSES,
     add_base,
@@ -20,17 +21,19 @@ SCHEMA = {
     "instance_date": pl.Date,
     "area_id": pl.Int64,
     "sub_kind": pl.Utf8,
+    "market_kind": pl.Utf8,
     "building_name": pl.Utf8,
     "ppsm": pl.Float64,
 }
 
 
-def sale(days, ppsm, building="Tower A", area_id=1, sub_kind="flat", name=None):
+def sale(days, ppsm, building="Tower A", area_id=1, sub_kind="flat", name=None, market=None):
     return {
         "transaction_id": name,
         "instance_date": T + timedelta(days=days),
         "area_id": area_id,
         "sub_kind": sub_kind,
+        "market_kind": market or sub_kind,
         "building_name": building,
         "ppsm": ppsm,
     }
@@ -75,6 +78,19 @@ def test_add_keys_builds_the_three_levels():
     assert frame["building_key"].to_list() == ["1|noor tower", None]
     assert frame["area_key"].to_list() == ["1|flat", "1|flat"]
     assert frame["city_key"].to_list() == ["flat", "flat"]
+
+
+def test_plot_and_built_up_villas_have_separate_area_keys():
+    frame = add_keys(
+        frame_of(
+            [
+                sale(0, 1.0, building=None, sub_kind="villa"),
+                sale(0, 1.0, building=None, sub_kind="villa", market="villa_plot"),
+            ]
+        )
+    )
+    assert frame["area_key"].to_list() == ["1|villa", "1|villa_plot"]
+    assert frame["city_key"].to_list() == ["villa", "villa_plot"]
 
 
 def test_rolling_stats_window_edges():
@@ -184,6 +200,7 @@ def test_history_targets_track_the_known_growth(history):
     rows = history.with_row_index("row_id").with_columns(
         pl.col("row_id").cast(pl.Int64),
         (pl.col("price_aed") / pl.col("area_sqm")).alias("ppsm"),
+        market_kind().alias("market_kind"),
     )
     frame, report = build_targets(rows, data_end)
     usable = frame.filter(

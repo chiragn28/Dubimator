@@ -18,7 +18,11 @@ LEVELS = ("building", "area")
 
 
 def add_keys(frame: pl.DataFrame) -> pl.DataFrame:
-    """building_key ("{area_id}|{match_key}"), area_key ("{area_id}|{sub_kind}"), city_key."""
+    """building_key ("{area_id}|{match_key}"), area_key ("{area_id}|{market_kind}"), city_key.
+
+    Buildings hold units, so building_key ignores the kind; area and city levels are per market
+    kind, so plot-priced villas never share a base or target with built-up ones.
+    """
     building = map_unique(frame["building_name"], match_key, pl.Utf8)
     return (
         frame.with_columns(building.alias("_building"))
@@ -26,10 +30,10 @@ def add_keys(frame: pl.DataFrame) -> pl.DataFrame:
             pl.when(pl.col("_building").is_not_null())
             .then(pl.format("{}|{}", "area_id", "_building"))
             .alias("building_key"),
-            pl.when(pl.col("sub_kind").is_not_null())
-            .then(pl.format("{}|{}", "area_id", "sub_kind"))
+            pl.when(pl.col("market_kind").is_not_null())
+            .then(pl.format("{}|{}", "area_id", "market_kind"))
             .alias("area_key"),
-            pl.col("sub_kind").alias("city_key"),
+            pl.col("market_kind").alias("city_key"),
         )
         .drop("_building")
     )

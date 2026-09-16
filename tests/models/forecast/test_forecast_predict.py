@@ -67,7 +67,7 @@ def test_snapshot_matches_a_direct_computation(world):
     assert tower["base_n"] == recent.height
     assert tower["base_ppsm"] == pytest.approx(recent["ppsm"].median())
     assert snapshot.filter(pl.col("building_key").is_null()).height == 6  # 3 areas x flat/villa
-    assert snapshot.select("area_id", "sub_kind", "building_key").is_unique().all()
+    assert snapshot.select("area_id", "market_kind", "building_key").is_unique().all()
 
 
 def test_forecast_json_shape(world):
@@ -186,6 +186,7 @@ def test_exclusions_name_the_area_and_segment(world):
         {
             "area_id": [1, 1, 1, 2],
             "sub_kind": ["flat", "flat", "villa", "flat"],
+            "market_kind": ["flat", "flat", "villa", "flat"],
             "reg_type": ["off_plan", "off_plan", "ready", "off_plan"],
             "month": [date(2022, 1, 1)] * 4,
             "reason": ["outlier"] * 4,
@@ -194,6 +195,41 @@ def test_exclusions_name_the_area_and_segment(world):
     )
     result = forecaster(world, excluded=excluded).forecast(MARINA_FLAT)
     assert result["exclusions_applied"] == ["Dropped 2 off-plan outliers in Dubai Marina"]
+
+
+def test_plot_villas_use_the_plot_market(tmp_path, monkeypatch):
+    rows, data_end = prepared_history(
+        areas=1, buildings_per_area=1, start=date(2022, 1, 3), end=date(2023, 3, 13),
+        plot_villas=True,
+    )  # fmt: skip
+    engine = Forecaster.build(
+        rows, data_end, project_table(tmp_path), history_areas(), history_aliases(), {}, {},
+        FakePrice(), pl.DataFrame(schema=EXCLUDED_SCHEMA), CONFIG,
+    )  # fmt: skip
+    kinds = set(engine.snapshot.filter(pl.col("building_key").is_null())["market_kind"])
+    assert kinds == {"flat", "villa", "villa_plot"}
+    seen = []
+    features = Forecaster._features
+
+    def spy(self, request, area_id, market_kind):
+        frame = features(self, request, area_id, market_kind)
+        seen.append(frame.row(0, named=True))
+        return frame
+
+    monkeypatch.setattr(Forecaster, "_features", spy)
+    villa = {"area": "Dubai Marina", "property_kind": "villa", "status": "ready",
+             "size_sqm": 600.0, "bedrooms": 4}  # fmt: skip
+    engine.forecast({**villa, "size_basis": "plot"})
+    engine.forecast(villa)
+    plot, built = seen
+    assert plot["market_kind"] == "villa_plot"
+    assert built["market_kind"] == "villa"
+    since = data_end + timedelta(days=1) - timedelta(days=92)
+    recent = rows.filter(
+        (pl.col("market_kind") == "villa_plot") & (pl.col("instance_date") >= since)
+    )
+    assert plot["base_ppsm"] == pytest.approx(recent["ppsm"].median())
+    assert plot["base_ppsm"] < 0.6 * built["base_ppsm"]  # plot prices per m2 are about half
 
 
 def test_invalid_requests_raise_price_input_errors(world):

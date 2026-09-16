@@ -147,7 +147,7 @@ def fit_categories(frame: pl.DataFrame, config: ForecastConfig) -> dict[str, lis
         .filter(pl.col("len") >= config.min_project_rows)
     )
     return {
-        "sub_kind": sorted(frame["sub_kind"].drop_nulls().unique().to_list()),
+        "market_kind": sorted(frame["market_kind"].drop_nulls().unique().to_list()),
         "area_code": sorted(frame["area_code"].drop_nulls().unique().to_list(), key=int),
         "project_code": sorted(projects["project_code"].to_list()) + [OTHER_PROJECT],
     }

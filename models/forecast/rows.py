@@ -6,7 +6,7 @@ from datetime import date
 import polars as pl
 
 from ingestion.config import DbSettings
-from models.forecast.config import ForecastConfig
+from models.forecast.config import PLOT_VILLA, ForecastConfig
 from models.price.config import TrainConfig
 from models.price.data import load_homes
 
@@ -17,6 +17,7 @@ DROP_REASONS = (
 EXCLUDED_SCHEMA = {
     "area_id": pl.Int64,
     "sub_kind": pl.Utf8,
+    "market_kind": pl.Utf8,
     "reg_type": pl.Utf8,
     "month": pl.Date,
     "reason": pl.Utf8,
@@ -83,8 +84,8 @@ def validate_rows(rows: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, int]]:
 def screen_outliers(
     rows: pl.DataFrame, config: ForecastConfig
 ) -> tuple[pl.DataFrame, pl.DataFrame, int]:
-    """Robust z of ln ppsm within area x sub_kind x month; |z| > outlier_z is excluded."""
-    group = ["area_id", "sub_kind", "_month"]
+    """Robust z of ln ppsm within area x market_kind x month; |z| > outlier_z is excluded."""
+    group = ["area_id", "market_kind", "_month"]
     frame = rows.with_columns(
         pl.col("instance_date").dt.truncate("1mo").alias("_month"),
         pl.col("ppsm").log().alias("_ln"),
@@ -102,6 +103,7 @@ def screen_outliers(
     excluded = frame.filter(pl.col("_outlier")).select(
         "area_id",
         "sub_kind",
+        "market_kind",
         "reg_type",
         pl.col("_month").alias("month"),
         pl.lit("outlier").alias("reason"),
@@ -113,6 +115,12 @@ def screen_outliers(
     return kept, excluded.cast(EXCLUDED_SCHEMA), unscreened.height
 
 
+def market_kind() -> pl.Expr:
+    """sub_kind, except that plot-priced villas are their own market ("villa_plot")."""
+    plot = (pl.col("sub_kind") == "villa") & (pl.col("size_basis") == "plot")
+    return pl.when(plot).then(pl.lit(PLOT_VILLA)).otherwise(pl.col("sub_kind"))
+
+
 def prepare_rows(rows: pl.DataFrame, config: ForecastConfig) -> tuple[pl.DataFrame, DataQuality]:
     loaded = rows.height
     if config.sample_rows is not None and rows.height > config.sample_rows:
@@ -121,7 +129,10 @@ def prepare_rows(rows: pl.DataFrame, config: ForecastConfig) -> tuple[pl.DataFra
         )
         loaded = rows.height
     kept, dropped = validate_rows(rows)
-    kept = kept.with_columns((pl.col("price_aed") / pl.col("area_sqm")).alias("ppsm"))
+    kept = kept.with_columns(
+        (pl.col("price_aed") / pl.col("area_sqm")).alias("ppsm"),
+        market_kind().alias("market_kind"),
+    )
     kept, excluded, unscreened = screen_outliers(kept, config)
     dropped["outlier"] = excluded.height
     kept = kept.sort("instance_date", "transaction_id").with_row_index("row_id")

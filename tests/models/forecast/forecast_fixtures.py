@@ -23,11 +23,13 @@ def build_history(
     per_building_per_week: int = 2,
     start: date = date(2015, 1, 5),
     end: date = date(2023, 3, 13),
+    plot_villas: bool = False,
 ) -> pl.DataFrame:
     """Weekly sales per building, plus one villa sale per area per week (area-level only).
 
     ln ppsm = ln(9,000) + 0.1 * area + monthly_growth(area) * months + N(0, 0.03).
-    Off-plan units are every third building; bedrooms cycle 0..3.
+    Off-plan units are every third building; bedrooms cycle 0..3. With plot_villas, each area
+    also sells one plot-priced villa a week (null sub-type, 600 m2 plot, about half the ppsm).
     """
     rng = np.random.default_rng(seed)
     records = []
@@ -77,6 +79,16 @@ def build_history(
                     "is_clean": True,
                 }
             )
+            if plot_villas:
+                records.append(
+                    {
+                        **records[-1],
+                        "transaction_id": f"p{len(records)}",
+                        "property_sub_type": None,
+                        "area_sqm": 600.0,
+                        "price_aed": round(villa_ppsm * 300.0 * 1.02, 0),
+                    }
+                )
         day += timedelta(days=7)
     frame = pl.DataFrame(records, schema=RAW_SCHEMA)
     return derive_segments(frame).sort("instance_date", "transaction_id")
