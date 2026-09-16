@@ -80,3 +80,12 @@ def build_history(
         day += timedelta(days=7)
     frame = pl.DataFrame(records, schema=RAW_SCHEMA)
     return derive_segments(frame).sort("instance_date", "transaction_id")
+
+
+def prepared_history(**kwargs):
+    """build_history rows run through prepare_rows: (rows with ppsm and row_id, data_end)."""
+    from models.forecast.config import ForecastConfig
+    from models.forecast.rows import prepare_rows
+
+    rows, _ = prepare_rows(build_history(**kwargs), ForecastConfig())
+    return rows, rows["instance_date"].max()
