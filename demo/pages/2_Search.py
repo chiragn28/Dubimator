@@ -44,20 +44,26 @@ if query:
         for note in result.get("notes") or []:
             st.info(note)
 
-        hits = result.get("hits") or []
+        hits = result.get("results") or []
         st.subheader(f"{len(hits)} result(s)")
         for hit in hits:
             with st.container(border=True):
-                st.markdown(f"**{hit.get('title', 'Untitled')}**")
-                if "asking_price_aed" in hit:
-                    st.write(money(hit["asking_price_aed"]))
+                st.markdown(
+                    f"**{hit.get('title', 'Untitled')}**  ·  listing #{hit.get('listing_id')}"
+                )
+                details = [money(hit["asking_price_aed"])] if "asking_price_aed" in hit else []
+                if hit.get("size_sqm"):
+                    details.append(f"{hit['size_sqm']:,.0f} m²")
+                if hit.get("bedrooms") is not None:
+                    details.append("studio" if hit["bedrooms"] == 0 else f"{hit['bedrooms']} bed")
                 if hit.get("area_name"):
-                    st.caption(hit["area_name"])
+                    details.append(hit["area_name"])
+                st.write("  ·  ".join(details))
                 reasons = hit.get("reasons") or []
                 if reasons:
                     st.write("Why: " + ", ".join(reasons))
-                if hit.get("duplicate"):
-                    st.warning("Possible duplicate listing")
-                fraud_flags = hit.get("fraud_flags")
-                if fraud_flags:
-                    st.error("Fraud flags: " + ", ".join(fraud_flags))
+                hidden = hit.get("duplicates_hidden") or 0
+                if hidden:
+                    st.warning(f"{hidden} likely duplicate listing(s) of this one were hidden")
+        if result.get("ranker"):
+            st.caption(f"Ranked by {result['ranker']}")

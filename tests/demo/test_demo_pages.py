@@ -107,6 +107,9 @@ def test_search_shows_results(monkeypatch):
     assert not at.exception
     headings = [el.value for el in at.subheader]
     assert any("2 result" in heading for heading in headings)
+    # the real API returns "results" with duplicates_hidden (search/engine.py SearchResult.to_dict)
+    assert any("2 likely duplicate" in el.value for el in at.warning)
+    assert any("learned_v2" in el.value for el in at.caption)
 
 
 # ---------------------------------------------------------------------------

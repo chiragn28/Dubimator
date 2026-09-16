@@ -40,7 +40,7 @@ FORECAST_PAYLOAD = {
         "point": 1_468_000.0,
         "ci_low": 1_390_000.0,
         "ci_high": 1_545_000.0,
-        "confidence": "medium",
+        "confidence": "MEDIUM",
     },
     "forecast_1y": {
         "status": "not_deployed",
@@ -51,22 +51,21 @@ FORECAST_PAYLOAD = {
         "reason": "3-year forecasting is not yet deployed",
     },
     "key_drivers": [
-        {"feature": "area trend", "impact_pct": 0.008},
-        {"feature": "size", "impact_pct": -0.003},
+        "Area prices rose 14% over the last 12 months (+0.8% to the 3m forecast)",
+        "Size 85 m² (-0.3% to the 3m forecast)",
     ],
     "exclusions_applied": ["outlier listings excluded"],
     "model_versions": {"price": "price-v3", "forecast": "forecast-v1"},
 }
 
 SEARCH_PAYLOAD = {
-    "query": "",
     "parsed": {
         "area_ids": [1],
         "bedrooms": 3,
         "budget_max": 3_000_000,
         "property_type": "villa",
     },
-    "hits": [
+    "results": [
         {
             "listing_id": 501,
             "score": 0.93,
@@ -76,8 +75,7 @@ SEARCH_PAYLOAD = {
             "asking_price_aed": 2_850_000,
             "size_sqm": 210.0,
             "reasons": ["matches area", "within budget", "3 bedrooms"],
-            "duplicate": True,
-            "fraud_flags": ["photo reuse"],
+            "duplicates_hidden": 2,
         },
         {
             "listing_id": 502,
@@ -88,6 +86,7 @@ SEARCH_PAYLOAD = {
             "asking_price_aed": 2_950_000,
             "size_sqm": 225.0,
             "reasons": ["matches area", "within budget"],
+            "duplicates_hidden": 0,
         },
     ],
     "notes": [],
