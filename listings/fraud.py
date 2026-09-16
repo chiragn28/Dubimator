@@ -75,12 +75,19 @@ def load_price_predictor(uri: str):
         return None
 
 
+def _property_kind(sub_type: str | None) -> str:
+    kind = KIND_BY_SUB_TYPE.get(sub_type)
+    if kind is None:
+        raise PriceInputError("property_sub_type", f"unrecognized sub type {sub_type!r}")
+    return kind
+
+
 def price_request(row: dict) -> dict:
     """A listing row as a PriceRequest payload; unknown fields are left out, never None."""
     villa = row["property_type"] == "villa"
     request = {
         "area_id": int(row["area_id"]),
-        "property_kind": "villa" if villa else KIND_BY_SUB_TYPE[row["property_sub_type"]],
+        "property_kind": "villa" if villa else _property_kind(row["property_sub_type"]),
         "status": row["reg_type"],
         "size_sqm": float(row["size_sqm"]),
         "size_basis": "plot" if villa and row["property_sub_type"] is None else "built_up",
@@ -121,7 +128,8 @@ def bait_price_flags(
                             "estimate_aed": float(estimate.estimate_aed),
                             "range_80_low": low,
                             "below_low_pct": round((1.0 - asking / low) * 100.0, 1),
-                        }
+                        },
+                        allow_nan=False,
                     ),
                 }
             )
@@ -153,7 +161,8 @@ def photo_reuse_flags(attributes: pl.DataFrame, config: DetectConfig) -> pl.Data
                         "photo_set_id": row["photo_set_id"],
                         "areas": row["areas"],
                         "listings": row["listings"],
-                    }
+                    },
+                    allow_nan=False,
                 ),
             }
             for row in flagged.iter_rows(named=True)
@@ -189,7 +198,11 @@ def inconsistent_relist_flags(
     prices = dict(zip(attributes["listing_id"].to_list(), attributes["asking_price_aed"].to_list()))
     rows = []
     for cluster in _clusters(flagged_pairs):
-        values = [prices[listing_id] for listing_id in cluster if listing_id in prices]
+        # Only members present in `attributes` are priced, flagged and counted: listing_id has
+        # an FK to listings.listings, so an id absent from attributes would fail the COPY, and
+        # cluster_size must describe the listings the spread was actually computed over.
+        known = [listing_id for listing_id in cluster if listing_id in prices]
+        values = [prices[listing_id] for listing_id in known]
         if len(values) < 2 or min(values) <= 0:
             continue
         spread = max(values) / min(values) - 1.0
@@ -197,14 +210,15 @@ def inconsistent_relist_flags(
             detail = json.dumps(
                 {
                     "spread": round(spread, 4),
-                    "cluster_size": len(cluster),
+                    "cluster_size": len(known),
                     "min_price_aed": min(values),
                     "max_price_aed": max(values),
-                }
+                },
+                allow_nan=False,
             )
             rows.extend(
                 {"listing_id": listing_id, "flag": "inconsistent_relist", "detail": detail}
-                for listing_id in cluster
+                for listing_id in known
             )
     return pl.DataFrame(rows, schema=FLAG_SCHEMA)
 
@@ -222,7 +236,12 @@ def run_fraud_checks(
     frames = [photo_reuse_flags(attributes, config)]
     stats = {"listings": float(attributes.height)}
     if predictor is None:
-        stats |= {"bait_price_skipped": 1.0, "bait_price_flagged": 0.0}
+        stats |= {
+            "bait_price_skipped": 1.0,
+            "bait_price_checked": 0.0,
+            "bait_price_unsupported": 0.0,
+            "bait_price_flagged": 0.0,
+        }
     else:
         bait, bait_stats = bait_price_flags(attributes, predictor, config)
         frames.append(bait)

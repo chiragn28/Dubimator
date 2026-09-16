@@ -4,8 +4,9 @@ import json
 import polars as pl
 import pytest
 
-from listings.config import DetectConfig
+from listings.config import HOME_UNIT_SUB_TYPES, DetectConfig
 from listings.fraud import (
+    KIND_BY_SUB_TYPE,
     bait_price_flags,
     inconsistent_relist_flags,
     photo_reuse_flags,
@@ -13,6 +14,7 @@ from listings.fraud import (
     run_fraud_checks,
     write_fraud_flags,
 )
+from models.price.predictor import PriceRequest
 
 CONFIG = DetectConfig()
 
@@ -61,13 +63,30 @@ def test_price_request_maps_listing_shapes():
     assert flat["status"] == "ready" and flat["area_id"] == 10
     assert flat["size_sqm"] == 100.0 and flat["bedrooms"] == 2
     assert flat["building"] == "Marina Gate 1" and flat["project"] == "Marina Gate"
+    PriceRequest.parse(flat)  # the real contract, not just the dict shape above
 
     plot_villa = price_request(rows[2])
     assert plot_villa["property_kind"] == "villa" and plot_villa["size_basis"] == "plot"
     assert "bedrooms" not in plot_villa  # unknown bedrooms are left out, not sent as None
+    PriceRequest.parse(plot_villa)
 
     built_villa = price_request(rows[3])
     assert built_villa["size_basis"] == "built_up" and built_villa["status"] == "off_plan"
+    PriceRequest.parse(built_villa)
+
+
+def test_kind_by_sub_type_covers_every_home_unit_sub_type():
+    """KIND_BY_SUB_TYPE, HOME_UNIT_SUB_TYPES (config.py) and generate.py's own copy must agree
+    on which sub types exist; this pins the fraud module's half of that invariant."""
+    assert set(KIND_BY_SUB_TYPE) == set(HOME_UNIT_SUB_TYPES)
+
+
+def test_price_request_skips_rather_than_crashes_on_an_unknown_sub_type():
+    from listings.fraud import PriceInputError
+
+    row = {**ATTRIBUTES.to_dicts()[0], "property_sub_type": "Penthouse Suite"}
+    with pytest.raises(PriceInputError):
+        price_request(row)
 
 
 def test_bait_price_flags_only_the_cheap_listing():
@@ -77,6 +96,7 @@ def test_bait_price_flags_only_the_cheap_listing():
     detail = json.loads(flags["detail"][0])
     assert detail["asking_price_aed"] == 400_000.0
     assert detail["range_80_low"] == 900_000.0
+    assert detail["below_low_pct"] == pytest.approx(55.6)
     assert stats["bait_price_checked"] == 4.0
     assert stats["bait_price_skipped"] == 0.0
 
@@ -86,6 +106,17 @@ def test_listings_the_price_model_cannot_price_are_skipped_not_failed():
     flags, stats = bait_price_flags(ATTRIBUTES, predictor, CONFIG)
     assert 2 not in flags["listing_id"].to_list()
     assert stats["bait_price_unsupported"] == 1.0
+
+
+def test_bait_price_flags_logs_progress(caplog):
+    """log_every is a bait_price_flags-only knob (the CLI wants 2,000; run_fraud_checks does
+    not plumb it through), so it is exercised directly here rather than via run_fraud_checks."""
+    import logging
+
+    predictor = StubPredictor()
+    with caplog.at_level(logging.INFO, logger="listings.fraud"):
+        bait_price_flags(ATTRIBUTES, predictor, CONFIG, log_every=1)
+    assert any("priced" in record.message for record in caplog.records)
 
 
 def test_photo_reuse_needs_several_areas():
@@ -118,17 +149,25 @@ def test_inconsistent_relist_flags_clusters_whose_prices_disagree():
     assert detail["cluster_size"] == 3
 
 
-def test_a_missing_price_model_skips_bait_but_keeps_the_rest(loaded_corpus, caplog):
+def test_a_missing_price_model_skips_bait_but_keeps_the_rest(loaded_corpus):
     settings, _, _ = loaded_corpus
     conn = settings.connect()
+    # Same fixture-scale fix as test_write_fraud_flags_stores_them_per_run below: loaded_corpus
+    # spans exactly 4 areas, so the production photo_reuse_min_areas=5 default can never fire
+    # and result.flags would be empty by construction — which would let the assertions below
+    # pass vacuously (not in [], set() <= anything) without exercising "keeps the rest" at all.
+    config = dataclasses.replace(CONFIG, photo_reuse_min_areas=4)
     try:
         result = run_fraud_checks(
-            conn, pl.DataFrame({"listing_a": [], "listing_b": []}), CONFIG, predictor=None
+            conn, pl.DataFrame({"listing_a": [], "listing_b": []}), config, predictor=None
         )
     finally:
         conn.close()
     assert result.stats["bait_price_skipped"] == 1.0
+    assert result.stats["bait_price_checked"] == 0.0
+    assert result.stats["bait_price_unsupported"] == 0.0
     assert "bait_price" not in result.flags["flag"].to_list()
+    assert "photo_reuse" in result.flags["flag"].to_list()  # the rest actually ran
     assert set(result.flags["flag"].to_list()) <= {"photo_reuse", "inconsistent_relist"}
 
 
