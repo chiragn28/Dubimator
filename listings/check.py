@@ -320,6 +320,14 @@ class ListingChecker:
 
     # --- entry point --------------------------------------------------------------------
 
+    def stored(self, listing_id: int) -> dict | None:
+        """The latest detect run's stored flags for `listing_id`, or None if it is unknown.
+
+        A thin wrapper around the module-level `stored_flags`, so API routes deal with one
+        object (the checker) rather than a checker plus a bare connection.
+        """
+        return stored_flags(self.conn, listing_id)
+
     def check(self, request) -> dict:
         photo_ids = list(dict.fromkeys(_field(request, "photo_ids") or []))
         self._validate_photos(photo_ids)
