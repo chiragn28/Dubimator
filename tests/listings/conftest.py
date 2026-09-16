@@ -68,6 +68,23 @@ def photo_pool(tmp_path):
     return ensure_pool(CorpusConfig(), data_dir=tmp_path, fetch=lambda _url: data)
 
 
+@pytest.fixture
+def large_photo_pool(tmp_path):
+    """An extracted 80-set pool: the local (non-stock) photo sets must outnumber the
+    distinct areas in the base sample, one per area (see generate._plain_sets_by_area).
+    Real DLD sales (tests/fixtures/price_sample.csv) span far more areas (~49-68 after
+    the usual filters) than the small synthetic sales fixtures used elsewhere in this
+    test module (which pin `areas=4` to fit the plain 6-set `photo_pool` fixture above),
+    so the end-to-end integration test needs a bigger local pool. Only that test uses
+    this fixture: building it costs ~10s, and every other listings test still gets the
+    fast 6-set `photo_pool`.
+    """
+    from listings.photos import ensure_pool
+
+    data = build_archive(range(1, 81))
+    return ensure_pool(CorpusConfig(), data_dir=tmp_path, fetch=lambda _url: data)
+
+
 def build_sales(n: int = 3_000, areas: int = 12, buildings_per_area: int = 5) -> pl.DataFrame:
     """Synthetic DLD-shaped sales: every building gets enough sales to be 'busy'."""
     rows = []

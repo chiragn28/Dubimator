@@ -65,13 +65,26 @@ def load_fraud_attributes(conn) -> pl.DataFrame:
 
 
 def load_price_predictor(uri: str):
-    """The Phase 3 champion, or None when it cannot be loaded (detection carries on)."""
-    try:
-        import mlflow
+    """The Phase 3 champion, or None when it cannot be loaded (detection carries on).
 
+    The warning names the resolved MLflow tracking URI, not just the model URI: a
+    misconfigured or missing MLFLOW_TRACKING_URI is the failure mode that silently
+    degrades a run to "no bait flags" while still looking successful, so the tracking
+    URI it actually tried to reach must be visible, not just the `models:/...` alias.
+    """
+    import mlflow
+
+    tracking_uri = mlflow.get_tracking_uri()
+    try:
         return mlflow.pyfunc.load_model(uri).unwrap_python_model().predictor
     except Exception as exc:  # noqa: BLE001 — any failure here is non-fatal by design
-        LOGGER.warning("price model %s unavailable (%s); skipping the bait_price flag", uri, exc)
+        LOGGER.warning(
+            "price model %s unavailable via MLflow tracking URI %s (%s); skipping the "
+            "bait_price flag",
+            uri,
+            tracking_uri,
+            exc,
+        )
         return None
 
 

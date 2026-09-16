@@ -146,3 +146,29 @@ def create_vector_indexes(conn) -> None:
     with conn.cursor() as cur:
         for statement in statements:
             cur.execute(statement)
+
+
+EMBEDDING_INPUT_SQL = {
+    "photos": "SELECT photo_id, path FROM listings.photos ORDER BY photo_id",
+    "listings": "SELECT listing_id, title, description FROM listings.listings ORDER BY listing_id",
+    "listing_photos": (
+        "SELECT listing_id, photo_id, position FROM listings.listing_photos "
+        "ORDER BY listing_id, position"
+    ),
+}
+EMBEDDING_INPUT_SCHEMA = {
+    "photos": {"photo_id": pl.Int64, "path": pl.Utf8},
+    "listings": {"listing_id": pl.Int64, "title": pl.Utf8, "description": pl.Utf8},
+    "listing_photos": {"listing_id": pl.Int64, "photo_id": pl.Int64, "position": pl.Int64},
+}
+
+
+def read_corpus_for_embedding(conn) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
+    frames = []
+    with conn.cursor() as cur:
+        for name, sql in EMBEDDING_INPUT_SQL.items():
+            cur.execute(sql)
+            frames.append(
+                pl.DataFrame(cur.fetchall(), schema=EMBEDDING_INPUT_SCHEMA[name], orient="row")
+            )
+    return tuple(frames)
