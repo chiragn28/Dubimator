@@ -56,12 +56,40 @@ class DataQuality:
         }
 
 
-def validate_rows(rows: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, int]]:
+def _positive(column: str) -> pl.Expr:
+    """Finite and > 0 (null, NaN and +-inf all fail)."""
+    return pl.col(column).is_finite().fill_null(False) & (pl.col(column).fill_null(0) > 0)
+
+
+def _in_date_order(rows: pl.DataFrame) -> pl.DataFrame:
+    return rows.sort("instance_date", "transaction_id", nulls_last=True, maintain_order=True)
+
+
+def excluded_rows(rows: pl.DataFrame, reason: str) -> pl.DataFrame:
+    """Rows in EXCLUDED_SCHEMA form (month = the sale's month) with the given reason."""
+    kind = pl.col("market_kind") if "market_kind" in rows.columns else market_kind()
+    return rows.select(
+        "area_id",
+        "sub_kind",
+        kind.alias("market_kind"),
+        "reg_type",
+        pl.col("instance_date").dt.truncate("1mo").alias("month"),
+        pl.lit(reason).alias("reason"),
+    ).cast(EXCLUDED_SCHEMA)
+
+
+def validate_rows(rows: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, int], pl.DataFrame]:
+    """(kept rows, drop counts, excluded repeat sales).
+
+    Rows are put in (instance_date, transaction_id) order first, so duplicate ids keep the
+    earliest sale and repeat sales keep the largest transaction_id on their date (DLD has no
+    source-row number, so that is what "latest" means).
+    """
     dropped = {}
     checks = (
         ("not_clean", pl.col("is_clean").fill_null(False)),
-        ("bad_price", pl.col("price_aed").fill_null(0.0) > 0),
-        ("bad_size", pl.col("area_sqm").fill_null(0.0) > 0),
+        ("bad_price", _positive("price_aed")),
+        ("bad_size", _positive("area_sqm")),
         ("bad_date", pl.col("instance_date").is_not_null()),
         ("missing_area", pl.col("area_id").is_not_null()),
     )
@@ -69,16 +97,18 @@ def validate_rows(rows: pl.DataFrame) -> tuple[pl.DataFrame, dict[str, int]]:
         before = rows.height
         rows = rows.filter(keep)
         dropped[reason] = before - rows.height
+    rows = _in_date_order(rows)
     before = rows.height
     rows = rows.unique("transaction_id", keep="first", maintain_order=True)
     dropped["duplicate_transaction_id"] = before - rows.height
-    before = rows.height
+    rows = rows.with_row_index("_order")
     repeat = rows.filter(pl.col("building_name").is_not_null())
     single = rows.filter(pl.col("building_name").is_null())
-    repeat = repeat.unique(list(REPEAT_KEY), keep="last", maintain_order=True)
-    rows = pl.concat([repeat, single]).sort("instance_date", "transaction_id")
-    dropped["repeat_sale"] = before - rows.height
-    return rows, dropped
+    kept_repeat = repeat.unique(list(REPEAT_KEY), keep="last", maintain_order=True)
+    repeats = repeat.join(kept_repeat.select("_order"), on="_order", how="anti")
+    rows = pl.concat([kept_repeat, single]).sort("_order").drop("_order")
+    dropped["repeat_sale"] = repeats.height
+    return rows, dropped, excluded_rows(repeats.sort("_order"), "repeat_sale")
 
 
 def screen_outliers(
@@ -100,19 +130,12 @@ def screen_outliers(
     z = (pl.col("_ln") - pl.col("_median")) / (MAD_SCALE * pl.col("_mad"))
     is_outlier = (screened & (z.abs() > config.outlier_z)).fill_null(False)
     frame = frame.with_columns(is_outlier.alias("_outlier"))
-    excluded = frame.filter(pl.col("_outlier")).select(
-        "area_id",
-        "sub_kind",
-        "market_kind",
-        "reg_type",
-        pl.col("_month").alias("month"),
-        pl.lit("outlier").alias("reason"),
-    )
+    excluded = excluded_rows(frame.filter(pl.col("_outlier")), "outlier")
     unscreened = stats.filter((pl.col("_n") < config.outlier_min_group) | (pl.col("_mad") <= 0))
     kept = frame.filter(~pl.col("_outlier")).drop(
         "_month", "_ln", "_median", "_mad", "_n", "_outlier"
     )
-    return kept, excluded.cast(EXCLUDED_SCHEMA), unscreened.height
+    return kept, excluded, unscreened.height
 
 
 def market_kind() -> pl.Expr:
@@ -123,12 +146,11 @@ def market_kind() -> pl.Expr:
 
 def prepare_rows(rows: pl.DataFrame, config: ForecastConfig) -> tuple[pl.DataFrame, DataQuality]:
     loaded = rows.height
+    rows = _in_date_order(rows)  # a seeded sample is then independent of the input order
     if config.sample_rows is not None and rows.height > config.sample_rows:
-        rows = rows.sample(config.sample_rows, seed=config.seed).sort(
-            "instance_date", "transaction_id"
-        )
+        rows = _in_date_order(rows.sample(config.sample_rows, seed=config.seed))
         loaded = rows.height
-    kept, dropped = validate_rows(rows)
+    kept, dropped, repeats = validate_rows(rows)
     kept = kept.with_columns(
         (pl.col("price_aed") / pl.col("area_sqm")).alias("ppsm"),
         market_kind().alias("market_kind"),
@@ -137,6 +159,7 @@ def prepare_rows(rows: pl.DataFrame, config: ForecastConfig) -> tuple[pl.DataFra
     dropped["outlier"] = excluded.height
     kept = kept.sort("instance_date", "transaction_id").with_row_index("row_id")
     kept = kept.with_columns(pl.col("row_id").cast(pl.Int64))
+    excluded = pl.concat([repeats, excluded])
     quality = DataQuality(loaded, dropped, kept.height, excluded, unscreened)
     return kept, quality
 

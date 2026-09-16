@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import date
 
 import polars as pl
@@ -20,16 +21,24 @@ def quiet(monkeypatch, tmp_path):
 def test_build_prints_the_report_and_writes_quality_json(monkeypatch, tmp_path, capsys):
     quiet(monkeypatch, tmp_path)
     seen = {}
+    rows, _ = HISTORY
+    excluded = pl.DataFrame(
+        {"area_id": [1, 2], "sub_kind": ["flat", "villa"], "market_kind": ["flat", "villa"],
+         "reg_type": ["ready", "ready"], "month": [date(2020, 1, 1), date(2020, 2, 1)],
+         "reason": ["repeat_sale", "outlier"]},
+        schema=EXCLUDED_SCHEMA,
+    )  # fmt: skip
+    quality = DataQuality(rows.height + 2, {"repeat_sale": 1, "outlier": 1}, rows.height, excluded)
 
     def load(settings, config):
         seen.update(sample=config.sample_rows, seed=config.seed)
-        return fake_load_rows(HISTORY)(settings, config)
+        return fake_load_rows(HISTORY, quality)(settings, config)
 
     monkeypatch.setattr(cli, "load_rows", load)
     assert cli.main(["build", "--sample", "500", "--seed", "3"]) == 0
     assert seen == {"sample": 500, "seed": 3}
     out = capsys.readouterr().out
-    assert "Dropped 0 of" in out
+    assert f"Dropped 2 of {rows.height + 2:,}" in out
     assert "Target rows:" in out
     assert "Feature coverage" in out
     payload = json.loads((tmp_path / "quality.json").read_text(encoding="utf-8"))
@@ -38,6 +47,9 @@ def test_build_prints_the_report_and_writes_quality_json(monkeypatch, tmp_path, 
     assert payload["targets"]["rows"] == HISTORY[0].height
     assert set(payload) >= {"quality", "excluded", "targets", "feature_coverage"}
     assert "infra_active_metro_rail" in payload["feature_coverage"]
+    written = pl.read_csv(tmp_path / "excluded.csv", try_parse_dates=True)
+    assert written.columns == list(EXCLUDED_SCHEMA)
+    assert written.cast(EXCLUDED_SCHEMA).equals(excluded)
     timings = json.loads((tmp_path / "stage_timings.json").read_text(encoding="utf-8"))
     assert set(timings["build"]) == {"load_rows", "dataset"}
 
@@ -204,7 +216,7 @@ def test_train_end_to_end_then_evaluate_and_predict(monkeypatch, tmp_path, capsy
 
     assert cli.main(["train", "--trials", "1", "--device", "cpu"]) == 0
     out = capsys.readouterr().out
-    assert "3m: passed" in out
+    assert re.search(r"3m: passed \(22 folds: 17 score, 2 tune, 2 gap, 1 test; \d+s\)", out)
     assert "3y: insufficient_data" in out
     assert "segment" in out and "area_trend" in out
     assert "Registered zestimator-forecast-3m version 1 as @champion" in out

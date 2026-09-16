@@ -43,6 +43,13 @@ TYPE_TEXT = {
     "mixed_use": "mixed-use",
     "airport": "airport",
 }
+KIND_TEXT = {
+    "flat": "apartment",
+    "hotel_apartment": "hotel apartment",
+    "townhouse": "townhouse",
+    "villa": "villa (built-up area)",
+    PLOT_VILLA: "villa (plot area)",
+}
 LABELS = {
     "ln_base_ppsm": "Recent price level",
     "base_level_building": "Where recent prices come from",
@@ -68,11 +75,16 @@ def _moved(value: float) -> str:
     return f"{'rose' if change >= 0 else 'fell'} {abs(change):.0%}"
 
 
-def describe(feature: str, value) -> str:
+def describe(feature: str, value, area_names: dict[int, str] | None = None) -> str:
     """A plain sentence about one feature's value (never about its effect)."""
     if value is None or (isinstance(value, float) and math.isnan(value)):
         label = LABELS.get(feature, feature.replace("_", " ").capitalize())
         return f"{label}: unknown"
+    if feature == "area_code":
+        name = (area_names or {}).get(int(value), f"area {value}")
+        return f"{LABELS[feature]}: {name}"
+    if feature == "market_kind":
+        return f"{LABELS[feature]}: {KIND_TEXT.get(value, value)}"
     for level, subject in (("area", "Area prices"), ("city", "Dubai-wide prices for this kind")):
         for lag, text in LAG_TEXT.items():
             if feature == f"{level}_mom_{lag}":
@@ -110,10 +122,17 @@ def describe(feature: str, value) -> str:
     return f"{LABELS.get(feature, feature)}: {value}"
 
 
-def driver_text(feature: str, value, contribution: float, horizon: str) -> str:
+def driver_text(
+    feature: str,
+    value,
+    contribution: float,
+    horizon: str,
+    area_names: dict[int, str] | None = None,
+) -> str:
     effect = math.expm1(contribution)
     sign = "+" if effect >= 0 else "-"
-    return f"{describe(feature, value)} ({sign}{abs(effect):.1%} to the {horizon} forecast)"
+    text = describe(feature, value, area_names)
+    return f"{text} ({sign}{abs(effect):.1%} to the {horizon} forecast)"
 
 
 def query_rows(rows: pl.DataFrame, day: date) -> pl.DataFrame:
@@ -281,7 +300,10 @@ class Forecaster:
         return found.head(1).with_columns(
             pl.lit(float(request.status == "off_plan")).alias("off_plan"),
             pl.lit(math.log(request.size_sqm)).alias("log_area_sqm"),
-            pl.lit(request.bedrooms, dtype=pl.Float64).alias("bedrooms"),
+            # training rows for penthouses have no bedroom count
+            pl.lit(None if request.is_penthouse else request.bedrooms, dtype=pl.Float64).alias(
+                "bedrooms"
+            ),
             pl.lit(market_kind).alias("market_kind"),
             pl.lit(str(area_id)).alias("area_code"),
             pl.lit(request.project, dtype=pl.Utf8).alias("project_code"),
@@ -322,13 +344,14 @@ class Forecaster:
             return []
         contributions = self._model(name).contributions(features)[0][: len(FEATURES)]
         row = features.row(0, named=True)
+        area_names = dict(self.areas.iter_rows())
         drivers = []
         for index in np.argsort(-np.abs(contributions))[:3]:
             value = float(contributions[index])
             if abs(value) < self.config.min_driver_contribution:
                 break
             feature = FEATURES[index]
-            drivers.append(driver_text(feature, row[feature], value, name))
+            drivers.append(driver_text(feature, row[feature], value, name, area_names))
         return drivers
 
     def _exclusions(self, area_id: int, sub_kind: str) -> list[str]:

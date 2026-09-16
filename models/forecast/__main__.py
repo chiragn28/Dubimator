@@ -5,6 +5,7 @@ import dataclasses
 import json
 import sys
 import time
+from collections import Counter
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
@@ -153,6 +154,8 @@ def _build(args: argparse.Namespace) -> int:
         return 1
     coverage = feature_coverage(frame, FEATURES)
     _print(report.lines())
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    quality.excluded.write_csv(DATA_DIR / "excluded.csv")
     print("Feature coverage (non-null share):")
     _print(f"  {name:<28}{share:>7.1%}" for name, share in coverage.items())
     write_json(
@@ -212,7 +215,11 @@ def _train(args: argparse.Namespace) -> int:
         return 1
     print(f"Device {summary.device}; MLflow run {summary.run_id}")
     for name, result in summary.results.items():
-        print(f"{name}: {result.status} ({len(result.folds)} folds, {result.seconds:,.0f}s)")
+        roles = Counter(fold.role for fold in result.folds)
+        counts = ", ".join(f"{roles[role]} {role}" for role in ("score", "tune", "gap", "test"))
+        print(
+            f"{name}: {result.status} ({len(result.folds)} folds: {counts}; {result.seconds:,.0f}s)"
+        )
         _print(f"  {reason}" for reason in result.reasons)
         if result.table is not None:
             _print(format_table(name, result.table))

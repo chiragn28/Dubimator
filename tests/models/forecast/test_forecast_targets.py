@@ -110,6 +110,16 @@ def test_rolling_stats_window_edges():
     assert base["row_id"].to_list() == sorted(base["row_id"].to_list())
 
 
+def test_same_day_sales_are_not_in_the_base_window():
+    frame = add_keys(frame_of([*AREA_ONE, sale(0, 7.0, name="twin")]))
+    base = rolling_stats(
+        frame, "building_key", start_days=-92, length_days=92, closed="left", prefix="b"
+    )
+    for name in ("anchor", "twin"):
+        assert anchor(base, name)["b_n"] == 5  # the other sale on day 0 is not counted
+        assert anchor(base, name)["b_ppsm"] == 30.0
+
+
 def test_rolling_stats_ignores_null_ppsm_and_null_keys():
     sales = [*AREA_ONE, sale(-5, None, name="query"), sale(-5, 5.0, building=None, name="villa")]
     frame = add_keys(frame_of(sales))

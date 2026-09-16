@@ -3,6 +3,7 @@ import math
 import re
 from datetime import date, timedelta
 
+import numpy as np
 import polars as pl
 import pytest
 from forecast_fixtures import (
@@ -14,11 +15,17 @@ from forecast_fixtures import (
     small_model,
 )
 
-from models.forecast.config import ForecastConfig
+from models.forecast.config import FEATURES, ForecastConfig
 from models.forecast.features import build_dataset
-from models.forecast.predict import Forecaster, build_snapshot, describe, driver_text
+from models.forecast.predict import (
+    SNAPSHOT_COLUMNS,
+    Forecaster,
+    build_snapshot,
+    describe,
+    driver_text,
+)
 from models.forecast.rows import EXCLUDED_SCHEMA
-from models.price.predictor import PriceInputError
+from models.price.predictor import PriceInputError, PriceRequest
 
 CONFIG = ForecastConfig(device="cpu")
 MARINA_FLAT = {
@@ -30,6 +37,7 @@ MARINA_FLAT = {
     "size_sqm": 80.0,
     "bedrooms": 1,
 }
+PLAIN_FLAT = {k: v for k, v in MARINA_FLAT.items() if k != "property_id"}
 GATES = {
     "3m": {"status": "passed", "reason": "passed"},
     "1y": {"status": "failed", "reason": "1y resale MAPE 31.2% exceeds the 20% gate"},
@@ -150,7 +158,19 @@ def test_thin_areas_get_the_low_message(world):
     assert re.fullmatch(r".*\(±\d+%\)\.", block["message"])
 
 
-def test_key_drivers_come_from_shap(world):
+def test_key_drivers_come_from_shap(world, monkeypatch):
+    from models.forecast import predict as predict_module
+
+    engine = forecaster(world)
+    features = engine._features(PriceRequest.parse(PLAIN_FLAT), 1, "flat")
+    monkeypatch.setattr(predict_module, "FEATURES", ("area_code", *FEATURES[1:]))
+    monkeypatch.setattr(
+        type(engine._model("3m")),
+        "contributions",
+        lambda self, frame: np.array([[0.5] + [0.0] * len(FEATURES)]),
+    )
+    assert engine._drivers(features) == ["Location: Dubai Marina (+64.9% to the 3m forecast)"]
+    monkeypatch.undo()
     drivers = forecaster(world).forecast(MARINA_FLAT)["key_drivers"]
     assert 1 <= len(drivers) <= 3
     assert all(re.search(r"\([+-]\d+\.\d% to the 3m forecast\)$", text) for text in drivers)
@@ -179,6 +199,23 @@ def test_driver_text_templates():
         "Area prices rose 14% over the last 12 months (+3.1% to the 1y forecast)"
     )
     assert driver_text("off_plan", 1.0, -0.02, "3m").endswith("(-2.0% to the 3m forecast)")
+    names = {1: "Dubai Marina"}
+    assert describe("area_code", "1", names) == "Location: Dubai Marina"
+    assert describe("area_code", "9", names) == "Location: area 9"
+    assert driver_text("area_code", "1", 0.01, "1y", names) == (
+        "Location: Dubai Marina (+1.0% to the 1y forecast)"
+    )
+    kinds = {
+        "flat": "apartment",
+        "hotel_apartment": "hotel apartment",
+        "townhouse": "townhouse",
+        "villa": "villa (built-up area)",
+        "villa_plot": "villa (plot area)",
+    }
+    for kind, text in kinds.items():
+        assert describe("market_kind", kind) == f"Property kind: {text}"
+    assert describe("project_code", "Marina Gate") == "Project: Marina Gate"
+    assert describe("project_code", None) == "Project: unknown"
 
 
 def test_exclusions_name_the_area_and_segment(world):
@@ -193,8 +230,25 @@ def test_exclusions_name_the_area_and_segment(world):
         },
         schema=EXCLUDED_SCHEMA,
     )
+    repeats = pl.DataFrame(
+        {
+            "area_id": [1, 1, 1, 1],
+            "sub_kind": ["flat"] * 4,
+            "market_kind": ["flat"] * 4,
+            "reg_type": ["off_plan", "off_plan", "off_plan", "ready"],
+            "month": [date(2022, 2, 1)] * 4,
+            "reason": ["repeat_sale"] * 4,
+        },
+        schema=EXCLUDED_SCHEMA,
+    )
     result = forecaster(world, excluded=excluded).forecast(MARINA_FLAT)
     assert result["exclusions_applied"] == ["Dropped 2 off-plan outliers in Dubai Marina"]
+    both = forecaster(world, excluded=pl.concat([excluded, repeats])).forecast(MARINA_FLAT)
+    assert both["exclusions_applied"] == [
+        "Dropped 2 off-plan outliers in Dubai Marina",
+        "Dropped 3 off-plan repeat sales in Dubai Marina",
+        "Dropped 1 ready repeat sale in Dubai Marina",
+    ]
 
 
 def test_plot_villas_use_the_plot_market(tmp_path, monkeypatch):
@@ -230,6 +284,53 @@ def test_plot_villas_use_the_plot_market(tmp_path, monkeypatch):
     )
     assert plot["base_ppsm"] == pytest.approx(recent["ppsm"].median())
     assert plot["base_ppsm"] < 0.6 * built["base_ppsm"]  # plot prices per m2 are about half
+
+
+def test_penthouses_have_no_bedroom_count(world):
+    engine = forecaster(world)
+    request = PriceRequest.parse({**PLAIN_FLAT, "bedrooms": 3, "is_penthouse": True})
+    assert engine._features(request, 1, "flat")["bedrooms"].to_list() == [None]
+    plain = PriceRequest.parse({**PLAIN_FLAT, "bedrooms": 3})
+    assert engine._features(plain, 1, "flat")["bedrooms"].to_list() == [3.0]
+
+
+def test_the_snapshot_matches_a_real_sale_the_day_after_the_data_end(world):
+    rows, data_end, projects, _ = world
+    day = data_end + timedelta(days=1)
+    template = rows.filter(pl.col("building_name") == "Tower 1-0").row(-1, named=True)
+    sale = {**template, "transaction_id": "next-day", "instance_date": day,
+            "row_id": rows.height}  # fmt: skip
+    frame, _ = build_dataset(pl.concat([rows, pl.DataFrame([sale], schema=rows.schema)]),
+                             data_end, projects)  # fmt: skip
+    real = frame.filter(pl.col("transaction_id") == "next-day").row(0, named=True)
+    snapshot = build_snapshot(rows, data_end, projects)
+    row = snapshot.filter(pl.col("building_key") == real["building_key"]).row(0, named=True)
+    assert row["market_kind"] == real["market_kind"]
+    for column in SNAPSHOT_COLUMNS:
+        if isinstance(real[column], float):
+            assert row[column] == pytest.approx(real[column], nan_ok=True), column
+        else:
+            assert row[column] == real[column], column
+
+
+def test_area_id_requests_match_area_name_requests(world):
+    engine = forecaster(world)
+    by_id = {k: v for k, v in MARINA_FLAT.items() if k != "area"} | {"area_id": 1}
+    assert engine.forecast(by_id) == engine.forecast(MARINA_FLAT)
+    with pytest.raises(PriceInputError, match="area_id"):
+        engine.forecast({**by_id, "area_id": 99})
+
+
+def test_areas_without_recent_sales_cannot_be_forecast(world):
+    rows, data_end, projects, model = world
+    cut = data_end - timedelta(days=120)
+    quiet_villas = (pl.col("area_id") == 3) & (pl.col("sub_kind") == "villa")
+    thinned = rows.filter(~(quiet_villas & (pl.col("instance_date") > cut)))
+    engine = forecaster((thinned, data_end, projects, model))
+    villa = {"area": "Arabian Ranches", "property_kind": "villa", "status": "ready",
+             "size_sqm": 300.0, "bedrooms": 4}  # fmt: skip
+    with pytest.raises(PriceInputError, match="not enough sales in the last 3 months"):
+        engine.forecast(villa)
 
 
 def test_invalid_requests_raise_price_input_errors(world):

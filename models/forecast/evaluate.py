@@ -134,7 +134,8 @@ def gate(table: pl.DataFrame, horizon: Horizon, model_upper: float) -> GateResul
                 f"{horizon.name} MAPE {model_all:.1%} does not beat the {name} baseline "
                 f"({value:.1%})"
             )
-    strongest = min(baseline_all.values())
+    values = list(baseline_all.values())
+    strongest = math.nan if any(math.isnan(value) for value in values) else min(values)
     checks.update(model_mape=model_all, model_upper=model_upper, strongest_baseline=strongest)
     if not model_upper < strongest:
         reasons.append(

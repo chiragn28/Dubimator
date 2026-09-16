@@ -200,6 +200,20 @@ def test_gate_fails_without_primary_rows():
     assert set(PRIMARY_SEGMENTS) == {"ready", "top5", "age_gt2"}
 
 
+def test_the_strongest_baseline_is_nan_when_any_baseline_is_nan():
+    for missing in ("no_change", "area_trend"):
+        table = table_of().with_columns(
+            pl.when((pl.col("segment") == "all") & (pl.col("model") == missing))
+            .then(0)
+            .otherwise(pl.col("rows"))
+            .alias("rows")
+        )
+        result = gate(table, THREE_M, model_upper=0.06)
+        assert math.isnan(result.checks["strongest_baseline"])
+        assert not result.passed
+        assert any("upper bound" in reason for reason in result.reasons)
+
+
 def test_gate_uses_each_horizons_limit():
     three_y = dataclasses.replace(HORIZON_SPECS["3y"])
     result = gate(table_of(model=0.25, no_change=0.4, area_trend=0.35), three_y, model_upper=0.3)

@@ -8,6 +8,7 @@ from forecast_fixtures import fake_load_rows, prepared_history, project_table
 
 from models.forecast.config import FEATURES, HORIZON_SPECS, ForecastConfig
 from models.forecast.features import build_dataset
+from models.forecast.rows import EXCLUDED_SCHEMA
 from models.forecast.train import run_horizon, run_training
 
 FAST = ForecastConfig(
@@ -47,6 +48,11 @@ def test_a_learnable_horizon_passes_its_gate(passed):
     assert metrics["gate.3m.passed"] == 1.0
     assert "3m.test.all.model.mape" in metrics
     assert "3m.folds.area_trend.mape_mean" in metrics
+    assert "3m.folds.model.median_ape_mean" in metrics
+    assert passed.fold_scores["median_ape"].is_finite().all()
+    capped = passed.model.metadata["capped_rounds"]
+    assert isinstance(capped, int) and 0 <= capped <= FAST.tune_folds
+    assert metrics["3m.capped_rounds"] == capped
     assert set(passed.fold_scores["role"].unique()) <= {"score", "tune", "gap"}
     assert "gap" in set(passed.fold_scores["role"])
     assert passed.model.metadata["test_cutoff"] == passed.folds[-1].cutoff.isoformat()
@@ -87,6 +93,39 @@ def test_gap_folds_are_scored_but_never_tune_or_calibrate(dataset, monkeypatch):
     assert sorted(scored.filter(pl.col("role") == "gap")["fold"].to_list()) == [
         fold.index for fold in gaps
     ]
+
+
+def test_too_few_calibration_rows_is_insufficient_data(dataset, monkeypatch):
+    from models.forecast import train as train_module
+
+    def refuse(segments, errors, config):
+        raise ValueError("too few calibration rows (3) for an 80% interval")
+
+    monkeypatch.setattr(train_module, "fit_intervals", refuse)
+    frame, _, _, data_end = dataset
+    result = run_horizon(frame, THREE_M, "cpu", dataclasses.replace(FAST, n_trials=1), data_end)
+    assert result.status == "insufficient_data"
+    assert result.reasons == ("3m: too few calibration rows for the 80% range",)
+    assert result.model is None and result.table is None
+
+
+def test_capped_rounds_counts_tune_fits_that_hit_the_round_limit(dataset):
+    frame, _, _, data_end = dataset
+    tiny = dataclasses.replace(FAST, n_estimators=3)
+    result = run_horizon(frame, THREE_M, "cpu", tiny, data_end)
+    tuning = sum(fold.role == "tune" for fold in result.folds)
+    assert result.model.metadata["capped_rounds"] == tuning == tiny.tune_folds
+
+
+def test_the_learning_rate_floor_lets_early_stopping_fire():
+    import optuna
+
+    from models.forecast.train import suggest_params
+
+    study = optuna.create_study(sampler=optuna.samplers.RandomSampler(seed=0))
+    trial = study.ask()
+    suggest_params(trial)
+    assert trial.distributions["learning_rate"].low == 0.03
 
 
 def test_a_strict_gate_fails_but_still_reports(dataset):
@@ -150,6 +189,11 @@ def test_run_training_registers_only_passing_horizons(dataset, temp_mlflow):
     assert tags["gate_run"] == "true"
     assert "gate.3m.champion_removed" not in tags  # only horizons that did not pass
     assert tags["gate.1y.champion_removed"] == "false"  # there was no 1y model to remove
+    artifacts = mlflow_artifact(summary.run_id, "1y/gate.json")
+    assert artifacts["reasons"] == list(summary.results["1y"].reasons)
+    assert len(artifacts["reasons"]) >= 1
+    excluded = mlflow_artifact(summary.run_id, "excluded.csv")
+    assert excluded.splitlines()[0] == ",".join(EXCLUDED_SCHEMA)
 
     strict_three = dataclasses.replace(THREE_M, mape_gate=0.0)
     again = run_training(
@@ -165,6 +209,15 @@ def test_run_training_registers_only_passing_horizons(dataset, temp_mlflow):
     gates = latest_gates(FAST.experiment)
     assert gates["3m"]["status"] == "failed"
     assert gates["1y"]["status"] == "unknown"  # this run trained only 3m
+
+
+def mlflow_artifact(run_id, path):
+    import json
+
+    import mlflow
+
+    text = mlflow.artifacts.load_text(f"runs:/{run_id}/{path}")
+    return json.loads(text) if path.endswith(".json") else text
 
 
 def mlflow_tags(run_id):

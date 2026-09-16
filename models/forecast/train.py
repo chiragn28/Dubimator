@@ -41,7 +41,9 @@ from models.price.registry import CHAMPION_ALIAS, configure, log_metrics, regist
 
 FOLD_SCORE_SCHEMA = {
     "fold": pl.Int64, "role": pl.Utf8, "model": pl.Utf8, "rows": pl.Int64, "mape": pl.Float64,
+    "median_ape": pl.Float64,
 }  # fmt: skip
+MIN_LEARNING_RATE = 0.03  # with 500 rounds, lower rates rarely let early stopping fire
 
 
 def base_params(config: ForecastConfig) -> dict:
@@ -61,7 +63,7 @@ def base_params(config: ForecastConfig) -> dict:
 def suggest_params(trial: optuna.Trial) -> dict:
     return {
         "max_depth": trial.suggest_int("max_depth", 3, 10),
-        "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.2, log=True),
+        "learning_rate": trial.suggest_float("learning_rate", MIN_LEARNING_RATE, 0.2, log=True),
         "min_child_weight": trial.suggest_float("min_child_weight", 1.0, 64.0, log=True),
         "subsample": trial.suggest_float("subsample", 0.6, 1.0),
         "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
@@ -153,9 +155,14 @@ class HorizonResult:
                 out[f"{prefix}.median_ape"] = row["median_ape"]
                 out[f"{prefix}.rows"] = row["rows"]
         if self.fold_scores is not None and self.fold_scores.height:
-            means = self.fold_scores.group_by("model").agg(pl.col("mape").mean())
-            for model, value in means.iter_rows():
-                out[f"{name}.folds.{model}.mape_mean"] = value
+            means = self.fold_scores.group_by("model").agg(
+                pl.col("mape").mean(), pl.col("median_ape").mean()
+            )
+            for model, mape, median in means.iter_rows():
+                out[f"{name}.folds.{model}.mape_mean"] = mape
+                out[f"{name}.folds.{model}.median_ape_mean"] = median
+        if self.model is not None:
+            out[f"{name}.capped_rounds"] = self.model.metadata.get("capped_rounds", 0)
         for segment, share in self.coverage.items():
             out[f"{name}.coverage.{segment}"] = share
         if self.upper is not None:
@@ -171,12 +178,16 @@ def run_horizon(
     label = f"growth_{horizon.name}"
     folds = plan_folds(frame, horizon, config)
     train, test = fold_split(frame, horizon, folds[-1]) if folds else (frame.head(0), frame.head(0))
-    reason = insufficiency(folds, test.height, config)
-    if reason is not None:
+
+    def insufficient(reason: str) -> HorizonResult:
         return HorizonResult(
             horizon.name, "insufficient_data", (f"{horizon.name}: {reason}",), folds,
             seconds=time.perf_counter() - started,
         )  # fmt: skip
+
+    reason = insufficiency(folds, test.height, config)
+    if reason is not None:
+        return insufficient(reason)
     categories = fit_categories(train, config)
     params = tune(frame, horizon, folds, categories, device, config)
 
@@ -188,15 +199,20 @@ def run_horizon(
         val, predicted, used = outcome
         actual = val[label].to_numpy()
         for name, values in {MODEL: predicted, **baseline_growth(val, horizon)}.items():
+            errors = ape(values, actual)
             scores.append(
                 {"fold": fold.index, "role": fold.role, "model": name, "rows": val.height,
-                 "mape": float(np.mean(ape(values, actual)))}
+                 "mape": float(np.mean(errors)), "median_ape": float(np.median(errors))}
             )  # fmt: skip
-        if fold.role == "tune":
+        if fold.role == "tune":  # gap and score folds never calibrate or pick the rounds
             calibration_segments += interval_segments(val).to_list()
             calibration_errors += np.abs(predicted - actual).tolist()
             rounds.append(used)
-    intervals = fit_intervals(calibration_segments, calibration_errors, config)
+    try:
+        intervals = fit_intervals(calibration_segments, calibration_errors, config)
+    except ValueError:
+        return insufficient(f"too few calibration rows for the {1 - config.alpha:.0%} range")
+    capped = sum(used >= config.n_estimators for used in rounds)
     final_rounds = max(1, round(float(np.mean(rounds)))) if rounds else config.n_estimators
 
     booster, _ = fit_booster(train, None, params, categories, device, config, label, final_rounds)
@@ -224,6 +240,7 @@ def run_horizon(
             "train_rows": train.height,
             "test_rows": test.height,
             "gate": dict(verdict.checks),
+            "capped_rounds": int(capped),
         },
     )
     return HorizonResult(
@@ -259,6 +276,7 @@ def _log_horizon(result: HorizonResult) -> None:
         }
     )
     mlflow.log_dict({"folds": [fold.to_dict() for fold in result.folds]}, f"{name}/folds.json")
+    mlflow.log_dict({"reasons": list(result.reasons)}, f"{name}/gate.json")
     if result.table is not None:
         mlflow.log_text(result.table.write_csv(), f"{name}/test_segments.csv")
         mlflow.log_text(result.fold_scores.write_csv(), f"{name}/fold_scores.csv")
@@ -305,6 +323,7 @@ def run_training(
             {"quality": quality.to_dict(), "targets": report.to_dict()}, "data_quality.json"
         )
         mlflow.log_text(projects.select(INFRA_COLUMNS).write_csv(), "infrastructure_projects.csv")
+        mlflow.log_text(quality.excluded.write_csv(), "excluded.csv")
         for horizon in horizons:
             result = run_horizon(frame, horizon, device, config, data_end)
             results[horizon.name] = result

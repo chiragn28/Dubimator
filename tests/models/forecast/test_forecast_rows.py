@@ -1,4 +1,5 @@
 import dataclasses
+import math
 from datetime import date
 
 import polars as pl
@@ -47,7 +48,7 @@ def test_validate_rows_drops_each_bad_value_with_its_reason():
     frame = _with(frame, 3, area_id=None)
     frame = _with(frame, 4, transaction_id=frame["transaction_id"][5])
     frame = _with(frame, 6, is_clean=False)
-    kept, dropped = validate_rows(frame)
+    kept, dropped, _ = validate_rows(frame)
     assert dropped == {
         "not_clean": 1,
         "bad_price": 1,
@@ -60,15 +61,62 @@ def test_validate_rows_drops_each_bad_value_with_its_reason():
     assert kept.height == 4
 
 
+def test_validate_rows_drops_non_finite_prices_and_sizes():
+    frame = SMALL.head(10)
+    frame = _with(frame, 0, price_aed=math.nan)
+    frame = _with(frame, 1, price_aed=math.inf)
+    frame = _with(frame, 2, area_sqm=math.nan)
+    frame = _with(frame, 3, area_sqm=-math.inf)
+    frame = _with(frame, 4, area_sqm=math.inf)
+    kept, dropped, _ = validate_rows(frame)
+    assert dropped["bad_price"] == 2
+    assert dropped["bad_size"] == 3
+    assert kept.height == 5
+
+
 def test_validate_rows_keeps_the_last_of_a_repeat_sale():
+    # "Last" is the largest transaction_id on the date (DLD has no source-row number).
     frame = SMALL.filter(pl.col("building_name").is_not_null()).head(3)
     first = frame.row(0, named=True)
-    copy = {**first, "transaction_id": "copy"}
+    copy = {**first, "transaction_id": "zz-copy"}
     frame = pl.concat([frame, pl.DataFrame([copy], schema=frame.schema)])
-    kept, dropped = validate_rows(frame)
-    assert dropped["repeat_sale"] == 1
-    assert "copy" in kept["transaction_id"].to_list()
-    assert first["transaction_id"] not in kept["transaction_id"].to_list()
+    for ordered in (frame, frame.reverse()):
+        kept, dropped, repeats = validate_rows(ordered)
+        assert dropped["repeat_sale"] == 1
+        assert "zz-copy" in kept["transaction_id"].to_list()
+        assert first["transaction_id"] not in kept["transaction_id"].to_list()
+        assert repeats.schema == pl.Schema(EXCLUDED_SCHEMA)
+        assert repeats.row(0, named=True) == {
+            "area_id": first["area_id"],
+            "sub_kind": first["sub_kind"],
+            "market_kind": first["sub_kind"],
+            "reg_type": first["reg_type"],
+            "month": first["instance_date"].replace(day=1),
+            "reason": "repeat_sale",
+        }
+
+
+def test_duplicate_ids_keep_the_first_in_date_order():
+    frame = SMALL.head(4)
+    later = frame.row(3, named=True)
+    frame = _with(frame, 0, transaction_id=later["transaction_id"])  # same id, earlier date
+    for ordered in (frame, frame.reverse()):
+        kept, dropped, _ = validate_rows(ordered)
+        assert dropped["duplicate_transaction_id"] == 1
+        match = kept.filter(pl.col("transaction_id") == later["transaction_id"])
+        assert match["instance_date"].to_list() == [frame["instance_date"][0]]
+
+
+def test_quality_excluded_holds_outliers_and_repeat_sales():
+    frame = SMALL.filter(pl.col("building_name").is_not_null())
+    copy = {**frame.row(0, named=True), "transaction_id": "zz-copy"}
+    _rows, quality = prepare_rows(
+        pl.concat([SMALL, pl.DataFrame([copy], schema=SMALL.schema)]), ForecastConfig()
+    )
+    reasons = quality.excluded["reason"].to_list()
+    assert reasons.count("repeat_sale") == quality.dropped["repeat_sale"] == 1
+    assert reasons.count("outlier") == quality.dropped["outlier"]
+    assert quality.excluded.schema == pl.Schema(EXCLUDED_SCHEMA)
 
 
 def test_outliers_are_screened_within_area_kind_month():
@@ -155,6 +203,8 @@ def test_sampling_is_seeded():
     assert first.height <= 50
     assert first["transaction_id"].to_list() == again["transaction_id"].to_list()
     assert first["transaction_id"].to_list() != other["transaction_id"].to_list()
+    shuffled, _ = prepare_rows(SMALL.sample(fraction=1.0, shuffle=True, seed=3), config)
+    assert shuffled["transaction_id"].to_list() == first["transaction_id"].to_list()
 
 
 def test_load_rows_reads_postgres(pg_test_db):
