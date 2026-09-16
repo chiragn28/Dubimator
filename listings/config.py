@@ -17,7 +17,8 @@ PAIR_FEATURES = (
     "same_project", "bedrooms_equal", "days_apart", "same_agent",
 )  # fmt: skip
 
-# Ground truth. Only evaluate.py may read these.
+# Ground truth. Only listings/truth.py may read these: they are training targets and
+# evaluation answers, never model inputs.
 LABEL_COLUMNS = ("dup_group_id", "control_group_id", "fraud_label")
 
 
