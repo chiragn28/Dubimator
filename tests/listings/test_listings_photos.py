@@ -36,8 +36,38 @@ def test_a_set_missing_a_room_fails_loudly(tmp_path):
         for room in PHOTO_ROOMS:
             archive.writestr(f"{PHOTO_DATASET_DIR}/1_{room}.jpg", b"x")
         archive.writestr(f"{PHOTO_DATASET_DIR}/2_bathroom.jpg", b"x")  # set 2 is incomplete
-    with pytest.raises(PhotoDatasetError, match="2"):
+    with pytest.raises(PhotoDatasetError, match=r"missing one of") as excinfo:
         ensure_pool(CONFIG, data_dir=tmp_path, fetch=lambda _url: buffer.getvalue())
+    assert "[2]" in str(excinfo.value)  # names the incomplete set, not just any message
+
+
+def test_an_interrupted_extraction_is_repaired_on_next_call(tmp_path, photo_archive):
+    """A process killed mid-extraction leaves jpgs on disk but no completion marker.
+
+    The next call must treat that as incomplete: re-fetch, re-extract over the partial
+    files, and come back with every set restored and a real (non-empty) archive hash —
+    never silently accept the truncated pool with a fabricated "" hash.
+    """
+    data = photo_archive(range(1, 4))
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        return data
+
+    ensure_pool(CONFIG, data_dir=tmp_path, fetch=fetch)
+    assert len(calls) == 1
+
+    # Simulate the interruption: no marker, and set 2's files never made it to disk.
+    (tmp_path / "photos.sha256").unlink()
+    for room in PHOTO_ROOMS:
+        (tmp_path / "photos" / f"2_{room}.jpg").unlink()
+
+    pool = ensure_pool(CONFIG, data_dir=tmp_path, fetch=fetch)
+    assert len(calls) == 2  # re-fetched because the marker was missing
+    assert pool.set_ids == (1, 2, 3)
+    assert len(pool.archive_sha256) == 64
+    assert pool.archive_sha256 != ""
 
 
 def test_a_corrupt_archive_fails_loudly(tmp_path):

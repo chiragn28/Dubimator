@@ -21,7 +21,7 @@ DATA_DIR = Path("data/listings")
 PHOTO_DIR = DATA_DIR / "photos"
 VARIANT_DIR = DATA_DIR / "variants"
 _PHOTO_NAME = re.compile(r"^(\d+)_([a-z]+)\.jpg$")
-DOWNLOAD_TIMEOUT = 120
+DOWNLOAD_TIMEOUT = 600
 
 
 class PhotoDatasetError(RuntimeError):
@@ -87,15 +87,24 @@ def ensure_pool(
     url: str = PHOTO_DATASET_URL,
     fetch=download_bytes,
 ) -> PhotoPool:
-    """Return the photo pool, downloading and extracting it only when it isn't there yet."""
+    """Return the photo pool, downloading and extracting it only when it isn't there yet.
+
+    Gated on the completion marker, not on stray jpgs on disk: a process killed mid-extraction
+    can leave whole room sets written with no marker, and re-extracting over them (re-fetching
+    first) is the correct repair rather than silently accepting a truncated pool.
+    """
     root = Path(data_dir) / "photos"
     marker = Path(data_dir) / "photos.sha256"
-    if not root.is_dir() or not any(root.glob("*.jpg")):
+    if not marker.is_file():
         data = fetch(url)
         digest = hashlib.sha256(data).hexdigest()
         _extract(data, root)
         marker.write_text(digest, encoding="utf-8")
-    digest = marker.read_text(encoding="utf-8").strip() if marker.is_file() else ""
+    if not marker.is_file():
+        raise PhotoDatasetError(f"photo pool marker missing after extraction: {marker}")
+    digest = marker.read_text(encoding="utf-8").strip()
+    if not digest:
+        raise PhotoDatasetError(f"photo pool marker is empty: {marker}")
     return PhotoPool(root=root, set_ids=_scan(root), archive_sha256=digest)
 
 
