@@ -236,96 +236,167 @@ Features*, 2016). The images are downloaded, never committed. Every number below
 is measured on that synthetic corpus and does not transfer to a real portal.
 
 ```bash
-uv run python -m listings build      # 206s: corpus + 3,600 edited photo variants (includes the 176 MB photo download)
-uv run python -m listings embed      # 286s on the RTX 3060 (CLIP ViT-B/32 + all-MiniLM-L6-v2), models already cached
-uv run python -m listings detect     # 482s: candidates, scores, duplicate_pairs + fraud_flags
-uv run python -m listings evaluate   # 559s: metrics against ground truth, logged to MLflow
+uv run python -m listings build                    # 56s: corpus + 3,600 edited photo variants (photos already downloaded)
+uv run python -m listings embed                    # 227s on the RTX 3060 (CLIP ViT-B/32 + all-MiniLM-L6-v2), models already cached
+uv run python -m listings detect                   # 423s: candidates, scores, duplicate_pairs + fraud_flags
+uv run python -m listings evaluate --brute-force   # 568s: metrics against ground truth + the index-vs-exact benchmark, logged to MLflow
 ```
 
-The first `embed` took 1,800s end to end, most of it the one-off download of
-the two models; the 286s above is a re-run with the models cached, including
-the HNSW index build. `detect` and `evaluate` each spend most of their time
-pricing all 20,000 listings with the Phase 3 model.
+Those are wall-clock times from the 2026-09-16 re-run (MLflow run
+`98a54b9fe60f45a99a36e27c435cd0c1`, experiment `listing-dedup`). Every stage
+also writes its own time to `data/listings/stage_timings.json`, and `evaluate`
+logs that table as `timings.json` next to the PR curve, the threshold table
+(`threshold_table.csv`) and the reporting-split confusion matrix
+(`confusion_matrix.json`). A first-ever `build` also downloads the 176 MB photo
+archive, and a first-ever `embed` downloads the two models. `detect` and
+`evaluate` each spend most of their time pricing all 20,000 listings with the
+Phase 3 model.
 
 **What gets planted** (all labelled): 1,200 exact reposts, 900 reworded copies,
-900 with cropped/resized/recompressed photos, plus two kinds of listing that must
-**not** be flagged — different units in the same building (often sharing developer
-photos) and unrelated listings sharing an agency photo set — and 600 bait-priced
-listings. 300 of the exact reposts carry an asking price shifted by 15–30%.
+900 with cropped/resized/recompressed photos, and 600 bait-priced listings. 300
+of the exact reposts carry an asking price shifted by 15–30%. Two kinds of
+listing must **not** be flagged:
+- *Same-building controls:* 500 groups of three different units in the same
+  building, priced within 20% of each other. Half of the groups use one
+  developer photo set for all three units, so half of the 1,500 control pairs
+  share every photo.
+- *Stock-photo controls:* unrelated listings in different areas that share an
+  agency photo set.
 
 **How it decides.** Candidates come from three indexed lookups per listing (text
 neighbours, image neighbours, and listings sharing an identical photo), never from
 comparing all pairs. Each candidate is then scored on twelve signals — text and
 photo similarity, shared photos, price and size gaps, same area/building/project,
-bedrooms, days apart, same agent — by a logistic regression whose threshold is the
-lowest score that reaches 98% precision on the validation split (it reached 98.3%
-there), because wrongly accusing a real listing is worse than missing a repost.
+bedrooms, days apart, same agent — by a logistic regression. The threshold is the
+lowest score that reaches 98% precision on the validation split (0.9995 on this
+run; validation precision 98.05%), because wrongly accusing a real listing is
+worse than missing a repost.
 
 **Results** on the reporting split (the most recent posting dates, never used for
-fitting or threshold selection; 210,924 candidate pairs, 817 of them duplicates):
+fitting or threshold selection; 213,244 candidate pairs, 814 of them duplicates):
 
 | | Multi-signal model | Photos-only baseline |
 |---|---|---|
-| Precision | 97.3% | 0.6% |
-| Recall | 34.9% | 91.7% |
-| PR-AUC | 0.919 | — |
-| False positives on same-building controls (419 pairs) | 0.0% | 9.1% |
-| False positives on stock-photo controls (36,744 pairs) | 0.0% | 99.7% |
+| Precision | 98.3% | 0.6% |
+| Recall (of retrieved duplicates) | 21.1% | 91.0% |
+| PR-AUC | 0.889 | — |
+| False positives on same-building controls (448 pairs) | 0.0% | 48.9% |
+| False positives on stock-photo controls (42,417 pairs) | 0.0% | 99.7% |
 
-The baseline is `image_max_cosine ≥ 0.95` alone. On held-out data the model
-landed just under its 98% target, at 97.3% (285 true and 8 false flags), and it
-buys that precision with low recall: it finds about one duplicate in three.
+The baseline is `image_max_cosine ≥ 0.95` alone. The model made 172 true and 3
+false flags. `report.recall` (21.1%) is **conditional on retrieval**: its
+denominator is the 814 duplicates that reached the scoring stage. Measured
+against all 845 duplicate pairs planted in the reporting split, end-to-end recall
+is **20.4%** (172 of 845). This is a high-precision, low-recall detector. It
+finds about one planted duplicate in five.
+
+*The false positives.* None of the 3 reporting-split false positives is a
+labelled control, yet all 3 are the case the controls are meant to model. Each
+pair shares a photo set, the two sizes are almost identical, the prices are
+within 2.3% of each other, and text cosine is about 0.98. In two of the pairs,
+both listings are reposts of *different* source listings in the same building.
+The corpus generator doesn't stop unrelated listings in one building from
+drawing the same local photo set, so these pairs are near-duplicates by
+construction.
 
 Recall by planted pattern (share of all planted pairs whose later listing falls in
-the reporting split, including pairs retrieval never found): exact repost 50.6%
-(336 pairs), reworded 10.0% (241), edited photos 34.5% (264). Reworded copies are
-the weak spot. Price-shifted reposts are missed entirely: of the reporting-split
-duplicates whose price gap is above the median, 0 of 88 were flagged, against
-39.1% below the median.
-Retrieval recall (planted duplicate pairs that reached the scoring stage at all,
-counted across all splits because retrieval runs before any model is fit): 97.2%.
+the reporting split, including pairs retrieval never found): exact repost 31.5%
+(327 pairs), reworded 4.8% (272), edited photos 22.8% (246). Price-shifted reposts
+are never flagged by the duplicate model. Of the reporting-split duplicates with
+any price gap between the two listings, 0 of 84 were flagged, against 23.6% of the
+730 listed at the same price. The relist flag below catches them instead.
+Retrieval recall is 97.1%: the share of planted duplicate pairs that reached the
+scoring stage at all. This figure is **pooled** across all splits, because
+retrieval runs before any model is fit.
+
+**Why recall is low: how the data was generated.** Four features of the
+generator explain most of the weak recall:
+- *Missing values count as a mismatch.* `same_building`, `same_project` and
+  `bedrooms_equal` score 0 when both listings lack the value. `same_building`
+  carries a positive weight, so a repost of a listing with no building name
+  (most villas) looks less like its source than a repost of an apartment does.
+- *Recall depends on the repost delay.* Reposts appear 1–30 days after their
+  source, and `days_apart` is a model input, so the model has learned that
+  window. Late reposts score lower than early ones.
+- *Reworded copies look unrelated to the text model.* A reworded copy is a fresh
+  description generated from the same facts. Its text similarity to the source
+  overlaps the similarity between unrelated listings in the same building. The
+  final review measured that overlap on the previous corpus. This is why reworded
+  recall is the lowest of the three patterns.
+- *Reposts never share an agent.* The generator always gives a repost a
+  different agent, so `same_agent` carries a negative weight in this model.
+  Real reposts by the same agent would look *less* like duplicates to it.
 
 **Why an index and not brute force.** Comparing every pair of 20,000 listings is
-200 million comparisons (about 3.2 billion at photo level). Measured here:
-18.7s for all three indexed lookups (598,065 candidate pairs) versus 297.1s for a
-single exact text scan, and the index returned 99.3% of what the exact scan found
-(253,538 of 255,309 pairs).
+200 million comparisons (about 3.2 billion at photo level). `evaluate
+--brute-force` compares like with like: the indexed (HNSW) text lookup against
+the same top-20 text query run as an exact, index-disabled sequential scan over
+the whole corpus. The indexed text lookup took 7.9s and the exact text scan
+156.1s. The indexed text channel returned 99.4% of the 256,452 exact
+text-neighbour pairs. All three indexed lookups together took 15.8s for 598,533
+candidate pairs.
 
-**Fraud flags.** `bait_price` asks the Phase 3 price model what the home is worth
-and flags asking prices more than 10% below its 80% range: precision 46.9%, recall
-95.9% against the planted cases (706 labelled listings: the 600 planted plus 106
-duplicates of them; 1,444 flagged; 17 of 20,000 listings could not be priced). So
-roughly half its flags land on listings that were not planted as bait, which
-makes it a review-queue signal, not a verdict. `photo_reuse` flags a photo set
-spanning 5 or more areas (5,098 listings), and `inconsistent_relist` flags
-duplicate clusters whose asking prices differ by more than 20% (0 listings on
-this run: it only sees clusters the duplicate model flagged, and no flagged
-cluster had an asking-price spread above 20%, consistent with the model missing
-the price-shifted reposts). If the price
-model cannot be loaded, that flag is skipped and the rest still run.
+**Fraud flags.**
+- **`bait_price`** asks the Phase 3 price model (registry version 2, logged as
+  `price_model_version`) what the home is worth. It flags asking prices more
+  than 10% below the model's 80% range.
+  - *Results:* precision 45.2%, recall 96.5% against the planted cases. There
+    are 706 labelled listings: the 600 planted plus 106 reposts of them.
+    1,508 were flagged, and 17 of the 20,000 listings could not be priced.
+  - *These numbers are in-sample for the price model, so they are
+    optimistic.* The champion was refit on all the data, which covers every
+    source sale (2021-01-03 to 2023-03-17). It has therefore already seen
+    each base listing's real sale price and its building's comparable sales.
+    On unseen data it would likely flag more normal listings.
+  - Roughly half its flags land on listings that were not planted as bait,
+    so it is a review-queue signal, not a verdict.
+- **`photo_reuse`** flags a photo set used in 5 or more areas (4,901 listings).
+- **`inconsistent_relist`** flags duplicate clusters whose asking prices differ
+  by more than 20%.
+  - *Decision:* it uses a **price-blind** duplicate decision: the same fitted
+    model and threshold, with the price gap set to 0 before scoring (965 pairs,
+    against 754 for the headline decision). The headline decision penalises a
+    price gap, so it never flags a relist.
+  - *Truth:* listings in planted duplicate groups whose asking prices differ by
+    more than 20%.
+  - *Results:* 291 listings flagged. On the reporting-split listings (the same
+    date cut), precision is 90.8% (65 flagged) and recall is 56.2% (of 105).
+
+If the price model cannot be loaded, `bait_price` is skipped and the other flags
+still run.
 
 **Write-up**
 
 *Business problem.* Duplicate and fraudulent listings waste buyers' time and
 damage a portal's credibility. The cost of a wrong accusation is high, so the
 system is tuned for precision and every flag records the evidence behind it in
-`listings.duplicate_pairs.signals`, ready for a review queue.
+`listings.duplicate_pairs.signals` and `listings.fraud_flags.detail`, ready for a
+review queue.
 
 *Metric optimised.* Precision first (a floor of 98% chosen on the validation
 split), with recall reported at that bar, plus the false-positive rate on the two
 control groups — the cases a naive photo-similarity rule gets wrong. The honest
-result is a high-precision, low-recall detector: it beats the photo rule by a wide
-margin on the controls, but it misses most reworded and price-shifted reposts.
+result is a high-precision, low-recall detector. It beats the photo rule by a
+wide margin on both controls: 0.0% against 48.9% and 99.7%. But it finds only
+about one planted duplicate in five, and almost none of the reworded copies. A
+price-shifted repost is left to the relist flag.
 
 *What I would do differently with real listings.* Real duplicate labels do not
-exist, so I would bootstrap from agent-reported duplicates and moderator actions
-and treat them as noisy positives; add watermark and logo detection, which real
-agency photos carry; use ANN over photo embeddings with a fanout cap per photo
-once stock photos are identified; and re-check the threshold per market segment,
-since a luxury villa repost and a studio repost do not carry the same cost. On
-this corpus the next fix is the price-gap signal: a repost with a changed price is
-still a repost, so price should feed the relist flag rather than veto the
-duplicate decision.
+exist, so I would:
+- bootstrap labels from agent-reported duplicates and moderator actions, and
+  treat them as noisy positives;
+- add watermark and logo detection, which real agency photos carry;
+- use ANN over photo embeddings with a fanout cap per photo once stock photos
+  are identified;
+- re-check the threshold per market segment, since a luxury villa repost and a
+  studio repost do not carry the same cost.
+
+On this corpus the next fixes are:
+- drop `days_apart` and `same_agent` as model inputs, since they encode how the
+  generator works rather than what a repost is;
+- treat a pair of missing values as unknown rather than as a mismatch;
+- add a text signal that survives rewording, such as matching on extracted
+  facts.
 
 ## Cost breakdown (current)
 

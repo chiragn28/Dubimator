@@ -402,3 +402,110 @@ run 1, MLflow run `2da1554409394a399d95c33ee2015d28` in experiment
   would fail the price-shift band test; the tests' shared `zestimator_test`
   database means the suite must never be run concurrently; the leakage scan
   looks at most five lines past a `SELECT` in inline SQL literals.
+
+### Amendments after the final review (2026-09-16, re-run)
+
+Corpus run 2, detect run 2, MLflow run `98a54b9fe60f45a99a36e27c435cd0c1`
+(experiment `listing-dedup`, `price_model_version = 2`). These numbers
+supersede the "Real-run headline numbers" above, which described corpus run 1.
+
+- **Same-building controls now follow this spec's recipe.** Each group is
+  three price-adjacent sales from one (area, building) with at least 4 sales.
+  The sales are chosen so that the worst-case asking prices stay within
+  `control_price_spread = 0.20`. Groups in alternating seeded-hash order use a
+  single local developer photo set for all members, and the other groups are
+  kept on distinct sets. Bait is never planted on a control, and generation
+  fails loudly if a group's prices spread too far.
+  - *Real corpus:* 500 groups in 45 areas. Of the 1,500 control pairs, exactly
+    50% share a photo set, and the widest price spread is 16.5%.
+  - *Why:* the earlier generator did neither, so price alone separated most
+    control pairs.
+- **`inconsistent_relist` uses a price-blind duplicate decision:** the same
+  fitted pair model and threshold, with `abs_log_price_ratio` set to 0 before
+  scoring, over every scored candidate pair.
+  - *Plumbing:* `DetectionResult.relist_pairs` carries the decision, and the
+    CLI's `detect` and `evaluate` pass it to `run_fraud_checks` for this flag
+    only. The headline model, its features, training and threshold are
+    unchanged. The price-blind pairs are not written to `duplicate_pairs`;
+    each flag's `detail` records `"decision": "price_blind"`.
+  - *Truth:* `truth.load_relist_truth` returns the listings in planted
+    duplicate groups whose asking prices spread by more than
+    `relist_price_spread`.
+  - *Metrics:* `fraud.inconsistent_relist.precision/recall` count only
+    listings posted after the threshold block (the same date cut as
+    `assign_pair_split`). `.flagged` counts all listings, and `pooled.*`
+    exists for debugging.
+  - *Why:* the headline model penalises a price gap so heavily that it never
+    flagged a price-shifted repost, so the flag fired zero times.
+- **Index-vs-exact timing is measured on the full corpus, text channel
+  against exact text scan,** not on the 2,000-listing subset described under
+  Evaluation.
+  - *Method:* `evaluate --brute-force` times the indexed top-20 text lookup and
+    the same query with index scans disabled. It logs
+    `retrieval.bench.text_index_seconds`, `.text_exact_seconds`,
+    `.text_exact_pairs` and `.text_index_recall`, which is the share of exact
+    text-neighbour pairs the indexed text channel returned. It also logs
+    `.candidates_exact_text_recall`, the looser share found by all three
+    channels together.
+  - *Why:* a full-corpus exact scan is affordable (under 3 minutes) and
+    removes the extrapolation.
+  - *Re-run:* 7.9s indexed against 156.1s exact. The index returned 99.4% of
+    256,452 exact pairs, and all channels together 99.4%. All three indexed
+    lookups took 15.8s.
+- **The spec's MLflow artifacts are logged:** `pr.png`, `threshold_table.csv`
+  (precision and recall on the threshold split at a fixed grid plus the chosen
+  cut), `confusion_matrix.json` (reporting split, model and baseline) and
+  `timings.json`.
+  - *Timings:* each CLI stage writes its wall-clock seconds to
+    `<data-dir>/stage_timings.json`, and a new `build` resets the file.
+    `evaluate` logs the earlier stages plus its own time up to logging, as
+    `timing.*_seconds` metrics and in the artifact.
+- **Metric changes.**
+  - `price_shift.above_median/below_median` became
+    `price_shift.shifted/unshifted`, split on any price gap. The median gap
+    among duplicates is 0, so the old name was wrong.
+  - `report.end_to_end_recall` and `report.planted_pairs` were added.
+    `report.recall` is conditional on retrieval.
+  - `stats.*` now also carries per-channel retrieval seconds and
+    `price_blind_flagged`.
+- **`bait_price` is evaluated in-sample for the price model.** The champion was
+  refit on all data, which covers every source sale (2021-01-03 to
+  2023-03-17), so its precision and recall are optimistic.
+- **Tests.**
+  - The control tests now assert that the baseline does flag same-building and
+    stock-photo controls, and that the model flags fewer.
+  - The CLI test asserts that it resolves `zestimator_test`.
+  - The small-fixture `report.precision` floor dropped from 0.9 to 0.8. The
+    spec-shaped controls are hard negatives that the fake embedder can't
+    separate, and one false positive costs about 5 points at that scale.
+- **Re-run headline numbers.**
+  - *Reporting split:* 213,244 pairs, 814 duplicates, 845 planted; threshold
+    0.9995 (validation precision 98.05%).
+  - *Model:* precision 98.3% (172 true, 3 false), recall 21.1%, end-to-end
+    recall 20.4%, PR-AUC 0.889.
+  - *Baseline:* precision 0.6%, recall 91.0%.
+  - *Same-building controls (448 pairs):* model 0.0%, baseline 48.9%.
+  - *Stock-photo controls (42,417 pairs):* model 0.0%, baseline 99.7%.
+  - *Pattern recall:* exact repost 31.5% (327), reworded 4.8% (272), edited
+    photo 22.8% (246).
+  - *Price shift:* shifted duplicates 0 of 84 flagged, unshifted 23.6% of
+    730.
+  - *Retrieval recall:* 97.1% (pooled).
+  - *`bait_price`:* 1,508 flagged, precision 45.2%, recall 96.5%, 17
+    unpriceable, `bait_price_skipped = 0`, `bait_price_checked = 20,000`.
+  - *`photo_reuse`:* 4,901 listings.
+  - *`inconsistent_relist`:* 291 listings; on reporting-split listings,
+    precision 90.8% (65 flagged) and recall 56.2% (105 truth).
+  - *Stage times:* build 56s (photos cached), embed 227s (models cached),
+    detect 423s, `evaluate --brute-force` 568s.
+- **What the re-run shows.**
+  - The harder controls pushed the threshold up, and recall fell (34.9% to
+    21.1%) while held-out precision now meets the 98% target.
+  - All 3 reporting-split false positives are the hard case outside the
+    control label: the same photo set, near-identical size, and prices within
+    2.3%.
+  - The weak recall follows from how the corpus was generated:
+    - both-null equality signals score as a mismatch;
+    - `days_apart` learns the 1–30 day repost window;
+    - reworded text overlaps unrelated same-building text;
+    - reposts never share an agent.
