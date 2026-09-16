@@ -101,7 +101,20 @@ def load_clusters(conn) -> DuplicateClusters:
     return DuplicateClusters(cluster_of, size, posted)
 
 
+def configure_session(conn, config: SearchConfig) -> None:
+    """Session-level HNSW settings for the semantic channel.
+
+    A plain SET lasts for the session, but inside a transaction that is later rolled back it
+    is undone too: a caller that rolls back must commit once after this (the engine does).
+    Under autocommit it takes effect at once.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SET hnsw.ef_search = %s", (config.ef_search,))
+        cur.execute("SET hnsw.iterative_scan = relaxed_order")
+
+
 def _filters(parsed: ParsedQuery) -> tuple[str, list]:
+    """Hard filters: directly named areas and the property type. A building's area is not one."""
     clauses, params = [], []
     if parsed.area_ids:
         clauses.append("l.area_id = ANY(%s)")
@@ -122,10 +135,9 @@ def fulltext_terms(parsed: ParsedQuery, text: str) -> str:
 
 
 def semantic_channel(cur, vector, parsed: ParsedQuery, config: SearchConfig):
+    """Relies on `configure_session` having run on this connection."""
     where, params = _filters(parsed)
     literal = vector_literal(vector)
-    cur.execute("SET LOCAL hnsw.ef_search = %s", (config.ef_search,))
-    cur.execute("SET LOCAL hnsw.iterative_scan = relaxed_order")
     cur.execute(SEMANTIC_SQL.format(filters=where), [literal, *params, literal, config.semantic_k])
     # relaxed_order may return rows slightly out of order: restore it
     return sorted(cur.fetchall(), key=lambda row: (-row[1], row[0]))

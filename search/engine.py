@@ -3,6 +3,7 @@
 Phase 6's API holds a SearchEngine; `search()` is the spec's convenience entry point.
 """
 
+import dataclasses
 import math
 import time
 from dataclasses import dataclass
@@ -10,25 +11,33 @@ from dataclasses import dataclass
 import polars as pl
 
 from listings.embed import SentenceTransformerEmbedder, resolve_device
-from listings.fraud import resolve_price_model_version
 from search.config import SearchConfig
 from search.features import (
     build_features,
     load_listing_attributes,
     load_predicted_flags,
+    meets_every_slot,
     query_frame,
     reference_date,
 )
 from search.lexicon import load_lexicon
 from search.parse import ParsedQuery, parse
-from search.ranker import load_champion
-from search.retrieve import load_clusters, retrieve
-from search.store import read_estimates
+from search.ranker import load_pinned
+from search.retrieve import configure_session, load_clusters, retrieve
+from search.store import (
+    ESTIMATE_SCHEMA,
+    estimates_corpus_run,
+    latest_corpus_run,
+    read_estimates,
+)
 
 FALLBACK = "fallback_fused"
 EMPTY_NOTE = "empty query: add an area, a budget, a property type or a few words"
 NO_MATCH_NOTE = "no listings match; try widening the budget or removing a filter"
 FALLBACK_NOTE = "no ranking model is registered; showing retrieval order"
+CLOSEST_NOTE = "nothing meets every requirement; showing the closest matches"
+STALE_ESTIMATES_NOTE = "price estimates are out of date; value signals skipped"
+WARM_UP_TEXT = "warm up"
 ERROR_NOTES = {
     "budget_min_exceeds_max": "the minimum budget is above the maximum, so the budget was ignored"
 }
@@ -53,6 +62,11 @@ class Hit:
     reasons: tuple[str, ...]
     duplicates_hidden: int
 
+    def to_dict(self) -> dict:
+        data = dataclasses.asdict(self)
+        data["reasons"] = list(self.reasons)
+        return data
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -61,6 +75,16 @@ class SearchResult:
     ranker: str
     notes: tuple[str, ...]
     timings_ms: dict[str, float]
+
+    def to_dict(self) -> dict:
+        """JSON-ready: parsed slots, hits, ranker label, notes and timings."""
+        return {
+            "parsed": self.parsed.to_dict(),
+            "results": [hit.to_dict() for hit in self.results],
+            "ranker": self.ranker,
+            "notes": list(self.notes),
+            "timings_ms": dict(self.timings_ms),
+        }
 
 
 def _finite(value) -> bool:
@@ -73,7 +97,7 @@ def _bedrooms(count: int) -> str:
 
 def reasons(parsed: ParsedQuery, row: dict) -> tuple[str, ...]:
     out = []
-    if parsed.area_ids and parsed.area_name:
+    if parsed.area_ids:  # a named area; a building's own area is never checked here
         out.append("area ✓" if row["area_match"] == 1.0 else "different area")
     if parsed.property_type:
         out.append("type ✓" if row["type_match"] == 1.0 else "different type")
@@ -120,12 +144,36 @@ def query_notes(parsed: ParsedQuery) -> list[str]:
 
 
 class SearchEngine:
-    """One engine holds one database connection, and loads the lexicon, clusters, attributes,
-    flags, estimates and ranker once, at construction time. Reuse one long-lived engine per
-    worker process rather than building a new one per request.
+    """Parse, retrieve, rank and explain queries against one database connection.
 
-    Not safe for concurrent use from multiple threads: it shares one psycopg2 connection.
-    Serialize access to a shared engine, or give each worker its own engine (and connection).
+    Snapshot: construction loads the lexicon, duplicate clusters, listing attributes,
+    predicted flags, price estimates and the ranker once, and there is no reload. Build a new
+    engine after `python -m listings build`, after `python -m search queries` (new
+    estimates) and after a new `@champion` is registered. If the stored estimates belong to
+    an older corpus than the listings, the engine ignores them (the value features are NaN)
+    and every result carries the note "price estimates are out of date; value signals
+    skipped".
+
+    Connection and transactions: the engine only reads, and it never leaves its connection
+    inside a transaction. Construction ends with a rollback, and `search()` rolls back
+    before and after its database work (also on error), so an aborted transaction left by
+    other code on the same connection does not break it. Construction sets `hnsw.ef_search`
+    and `hnsw.iterative_scan` for the session and commits once, so the settings outlive
+    those rollbacks; autocommit connections work too. Give the engine a connection of its
+    own and keep no uncommitted work on it.
+
+    Threads: not safe for concurrent use from multiple threads, because it shares one
+    psycopg2 connection. Serialize access to a shared engine, or give each worker its own
+    engine (and connection). Reuse one long-lived engine per worker rather than building one
+    per request.
+
+    Warm-up: construction embeds one short text, so model loading and the first GPU call are
+    paid there and never show up in a query's `timings_ms`.
+
+    Contract: at most `min(k, config.candidate_k)` hits are returned. Exceptions from the
+    database, the embedder or the ranker propagate to the caller; notes only describe the
+    query and the data. `SearchResult.to_dict()` and `Hit.to_dict()` give JSON-ready
+    dictionaries. Import `search` (it preloads the Windows DLLs) before pandas or pyarrow.
     """
 
     def __init__(
@@ -138,21 +186,29 @@ class SearchEngine:
         self.conn = conn
         self.embedder = embedder
         self.config = config
-        self.lexicon = load_lexicon(conn)
-        self.clusters = load_clusters(conn)
-        self.attributes = load_listing_attributes(conn)
-        self.flags = load_predicted_flags(conn)
-        self.estimates = read_estimates(conn)
+        try:
+            configure_session(conn, config)
+            conn.commit()  # a session SET inside a rolled-back transaction would be undone
+            self.lexicon = load_lexicon(conn)
+            self.clusters = load_clusters(conn)
+            self.attributes = load_listing_attributes(conn)
+            self.flags = load_predicted_flags(conn)
+            self.estimates_current = estimates_corpus_run(conn) == latest_corpus_run(conn)
+            self.estimates = (
+                read_estimates(conn)
+                if self.estimates_current
+                else pl.DataFrame(schema=ESTIMATE_SCHEMA)
+            )
+        finally:
+            conn.rollback()
         self.reference = reference_date(self.attributes)
         if ranker is _LOAD_CHAMPION:
-            self.ranker = load_champion(config.ranker_uri)
-            version = (
-                resolve_price_model_version(config.ranker_uri) if self.ranker is not None else None
-            )
+            self.ranker, version = load_pinned(config.ranker_uri)
             self.ranker_label = f"{config.ranker_name}/v{version}" if self.ranker else FALLBACK
         else:
             self.ranker = ranker
             self.ranker_label = f"{ranker.kind} (injected)" if ranker is not None else FALLBACK
+        self.embedder.embed_texts([WARM_UP_TEXT])
 
     def search(self, text: str, k: int = 10) -> SearchResult:
         started = time.perf_counter()
@@ -160,13 +216,19 @@ class SearchEngine:
         notes = query_notes(parsed)
         if self.ranker is None:
             notes.append(FALLBACK_NOTE)
+        if not self.estimates_current:
+            notes.append(STALE_ESTIMATES_NOTE)
         timings = {"parse": (time.perf_counter() - started) * 1000}
         if parsed.is_empty:
             return self._result(parsed, (), [EMPTY_NOTE, *notes], timings, started)
 
         step = time.perf_counter()
         vector = self.embedder.embed_texts([text])[0]
-        candidates = retrieve(self.conn, parsed, text, vector, self.clusters, self.config)
+        self.conn.rollback()  # never inherit an open or aborted transaction
+        try:
+            candidates = retrieve(self.conn, parsed, text, vector, self.clusters, self.config)
+        finally:
+            self.conn.rollback()
         timings["retrieve"] = (time.perf_counter() - step) * 1000
         if candidates.height == 0:
             return self._result(parsed, (), [*notes, NO_MATCH_NOTE], timings, started)
@@ -187,9 +249,12 @@ class SearchEngine:
         )
         ranked = (
             frame.with_columns(
-                pl.Series("score", scores, dtype=pl.Float64), candidates["fused_pos"]
+                pl.Series("score", scores, dtype=pl.Float64),
+                candidates["fused_pos"],
+                meets_every_slot(self.config.near_margin).alias("meets_every_slot"),
             )
-            .sort(["score", "fused_pos"], descending=[True, False])
+            .with_columns(pl.col("score").fill_nan(float("-inf")).alias("rank_score"))
+            .sort(["rank_score", "fused_pos"], descending=[True, False])
             .head(k)
             .join(
                 self.attributes.select(
@@ -206,6 +271,8 @@ class SearchEngine:
                 maintain_order="left",
             )
         )
+        if ranked.height and not ranked["meets_every_slot"].any():
+            notes.append(CLOSEST_NOTE)
         hits = tuple(
             Hit(
                 listing_id=row["listing_id"],

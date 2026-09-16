@@ -19,7 +19,7 @@ from search.config import KIND_SQL, QUERY_KINDS, SPLITS, SQFT_TO_SQM, SearchConf
 from search.grade import GRADE_SCHEMA, grade_frame
 from search.lexicon import Lexicon
 from search.parse import AMENITY_SYNONYMS, parse
-from search.retrieve import load_clusters, retrieve
+from search.retrieve import configure_session, load_clusters, retrieve
 from search.store import JUDGMENT_SCHEMA, latest_corpus_run
 
 LOGGER = logging.getLogger(__name__)
@@ -346,6 +346,7 @@ def build_query_set(
     clusters = load_clusters(conn)
     vectors = embedder.embed_texts(queries["text"].to_list())
     frames = []
+    configure_session(conn, config)
     rows = queries.select("query_id", "text", "true_slots").iter_rows()
     for index, ((query_id, text, raw_slots), vector) in enumerate(zip(rows, vectors), start=1):
         candidates = retrieve(conn, parse(text, lexicon), text, vector, clusters, config)

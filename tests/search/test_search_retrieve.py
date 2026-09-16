@@ -13,12 +13,13 @@ from search.retrieve import (
     CANDIDATE_SCHEMA,
     DuplicateClusters,
     collapse,
+    configure_session,
     fulltext_terms,
     fuse,
     load_clusters,
     retrieve,
 )
-from search.store import read_judgments, read_queries, replace_query_set
+from search.store import read_judgments, read_queries, read_query_labels, replace_query_set
 
 CONFIG = dataclasses.replace(SearchConfig(), ef_search=100)
 
@@ -102,11 +103,43 @@ def _retrieve(settings, text, embedder, config=CONFIG):
     conn = settings.connect()
     try:
         lexicon, clusters = load_lexicon(conn), load_clusters(conn)
+        configure_session(conn, config)
         parsed = parse(text, lexicon)
         vector = embedder.embed_texts([text])[0]
         return parsed, retrieve(conn, parsed, text, vector, clusters, config)
     finally:
         conn.close()
+
+
+@pytest.mark.parametrize("autocommit", [False, True])
+def test_configure_session_sets_the_hnsw_settings_for_the_session(search_db, autocommit):
+    settings, _, _ = search_db
+    conn = settings.connect()
+    try:
+        conn.autocommit = autocommit
+        configure_session(conn, CONFIG)
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("SHOW hnsw.ef_search")
+            ef_search = cur.fetchone()[0]
+            cur.execute("SHOW hnsw.iterative_scan")
+            scan = cur.fetchone()[0]
+        conn.rollback()  # a committed session-level SET outlives a later rollback
+        with conn.cursor() as cur:
+            cur.execute("SHOW hnsw.ef_search")
+            again = cur.fetchone()[0]
+    finally:
+        conn.close()
+    assert ef_search == again == str(CONFIG.ef_search) and scan == "relaxed_order"
+
+
+def test_a_building_name_is_not_an_area_filter(search_db, fake_embedder):
+    settings, listings, _ = search_db
+    parsed, out = _retrieve(settings, "flat at Marina Gate", fake_embedder)
+    assert parsed.building == "Marina Gate" and parsed.area_ids == ()
+    assert parsed.building_area_ids == (1,)
+    areas = set(out.join(listings.select("listing_id", "area_id"), on="listing_id")["area_id"])
+    assert len(areas) > 1  # other areas stay candidates; building_match ranks them
 
 
 def test_area_and_type_filter_both_channels(search_db, fake_embedder):
@@ -168,6 +201,7 @@ def test_build_query_set_grades_every_candidate(search_db, fake_embedder):
         replace_query_set(conn, queries, judgments)
         conn.commit()
         stored_queries, stored = read_queries(conn), read_judgments(conn)
+        labels = read_query_labels(conn)
     finally:
         conn.close()
     assert queries.height == 60 and (queries["corpus_run_id"] == corpus_run_id).all()
@@ -181,7 +215,8 @@ def test_build_query_set_grades_every_candidate(search_db, fake_embedder):
         (pl.col("grade") == 3).sum().alias("judged3"),
     )
     assert (per_query["first"] == 1).all() and (per_query["n"] == per_query["last"]).all()
-    checked = per_query.join(stored_queries, on="query_id")
+    assert not {"seed_listing_id", "n_grade3"} & set(stored_queries.columns)
+    checked = per_query.join(stored_queries, on="query_id").join(labels, on="query_id")
     assert (checked["judged3"] <= checked["n_grade3"]).all()
     no_match = checked.filter(pl.col("kind") == "no_match")
     assert (no_match["judged3"] == 0).all()

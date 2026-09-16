@@ -10,8 +10,6 @@ import numpy as np
 import polars as pl
 
 LOGGER = logging.getLogger(__name__)
-REPO_ROOT = Path(__file__).resolve().parents[1]
-CODE_PATHS = [str(REPO_ROOT / name) for name in ("search", "listings", "ingestion", "models")]
 RUNTIME_PACKAGES = ("mlflow", "xgboost", "lightgbm", "polars", "pandas", "pyarrow", "numpy")
 META_FILE = "ranker.json"
 
@@ -202,15 +200,35 @@ def _pip_requirements() -> list[str]:
 
 
 def log_ranker(ranker: Ranker, directory: Path) -> str:
-    """Log the ranker as a pyfunc under the active run; returns its model URI."""
+    """Log the ranker as a pyfunc under the active run; returns its model URI.
+
+    No `code_paths`: the model is only ever loaded in-process from this repository, which
+    must be importable (a bundled copy of `search/` would shadow the live one on sys.path).
+    No signature either: the ranker selects its features from the input frame by name.
+    """
     info = mlflow.pyfunc.log_model(
         artifact_path="ranker",
         python_model=RankerPyfunc(),
         artifacts={"ranker_dir": str(ranker.save(directory))},
-        code_paths=CODE_PATHS,
         pip_requirements=_pip_requirements(),
     )
     return info.model_uri
+
+
+def load_pinned(uri: str) -> tuple[Ranker | None, str | None]:
+    """Resolve an alias URI to its version first, then load exactly that version.
+
+    The returned label version and the loaded model therefore cannot disagree, even if the
+    alias moves in between. (None, None) when nothing can be resolved or loaded.
+    """
+    from listings.fraud import resolve_price_model_version  # resolves any models:/ URI
+
+    version = resolve_price_model_version(uri)
+    if version is None:
+        return None, None
+    name = uri.removeprefix("models:/").split("@", 1)[0].split("/", 1)[0]
+    ranker = load_champion(f"models:/{name}/{version}")
+    return (ranker, version) if ranker is not None else (None, None)
 
 
 def load_champion(uri: str) -> Ranker | None:
