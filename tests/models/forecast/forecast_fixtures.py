@@ -174,7 +174,7 @@ class FakePrice:
         )
 
 
-def small_model(frame, horizon="3m", rounds=30):
+def small_model(frame, horizon="3m", rounds=30, data_end=None):
     from models.forecast.config import ForecastConfig
     from models.forecast.features import fit_categories
     from models.forecast.model import ForecastModel
@@ -193,5 +193,5 @@ def small_model(frame, horizon="3m", rounds=30):
         categories=categories,
         intervals={"_pooled": 0.05, "ready_unit": 0.04},
         area_rows=dict(train.group_by("area_id").len().iter_rows()),
-        metadata={},
+        metadata={"data_end": data_end.isoformat()} if data_end else {},
     )

@@ -123,11 +123,19 @@ def load_champion(name: str) -> tuple[ForecastModel | None, str | None]:
     return pyfunc.unwrap_python_model().model, version
 
 
+GATE_RUNS = "attributes.status = 'FINISHED' and tags.gate_run = 'true'"
+
+
 def latest_gates(experiment: str) -> dict[str, dict[str, str]]:
-    """Gate status and reason per horizon from the most recent training run's tags."""
+    """Gate status and reason per horizon from the most recent finished training run's tags.
+
+    Only runs tagged gate_run=true (set by run_training) that finished count, so a crashed or
+    still-running training run, or any other run in the experiment, is never "latest".
+    """
     try:
         runs = mlflow.search_runs(
             experiment_names=[experiment],
+            filter_string=GATE_RUNS,
             order_by=["attributes.start_time DESC"],
             max_results=1,
             output_format="list",

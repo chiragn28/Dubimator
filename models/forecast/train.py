@@ -16,6 +16,8 @@ import numpy as np
 import optuna
 import polars as pl
 import xgboost as xgb
+from mlflow.exceptions import MlflowException
+from mlflow.tracking import MlflowClient
 
 from models.forecast.baselines import baseline_growth
 from models.forecast.config import HORIZON_SPECS, ForecastConfig, Horizon
@@ -35,7 +37,7 @@ from models.forecast.model import ForecastModel, log_forecast_model
 from models.forecast.rows import DataQuality
 from models.forecast.targets import TargetReport
 from models.price.boosting import make_dmatrix, resolve_device
-from models.price.registry import configure, log_metrics, register_champion
+from models.price.registry import CHAMPION_ALIAS, configure, log_metrics, register_champion
 
 FOLD_SCORE_SCHEMA = {
     "fold": pl.Int64, "role": pl.Utf8, "model": pl.Utf8, "rows": pl.Int64, "mape": pl.Float64,
@@ -265,6 +267,17 @@ def _log_horizon(result: HorizonResult) -> None:
         mlflow.log_dict(result.model.intervals, f"{name}/intervals.json")
 
 
+def remove_champion(name: str) -> bool:
+    """Drop the champion alias of a registered model; False when there was none to drop."""
+    client = MlflowClient()
+    try:
+        client.get_model_version_by_alias(name, CHAMPION_ALIAS)
+        client.delete_registered_model_alias(name, CHAMPION_ALIAS)
+    except MlflowException:
+        return False
+    return True
+
+
 def run_training(
     frame: pl.DataFrame,
     report: TargetReport,
@@ -285,6 +298,7 @@ def run_training(
     configure(config.experiment, tracking_uri, artifact_location)
     results, versions = {}, {}
     with mlflow.start_run() as run, tempfile.TemporaryDirectory() as scratch:
+        mlflow.set_tag("gate_run", "true")  # latest_gates reads only finished runs with this tag
         params = {key: str(value) for key, value in dataclasses.asdict(config).items()}
         mlflow.log_params({**params, "resolved_device": device, "data_end": data_end.isoformat()})
         mlflow.log_dict(
@@ -295,13 +309,15 @@ def run_training(
             result = run_horizon(frame, horizon, device, config, data_end)
             results[horizon.name] = result
             _log_horizon(result)
+            name = f"{config.model_prefix}-{horizon.name}"
             if register and result.status == "passed":
                 uri = log_forecast_model(
                     result.model, Path(scratch) / horizon.name, f"model_{horizon.name}"
                 )
-                versions[horizon.name] = register_champion(
-                    uri, f"{config.model_prefix}-{horizon.name}"
-                )
+                versions[horizon.name] = register_champion(uri, name)
+            elif register:
+                removed = remove_champion(name)
+                mlflow.set_tag(f"gate.{horizon.name}.champion_removed", str(removed).lower())
         mlflow.set_tag("registered", ",".join(sorted(versions)) or "none")
     return TrainingSummary(
         device, run.info.run_id, results, versions, time.perf_counter() - started

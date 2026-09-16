@@ -146,3 +146,48 @@ def test_run_training_registers_only_passing_horizons(dataset, temp_mlflow):
     assert gates["1y"]["status"] == "failed"
     assert "exceeds the 0% gate" in gates["1y"]["reason"]
     assert gates["3y"]["status"] == "unknown"
+    tags = mlflow_tags(summary.run_id)
+    assert tags["gate_run"] == "true"
+    assert "gate.3m.champion_removed" not in tags  # only horizons that did not pass
+    assert tags["gate.1y.champion_removed"] == "false"  # there was no 1y model to remove
+
+    strict_three = dataclasses.replace(THREE_M, mape_gate=0.0)
+    again = run_training(
+        frame, report, quality, projects, data_end, FAST,
+        device="cpu", horizons=(strict_three,),
+        tracking_uri=temp_mlflow["tracking_uri"],
+        artifact_location=temp_mlflow["artifact_location"],
+    )  # fmt: skip
+    assert again.results["3m"].status == "failed"
+    assert again.versions == {}
+    assert load_champion("zestimator-forecast-3m") == (None, None)
+    assert mlflow_tags(again.run_id)["gate.3m.champion_removed"] == "true"
+    gates = latest_gates(FAST.experiment)
+    assert gates["3m"]["status"] == "failed"
+    assert gates["1y"]["status"] == "unknown"  # this run trained only 3m
+
+
+def mlflow_tags(run_id):
+    import mlflow
+
+    return mlflow.get_run(run_id).data.tags
+
+
+def test_latest_gates_reads_only_finished_training_runs(temp_mlflow):
+    import mlflow
+    from mlflow.tracking import MlflowClient
+
+    from models.forecast.model import latest_gates
+
+    experiment = mlflow.create_experiment(
+        "gates-only", artifact_location=temp_mlflow["artifact_location"]
+    )
+    client = MlflowClient()
+    finished = client.create_run(experiment, tags={"gate_run": "true", "gate.3m.status": "passed"})
+    client.set_terminated(finished.info.run_id, "FINISHED")
+    other = client.create_run(experiment, tags={"gate.3m.status": "failed"})
+    client.set_terminated(other.info.run_id, "FINISHED")  # not a training run
+    crashed = client.create_run(experiment, tags={"gate_run": "true", "gate.3m.status": "failed"})
+    client.set_terminated(crashed.info.run_id, "FAILED")
+    client.create_run(experiment, tags={"gate_run": "true", "gate.3m.status": "failed"})  # RUNNING
+    assert latest_gates("gates-only")["3m"]["status"] == "passed"

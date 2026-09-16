@@ -42,7 +42,7 @@ def world(tmp_path_factory):
     rows, data_end = prepared_history()
     projects = project_table(tmp_path_factory.mktemp("projects"))
     frame, _ = build_dataset(rows, data_end, projects)
-    return rows, data_end, projects, small_model(frame)
+    return rows, data_end, projects, small_model(frame, data_end=data_end)
 
 
 def forecaster(world, models=None, gates=GATES, excluded=None, config=CONFIG):
@@ -92,6 +92,35 @@ def test_forecast_json_shape(world):
     }  # fmt: skip
     assert result["forecast_3y"]["reason"] == "3y: only 0 walk-forward folds (needs 2)"
     assert result["model_versions"] == {"price": "7", "forecast_3m": "4"}
+
+
+def test_a_champion_whose_latest_gate_failed_is_not_served(world):
+    model = world[3]
+    gates = {**GATES, "3m": {"status": "failed", "reason": "3m resale MAPE 16.0% exceeds"}}
+    result = forecaster(world, models={"3m": (model, "4")}, gates=gates).forecast(MARINA_FLAT)
+    assert result["forecast_3m"] == {
+        "status": "not_deployed", "reason": "3m resale MAPE 16.0% exceeds",
+    }  # fmt: skip
+    assert result["model_versions"] == {"price": "7"}
+    assert result["key_drivers"] == []
+    short = {**GATES, "3m": {"status": "insufficient_data", "reason": "3m: only 1 folds"}}
+    blocked = forecaster(world, gates=short).forecast(MARINA_FLAT)["forecast_3m"]
+    assert blocked == {"status": "not_deployed", "reason": "3m: only 1 folds"}
+
+
+def test_a_stale_champion_is_not_served(world):
+    _rows, data_end, _projects, model = world
+    stale = dataclasses.replace(model, metadata={"data_end": "2022-12-31"})
+    result = forecaster(world, models={"3m": (stale, "4")}).forecast(MARINA_FLAT)
+    assert result["forecast_3m"] == {
+        "status": "not_deployed",
+        "reason": (
+            "the 3m model was trained on data ending 2022-12-31; "
+            f"retrain it on data ending {data_end.isoformat()}"
+        ),
+    }
+    assert result["model_versions"] == {"price": "7"}
+    assert result["key_drivers"] == []
 
 
 def test_no_number_without_a_range(world):

@@ -171,11 +171,32 @@ class Forecaster:
         self.data_end = data_end
         self.areas = areas
         self.aliases = aliases
-        self.models = models
         self.gates = gates
+        self.blocked = {
+            name: reason
+            for name, (model, _) in models.items()
+            if model is not None and (reason := self._block_reason(name, model)) is not None
+        }
+        self.models = {
+            name: (None, None) if name in self.blocked else entry for name, entry in models.items()
+        }
         self.price = price
         self.excluded = excluded
         self.config = config
+
+    def _block_reason(self, name: str, model: ForecastModel) -> str | None:
+        """Why a loaded champion must not be served: a failed latest gate or stale data."""
+        gate = self.gates.get(name, {})
+        if gate.get("status") in ("failed", "insufficient_data"):
+            return gate.get("reason")
+        model_end = model.metadata.get("data_end")
+        data_end = self.data_end.isoformat()
+        if model_end != data_end:
+            return (
+                f"the {name} model was trained on data ending {model_end}; "
+                f"retrain it on data ending {data_end}"
+            )
+        return None
 
     @classmethod
     def build(
@@ -267,6 +288,8 @@ class Forecaster:
 
     def _horizon(self, name: str, features: pl.DataFrame, context: dict) -> dict:
         model = self._model(name)
+        if name in self.blocked:
+            return {"status": "not_deployed", "reason": self.blocked[name]}
         if model is None:
             gate = self.gates.get(name, {})
             failed = gate.get("status") in ("failed", "insufficient_data")
