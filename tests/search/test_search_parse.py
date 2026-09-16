@@ -195,7 +195,13 @@ def test_to_dict_is_json_ready():
 COMMON_WORDS = Lexicon.from_rows(
     areas=AREAS,
     aliases=ALIASES,
-    buildings=[("European", 1), ("Lakeside", 2), ("Marina Gate", 1)],
+    buildings=[
+        ("European", 1),
+        ("Lakeside", 2),
+        ("Marina Gate", 1),
+        ("The Villa", 1),
+        ("Luma21", 2),
+    ],
     projects=[("Diamond", 3)],
 )
 
@@ -220,6 +226,18 @@ def test_a_one_word_building_name_after_a_preposition_matches(text):
     parsed = parse(text, COMMON_WORDS)
     assert parsed.building == "Lakeside" and parsed.building_area_ids == (2,)
     assert parsed.area_ids == ()
+
+
+def test_a_the_prefixed_common_name_is_guarded_too():
+    parsed = parse("show me the villa in Dubai Marina with pool", COMMON_WORDS)
+    assert parsed.building is None and parsed.property_type == "villa"
+    assert parsed.area_ids == (1,)
+    assert parse("flat at The Villa", COMMON_WORDS).building == "The Villa"
+
+
+def test_a_name_with_digits_needs_no_preposition():
+    assert not COMMON_WORDS.entries["luma21"].single_token
+    assert parse("luma21 studio", COMMON_WORDS).building == "Luma21"
 
 
 def test_the_european_kitchen_query_keeps_its_other_slots():
@@ -309,7 +327,9 @@ def test_derived_community_names_never_replace_existing_keys():
     assert entries["dubai hills"] == Place("area", "Dubai Hills", (482,))  # curated wins
     assert entries["arabian ranches"].kind == "area"  # a derived area beats a project name
     assert entries["arabian ranches villas"].kind == "building"
-    assert entries["springs"].single_token and not entries["the springs"].single_token
+    # a leading "the" doesn't make a common word specific; a preposition still matches it
+    assert entries["springs"].single_token and entries["the springs"].single_token
+    assert parse("villa in the Springs", COMMUNITY_LEXICON).area_ids == (500,)
     assert parse("villa with springs view", COMMUNITY_LEXICON).area_ids == ()
 
 

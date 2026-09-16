@@ -307,6 +307,9 @@ def search(conn, text: str, k: int = 10) -> SearchResult:
     connection, its loaded data and its own MiniLM embedder alive for as long as the process
     runs. Pass the same long-lived connection on every call — never a fresh per-request
     connection, which would leak an engine (and a connection) on each call.
+
+    The engine commits once when it is built (to keep its session settings) and rolls back
+    after every search, so never pass a connection that holds uncommitted work.
     """
     engine = _ENGINES.get(id(conn))
     if engine is None:

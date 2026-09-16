@@ -70,6 +70,13 @@ def derive_communities(communities, taken: set[str]) -> dict[str, tuple[str, set
     return derived
 
 
+def _guarded(key: str) -> bool:
+    """A name that reads like an ordinary word ("lakeside", "the villa") only counts after a
+    place preposition. A leading "the" doesn't make it specific; a digit ("luma21") does."""
+    bare = key.removeprefix("the ")
+    return len(bare.split()) == 1 and not any(character.isdigit() for character in bare)
+
+
 @dataclass(frozen=True, eq=False)
 class Lexicon:
     entries: dict[str, Place]  # match_key -> place
@@ -95,7 +102,7 @@ class Lexicon:
             key: Place("area", display[key], tuple(sorted(ids))) for key, ids in area_ids.items()
         }
         for key, (name, ids) in derive_communities(communities, set(entries)).items():
-            entries[key] = Place("area", name, tuple(sorted(ids)), len(key.split()) == 1)
+            entries[key] = Place("area", name, tuple(sorted(ids)), _guarded(key))
         for kind, rows in (("building", buildings), ("project", projects)):
             grouped: dict[str, tuple[str, set[int]]] = {}
             for name, area_id in rows:
@@ -106,7 +113,7 @@ class Lexicon:
                     continue
                 grouped.setdefault(key, (name, set()))[1].add(int(area_id))
             for key, (name, ids) in grouped.items():
-                entries[key] = Place(kind, name, tuple(sorted(ids)), len(key.split()) == 1)
+                entries[key] = Place(kind, name, tuple(sorted(ids)), _guarded(key))
         longest = max((len(key.split()) for key in entries), default=1)
         return cls(entries, min(longest, MAX_PHRASE_TOKENS))
 

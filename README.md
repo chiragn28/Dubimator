@@ -508,7 +508,7 @@ Retrieval is measured separately, under "Retrieval and parsing".
 
 **Rules versus learned.** The rule baseline (`baseline_rules`) scores each
 candidate 3, 2 or 1 by applying the grading rules to the *parsed* query
-(labels are never used), and breaks ties by fused rank. It reaches NDCG@10
+(labels are never used), and breaks ties by the fused retrieval score. It reaches NDCG@10
 **0.972** (95% CI 0.968–0.976). The LightGBM ranker reaches **0.997**
 (0.995–0.999). The learned lift over the rules is **+0.025**, with a paired
 bootstrap 95% CI of 0.021–0.029. The ranker is better on 279 queries, worse
@@ -610,8 +610,8 @@ the lift is +0.431 (paired 95% CI 0.414–0.449).
 - **Base rate.** 3.45% of all report-split candidates carry a ground-truth
   fraud label.
 - **Fraud share.** Every learned model cuts the fraud share to under 1%,
-  against 3–4% for the baselines. The rule baseline is *above* the base rate
-  (3.95%), because bait-priced listings look like good budget matches.
+  against 3.1–4.1% for the baselines. The rule baseline is *above* the base rate
+  (3.95%), probably because bait-priced listings look like good budget matches.
 - **Where the effect comes from.** The ablation, which drops the four trust
   features, still gets 0.98%, close to the winner's 0.96%. So most of the
   reduction does not come from the flags. It is probably the value features:
@@ -728,10 +728,12 @@ Against the grading rules, a hand-written rule scorer over the parsed slots
 already reaches 0.972. The learned ranker adds a small but consistent +0.025
 (paired CI 0.021–0.029). Both are far ahead of retrieval order (0.566).
 
-What the learned model adds that the rules do not is mostly trust: its top-10
-fraud share is under 1%, against 3.95% for the rule scorer. That effect
-survives removing the flag features, so it probably comes from the value
-features. Further weaknesses:
+The learned models also cut the top-10 fraud share below 1% (3.95% for the
+rule scorer), and that effect survives removing the flag features, so it
+probably comes from the value features. A learned model is not needed for
+this, though: on the first run's report split, the same rule scorer minus a
+penalty for the *predicted* bait-price flag reached NDCG@10 0.973 with a 0.24%
+fraud share (a read-only probe, not a logged contender). Further weaknesses:
 - `no_match` NDCG cannot separate contenders; only the closest-match note
   does.
 - Recall is bounded by the 200-candidate budget on broad queries.
