@@ -132,28 +132,36 @@ def _sample_base_sales(sales: pl.DataFrame, config: CorpusConfig) -> pl.DataFram
         .select(key)
     )
     ranked = (
-        with_building.join(busy, on=key, how="inner")
+        with_building.join(busy, on=key, how="inner", maintain_order="left")
         .with_columns(pl.col("transaction_id").hash(seed=config.seed).alias("__h"))
         .sort([*key, "__h"])
         .with_columns(pl.int_range(pl.len()).over(key).alias("__rank"))
         .filter(pl.col("__rank") < per_building)
         .drop("__h", "__rank")
     )
+    # Take the busy buildings in seeded-hash order, not area/building order: sorted order would
+    # fill the control groups from the lowest area ids only, and a control false-positive rate
+    # measured on three neighbourhoods would generalise to nothing.
+    group_key = pl.concat_str(
+        [pl.col("area_id").cast(pl.Utf8), pl.lit(":"), pl.col("building_name")]
+    )
     sizes = (
         ranked.group_by(key, maintain_order=True)
         .len()
+        .with_columns(group_key.hash(seed=config.seed + 3).alias("__gh"))
+        .sort("__gh")
         .with_columns(pl.col("len").cum_sum().alias("__cum"))
     )
     wanted = sizes.filter(pl.col("__cum") - pl.col("len") < config.n_from_busy_buildings).select(
         key
     )
-    busy_rows = ranked.join(wanted, on=key, how="inner").with_columns(
-        pl.concat_str(
-            [pl.lit("bldg:"), pl.col("area_id").cast(pl.Utf8), pl.lit(":"), pl.col("building_name")]
-        ).alias("control_group_id")
+    busy_rows = ranked.join(wanted, on=key, how="inner", maintain_order="left").with_columns(
+        pl.concat_str([pl.lit("bldg:"), group_key]).alias("control_group_id")
     )
     remaining = config.n_base - busy_rows.height
-    rest = sales.join(busy_rows.select("transaction_id"), on="transaction_id", how="anti")
+    rest = sales.join(
+        busy_rows.select("transaction_id"), on="transaction_id", how="anti", maintain_order="left"
+    )
     if remaining < 0:
         raise ValueError(
             f"busy-building sample is {busy_rows.height} rows, more than n_base={config.n_base}"
@@ -189,6 +197,38 @@ def _base_photo_rows(set_ids, stock_sets: set[int]) -> pl.DataFrame:
     return pl.DataFrame(rows, schema=PHOTO_SCHEMA)
 
 
+def _plain_sets_by_area(plain: list[int], area_ids: list[int], config: CorpusConfig) -> dict:
+    """Give every plain photo set one or two home areas.
+
+    Without this a plain set is drawn uniformly across the corpus, so at production scale each
+    one spans far more than stock_min_areas areas: the photo_reuse rule would fire on nearly
+    every listing and tens of thousands of unrelated pairs would share byte-identical photos.
+    Round-robin over a seeded shuffle of the areas, so every area is covered before any area
+    gets a second set, and no set ever reaches more than two areas.
+    """
+    if len(plain) < len(area_ids):
+        # Fewer local sets than areas makes the invariant unsatisfiable: some set would have to
+        # serve enough areas to trip the photo_reuse rule. Say so here rather than letting
+        # _validate report a confusing spread failure much later.
+        raise ValueError(
+            f"photo pool has {len(plain)} non-stock sets for {len(area_ids)} areas; each area "
+            f"needs at least one local set, so use a larger pool or fewer areas"
+        )
+    rng = random.Random(config.seed + 5)
+    order = sorted(area_ids)
+    rng.shuffle(order)
+    by_area: dict[int, list[int]] = {area_id: [] for area_id in sorted(area_ids)}
+    cursor = 0
+    for set_id in plain:
+        homes = set()
+        for _ in range(rng.randint(1, 2)):
+            homes.add(order[cursor % len(order)])
+            cursor += 1
+        for area_id in sorted(homes):
+            by_area[area_id].append(set_id)
+    return by_area
+
+
 def _build_base_listings(
     base: pl.DataFrame,
     areas: pl.DataFrame,
@@ -202,11 +242,32 @@ def _build_base_listings(
     span = (date.fromisoformat(config.posted_to) - start).days - config.repost_days[1]
     if span <= 0:
         raise ValueError("posting window is shorter than the repost delay")
+    if config.n_bait_price > base.height:
+        raise ValueError(
+            f"n_bait_price={config.n_bait_price} exceeds the {base.height} base listings"
+        )
+    plain_by_area = _plain_sets_by_area(plain, base["area_id"].unique().to_list(), config)
+    # Bait multiplies the DLD sale price, per the spec — not the asking price, which would
+    # compound the two factors into an effective 0.40-0.70x. Chosen up front so the factor can
+    # be applied where the sale price is still in hand; the sale price is never stored.
+    bait_rng = random.Random(config.seed + 17)
+    bait_factors = {
+        listing_id: bait_rng.uniform(*config.bait_factor)
+        for listing_id in bait_rng.sample(range(1, base.height + 1), config.n_bait_price)
+    }
     rows = []
     for index, sale in enumerate(base.iter_rows(named=True)):
         listing_id = index + 1
-        photo_set = rng.choice(stock if rng.random() < config.stock_share else plain)
-        asking = round(sale["price_aed"] * rng.uniform(*config.asking_factor) / 10_000) * 10_000
+        if rng.random() < config.stock_share:
+            photo_set = rng.choice(stock)
+        else:
+            # Falls back to the whole plain pool only if an area got no home set at all;
+            # _validate then fails loudly rather than letting the spread go unnoticed.
+            photo_set = rng.choice(plain_by_area.get(sale["area_id"]) or plain)
+        # Always drawn, so which listings are bait does not perturb the rest of the stream.
+        factor = rng.uniform(*config.asking_factor)
+        bait = bait_factors.get(listing_id)
+        asking = round(sale["price_aed"] * (bait if bait is not None else factor) / 10_000) * 10_000
         facts = ListingFacts(
             bedrooms=sale["bedrooms"],
             size_sqm=sale["area_sqm"],
@@ -239,30 +300,18 @@ def _build_base_listings(
                 "photo_set_id": photo_set,
                 "dup_group_id": None,
                 "control_group_id": sale["control_group_id"],
-                "fraud_label": None,
+                "fraud_label": "bait_price" if bait is not None else None,
                 "is_synthetic": True,
             }
         )
     return pl.DataFrame(rows, schema=LISTING_SCHEMA)
 
 
-def _apply_bait_prices(listings: pl.DataFrame, config: CorpusConfig) -> pl.DataFrame:
-    rng = random.Random(config.seed + 17)
-    chosen = rng.sample(listings["listing_id"].to_list(), config.n_bait_price)
-    factors = {listing_id: rng.uniform(*config.bait_factor) for listing_id in chosen}
-    asking = []
-    labels = []
-    for row in listings.iter_rows(named=True):
-        factor = factors.get(row["listing_id"])
-        if factor is None:
-            asking.append(row["asking_price_aed"])
-            labels.append(row["fraud_label"])
-        else:
-            asking.append(float(round(row["asking_price_aed"] * factor / 10_000) * 10_000))
-            labels.append("bait_price")
-    return listings.with_columns(
-        pl.Series("asking_price_aed", asking, dtype=pl.Float64),
-        pl.Series("fraud_label", labels, dtype=pl.Utf8),
+def _area_spread(listings: pl.DataFrame, set_ids: list[int]) -> pl.DataFrame:
+    return (
+        listings.filter(pl.col("photo_set_id").is_in(set_ids))
+        .group_by("photo_set_id")
+        .agg(pl.col("area_id").n_unique().alias("areas"))
     )
 
 
@@ -395,16 +444,23 @@ def _validate(listings: pl.DataFrame, photos: pl.DataFrame, config: CorpusConfig
     if listings.height != config.n_listings:
         raise ValueError(f"generated {listings.height} listings, expected {config.n_listings}")
     stock_sets = photos.filter(pl.col("is_stock"))["set_id"].unique().to_list()
-    spread = (
-        listings.filter(pl.col("photo_set_id").is_in(stock_sets))
-        .group_by("photo_set_id")
-        .agg(pl.col("area_id").n_unique().alias("areas"))
-    )
+    spread = _area_spread(listings, stock_sets)
     thin = spread.filter(pl.col("areas") < config.stock_min_areas)
     if spread.height < len(stock_sets) or thin.height:
         raise ValueError(
             f"every stock photo set must span >= {config.stock_min_areas} areas; "
             f"unused or thin sets: {thin.to_dicts()}"
+        )
+    # The mirror of the check above, and just as load-bearing: if a plain set also went
+    # citywide then photo_reuse would fire on nearly every listing and unrelated listings
+    # would share byte-identical photos, which is what the photos-only baseline is measured
+    # against. A plain set must stay local.
+    plain_sets = photos.filter(~pl.col("is_stock"))["set_id"].unique().to_list()
+    wide = _area_spread(listings, plain_sets).filter(pl.col("areas") >= config.stock_min_areas)
+    if wide.height:
+        raise ValueError(
+            f"every non-stock photo set must stay under {config.stock_min_areas} areas; "
+            f"citywide sets: {wide.to_dicts()}"
         )
 
 
@@ -423,7 +479,6 @@ def generate_corpus(
 
     photos = _base_photo_rows(pool_set_ids, set(stock))
     base = _build_base_listings(_sample_base_sales(sales, config), areas, config, stock, plain)
-    base = _apply_bait_prices(base, config)
     base_photos = _base_listing_photos(base, photos)
 
     arabic = dict(zip(areas["area_id"].to_list(), areas["name_ar"].to_list()))

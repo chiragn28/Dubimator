@@ -21,6 +21,15 @@ PAIR_FEATURES = (
 # evaluation answers, never model inputs.
 LABEL_COLUMNS = ("dup_group_id", "control_group_id", "fraud_label")
 
+# Columns that identify duplicates without any similarity computation. Detection modules
+# (features, candidates, detect, fraud) must never select these; truth.py and evaluate.py may.
+DETECTION_FORBIDDEN_COLUMNS = (
+    *LABEL_COLUMNS,
+    "source_transaction_id",
+    "variant_of",
+    "variant_kind",
+)
+
 
 @dataclass(frozen=True)
 class CorpusConfig:

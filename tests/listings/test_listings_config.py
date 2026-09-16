@@ -1,4 +1,5 @@
 from listings.config import (
+    DETECTION_FORBIDDEN_COLUMNS,
     LABEL_COLUMNS,
     PAIR_FEATURES,
     PHOTO_ROOMS,
@@ -18,6 +19,27 @@ def test_pair_features_are_exact_and_ordered():
 def test_label_columns_are_named_so_detection_can_exclude_them():
     assert LABEL_COLUMNS == ("dup_group_id", "control_group_id", "fraud_label")
     assert not set(LABEL_COLUMNS) & set(PAIR_FEATURES)
+
+
+def test_forbidden_columns_cover_every_free_duplicate_oracle():
+    """Labels are not the only give-aways: provenance and variant columns are oracles too.
+
+    source_transaction_id is shared by a clone and its source and unique to every base
+    listing; variant_of/variant_kind name an edited copy without looking at an image. All
+    three are kept in the corpus (truth and evaluation need them) but must never be selected
+    by a detection module.
+    """
+    assert set(LABEL_COLUMNS) <= set(DETECTION_FORBIDDEN_COLUMNS)
+    assert {"source_transaction_id", "variant_of", "variant_kind"} <= set(
+        DETECTION_FORBIDDEN_COLUMNS
+    )
+    assert set(DETECTION_FORBIDDEN_COLUMNS) == set(LABEL_COLUMNS) | {
+        "source_transaction_id",
+        "variant_of",
+        "variant_kind",
+    }
+    assert not set(DETECTION_FORBIDDEN_COLUMNS) & set(PAIR_FEATURES)
+    assert len(set(DETECTION_FORBIDDEN_COLUMNS)) == len(DETECTION_FORBIDDEN_COLUMNS)
 
 
 def test_corpus_counts_add_up_to_the_requested_total():
