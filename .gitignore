@@ -4,6 +4,7 @@ __pycache__/
 .env
 data/raw/*
 !data/raw/.gitkeep
+data/listings/
 mlruns/
 .pytest_cache/
 .ruff_cache/
