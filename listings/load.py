@@ -6,10 +6,11 @@ from pathlib import Path
 import polars as pl
 
 from ingestion.config import DbSettings
-from ingestion.load import copy_frame
+from ingestion.load import LoadInvariantError, copy_frame
 from listings.generate import Corpus
 
 SCHEMA_SQL = Path(__file__).parent / "sql" / "schema.sql"
+TRUNCATE_LOCK_TIMEOUT = "60s"
 # Truncated together: a new corpus invalidates every detection result that referenced it.
 CORPUS_TABLES = (
     "duplicate_pairs",
@@ -50,20 +51,30 @@ def latest_corpus_run(conn) -> int:
     return run_id
 
 
+def _verify_loaded(cur, table: str, expected: int) -> None:
+    cur.execute(f"SELECT count(*) FROM {table}")
+    (loaded,) = cur.fetchone()
+    if loaded != expected:
+        raise LoadInvariantError(f"{table}: loaded {loaded} rows but expected {expected}")
+
+
 def replace_corpus(conn, corpus: Corpus, corpus_run_id: int) -> None:
     """Truncate the corpus tables and COPY this corpus in. Caller owns the transaction."""
     stamped = pl.lit(corpus_run_id, dtype=pl.Int64)
     with conn.cursor() as cur:
-        cur.execute("SET LOCAL lock_timeout = '60s'")
+        cur.execute(f"SET LOCAL lock_timeout = '{TRUNCATE_LOCK_TIMEOUT}'")
         cur.execute(f"TRUNCATE {', '.join(f'listings.{t}' for t in CORPUS_TABLES)}")
         copy_frame(
             cur, "listings.listings", corpus.listings.with_columns(stamped.alias("corpus_run_id"))
         )
+        _verify_loaded(cur, "listings.listings", corpus.listings.height)
         # embedding is left out of the COPY: it is filled in later by write_photo_embeddings
         copy_frame(
             cur, "listings.photos", corpus.photos.with_columns(stamped.alias("corpus_run_id"))
         )
+        _verify_loaded(cur, "listings.photos", corpus.photos.height)
         copy_frame(cur, "listings.listing_photos", corpus.listing_photos)
+        _verify_loaded(cur, "listings.listing_photos", corpus.listing_photos.height)
 
 
 def load_corpus(settings: DbSettings, corpus: Corpus, seed: int, photo_dataset_sha: str) -> int:

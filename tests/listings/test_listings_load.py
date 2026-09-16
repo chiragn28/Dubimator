@@ -1,6 +1,8 @@
 import polars as pl
 import pytest
 
+from ingestion.load import LoadInvariantError
+from listings import load as load_module
 from listings.generate import generate_corpus
 from listings.load import (
     apply_schema,
@@ -189,6 +191,34 @@ def test_duplicate_pairs_must_be_canonical(
     finally:
         conn.rollback()
         conn.close()
+
+
+def test_a_short_copy_is_caught_and_rolled_back(
+    pg_test_db, sales_frame, areas_frame, small_corpus_config, monkeypatch
+):
+    """A COPY that silently loses a row must fail loudly and leave nothing behind."""
+    corpus = corpus_for(sales_frame, areas_frame, small_corpus_config)
+    conn = pg_test_db.connect()
+    try:
+        apply_schema(conn)
+        conn.commit()
+    finally:
+        conn.close()
+
+    real_copy_frame = load_module.copy_frame
+
+    def short_copy(cur, table, frame):
+        if table == "listings.listings":
+            frame = frame.head(frame.height - 1)
+        real_copy_frame(cur, table, frame)
+
+    monkeypatch.setattr(load_module, "copy_frame", short_copy)
+
+    with pytest.raises(LoadInvariantError, match="listings.listings"):
+        load_corpus(pg_test_db, corpus, seed=1, photo_dataset_sha="a")
+
+    assert query(pg_test_db, "SELECT count(*) FROM listings.listings")[0][0] == 0
+    assert query(pg_test_db, "SELECT count(*) FROM listings.corpus_runs")[0][0] == 0
 
 
 def test_the_listings_table_says_it_is_synthetic(pg_test_db):
