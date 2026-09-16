@@ -1,7 +1,7 @@
 import pytest
 from search_fixtures import ALIASES, AREAS, BUILDINGS
 
-from search.lexicon import Lexicon, Place, load_lexicon
+from search.lexicon import Lexicon, Place, community_names, load_lexicon
 from search.parse import AMENITY_SYNONYMS, parse
 
 LEXICON = Lexicon.from_rows(
@@ -99,7 +99,13 @@ CASES = [
     # buildings and projects
     (
         "flat at Marina Gate",
-        {"building": "Marina Gate", "area_ids": (1,), "area_name": None, "unrecognised": ()},
+        {
+            "building": "Marina Gate",
+            "area_ids": (),  # a building's area is context, never a filter
+            "building_area_ids": (1,),
+            "area_name": None,
+            "unrecognised": (),
+        },
     ),
     (
         "Princess Tower, Dubai Marina",
@@ -109,7 +115,7 @@ CASES = [
         "2BR Executive Towers business bay under 2M",
         {"building": "Executive Towers", "area_ids": (3,), "bedrooms": 2, "budget_max": 2e6},
     ),
-    ("villa in project 5", {"building": "Project 5", "area_ids": (5,)}),
+    ("villa in project 5", {"building": "Project 5", "area_ids": (), "building_area_ids": (5,)}),
     # amenities
     ("villa with pool", {"amenities": ("shared pool",)}),
     ("apartment with sea view and balcony", {"amenities": ("sea view", "balcony")}),
@@ -180,7 +186,136 @@ def test_to_dict_is_json_ready():
     parsed = parse("2BR in Dubai Marina under 1.5M with pool", LEXICON)
     data = json.loads(json.dumps(parsed.to_dict()))
     assert data["area_ids"] == [1] and data["amenities"] == ["shared pool"]
-    assert data["unrecognised"] == []
+    assert data["unrecognised"] == [] and data["building_area_ids"] == []
+    assert json.loads(json.dumps(parse("at Marina Gate", LEXICON).to_dict()))[
+        "building_area_ids"
+    ] == [1]
+
+
+COMMON_WORDS = Lexicon.from_rows(
+    areas=AREAS,
+    aliases=ALIASES,
+    buildings=[("European", 1), ("Lakeside", 2), ("Marina Gate", 1)],
+    projects=[("Diamond", 3)],
+)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "2 bed flat with european kitchen under 1.2M",
+        "villa with lakeside view",
+        "apartment with diamond finishing",
+    ],
+)
+def test_a_one_word_building_name_needs_a_place_preposition(text):
+    parsed = parse(text, COMMON_WORDS)
+    assert parsed.building is None and parsed.building_area_ids == ()
+    assert parsed.area_ids == () and parsed.area_name is None
+    assert COMMON_WORDS.entries["lakeside"].single_token
+
+
+@pytest.mark.parametrize("text", ["flat at Lakeside", "flat near the lakeside", "in Lakeside"])
+def test_a_one_word_building_name_after_a_preposition_matches(text):
+    parsed = parse(text, COMMON_WORDS)
+    assert parsed.building == "Lakeside" and parsed.building_area_ids == (2,)
+    assert parsed.area_ids == ()
+
+
+def test_the_european_kitchen_query_keeps_its_other_slots():
+    parsed = parse("2 bed flat with european kitchen under 1.2M", COMMON_WORDS)
+    assert (parsed.bedrooms, parsed.property_type, parsed.budget_max) == (2, "flat", 1.2e6)
+    assert parsed.free_text == "european kitchen"
+
+
+# rows shaped like dld.area_aliases where source = 'master_project'
+COMMUNITIES = [
+    ("Arabian Ranches - Al Reem 1", 434),
+    ("Arabian Ranches - Golf Homes", 434),
+    ("Arabian Ranches - Polo Homes", 452),
+    ("Arabian Ranches II - Casa", 463),
+    ("Arabian Ranches II - Rosa", 463),
+    ("The Springs 3", 500),
+    ("The Springs 7", 500),
+    ("Dubai Hills - Sidra 1", 482),
+]
+COMMUNITY_LEXICON = Lexicon.from_rows(
+    areas=[(434, "Wadi Al Safa 6"), (452, "Wadi Al Safa 5"), (463, "Wadi Al Safa 7"),
+           (482, "Hadaeq Sheikh Mohammed Bin Rashid"), (500, "Um Esalay")],
+    aliases=[("Dubai Hills", 482)],
+    buildings=[("Arabian Ranches Villas", 434)],
+    projects=[("Arabian Ranches", 434)],
+    communities=COMMUNITIES,
+)  # fmt: skip
+
+
+@pytest.mark.parametrize(
+    ("alias", "expected"),
+    [
+        ("Arabian Ranches - Al Reem 1", {"Arabian Ranches"}),
+        (
+            "Arabian Ranches II - Casa",
+            {"Arabian Ranches II", "Arabian Ranches 2", "Arabian Ranches"},
+        ),
+        (
+            "The Springs 3",
+            {"The Springs 3", "The Springs III", "The Springs", "Springs 3", "Springs III",
+             "Springs"},
+        ),
+        ("Springs - 1", {"Springs"}),
+        (
+            "International City Phase 3",
+            {"International City Phase 3", "International City Phase III", "International City"},
+        ),
+        ("Lakes - Hattan II", {"Lakes"}),
+        ("Jumeirah Lakes Towers", {"Jumeirah Lakes Towers"}),
+    ],
+)  # fmt: skip
+def test_community_names(alias, expected):
+    assert community_names(alias) == expected
+
+
+@pytest.mark.parametrize(
+    ("alias", "area_ids"),
+    [
+        ("Arabian Ranches - Al Reem 1", (434,)),
+        ("Arabian Ranches II - Casa", (463,)),
+        ("The Springs 3", (500,)),
+    ],
+)
+def test_a_master_project_alias_resolves_to_its_area(alias, area_ids):
+    parsed = parse(f"villa in {alias}", COMMUNITY_LEXICON)
+    assert parsed.area_ids == area_ids and parsed.building is None
+
+
+@pytest.mark.parametrize(
+    ("text", "area_ids"),
+    [
+        ("townhouse in Arabian Ranches 2", (463,)),
+        ("townhouse in Arabian Ranches II", (463,)),
+        ("villa in the Springs", (500,)),
+        ("villa in Springs", (500,)),
+        ("villa in Arabian Ranches", (434, 452, 463)),  # the union of every alias sharing it
+    ],
+)
+def test_community_prefixes_resolve_to_areas(text, area_ids):
+    parsed = parse(text, COMMUNITY_LEXICON)
+    assert parsed.area_ids == area_ids and parsed.building is None
+    assert parsed.property_type in {"townhouse", "villa"} and parsed.bedrooms is None
+
+
+def test_derived_community_names_never_replace_existing_keys():
+    entries = COMMUNITY_LEXICON.entries
+    assert entries["dubai hills"] == Place("area", "Dubai Hills", (482,))  # curated wins
+    assert entries["arabian ranches"].kind == "area"  # a derived area beats a project name
+    assert entries["arabian ranches villas"].kind == "building"
+    assert entries["springs"].single_token and not entries["the springs"].single_token
+    assert parse("villa with springs view", COMMUNITY_LEXICON).area_ids == ()
+
+
+def test_an_unknown_place_after_in_the_is_noted():
+    assert parse("villa in the Springs", LEXICON).unrecognised == (("place", "springs"),)
+    assert parse("apartment in the palm", LEXICON).unrecognised == ()
 
 
 def test_every_synonym_maps_to_a_real_amenity():
@@ -251,4 +386,5 @@ def test_lexicon_loads_from_postgres(search_db):
     assert lexicon.entries["jvc"] == Place("area", "JVC", (2,))
     assert lexicon.entries["marina gate"].kind == "building"
     assert lexicon.entries["project 3"].kind == "project"
-    assert parse("2 bed at Marina Gate", lexicon).area_ids == (1,)
+    parsed = parse("2 bed at Marina Gate", lexicon)
+    assert parsed.area_ids == () and parsed.building_area_ids == (1,)

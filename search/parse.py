@@ -88,6 +88,8 @@ class ParsedQuery:
     area_ids: tuple[int, ...] = ()
     area_name: str | None = None
     building: str | None = None  # a building or project name, as the lexicon spells it
+    # the named building's areas: context for display only, never a retrieval filter
+    building_area_ids: tuple[int, ...] = ()
     bedrooms: int | None = None
     property_type: str | None = None
     budget_min: float | None = None
@@ -115,6 +117,7 @@ class ParsedQuery:
     def to_dict(self) -> dict:
         data = asdict(self)
         data["area_ids"] = list(self.area_ids)
+        data["building_area_ids"] = list(self.building_area_ids)
         data["amenities"] = list(self.amenities)
         data["unrecognised"] = [list(item) for item in self.unrecognised]
         data["errors"] = list(self.errors)
@@ -213,10 +216,21 @@ def _budget(text: str) -> tuple[str, float | None, float | None]:
     return text, low, high
 
 
+def _after_preposition(words: list[str], start: int) -> bool:
+    """True when words[start] follows "in", "at", "near" or "around" (optionally + "the")."""
+    index = start - 1
+    if index >= 0 and words[index] == "the":
+        index -= 1
+    return index >= 0 and words[index] in PLACE_PREPOSITIONS
+
+
 def _places(text: str, lexicon: Lexicon) -> tuple[str, list]:
     tokens = [(m.group(), m.start(), m.end()) for m in _TOKEN.finditer(text) if m.group() != "al"]
+    words = [token for token, _, _ in tokens]
     found = []
-    for start, end, place in lexicon.match([token for token, _, _ in tokens]):
+    for start, end, place in lexicon.match(words):
+        if place.single_token and not _after_preposition(words, start):
+            continue  # "villa with lakeside view": a common word, not the building "Lakeside"
         text = _blank(text, tokens[start][1], tokens[end - 1][2])
         found.append(place)
     return text, found
@@ -260,6 +274,9 @@ def _unrecognised_places(text: str) -> tuple[str, list[str]]:
             continue
         phrase = []
         cursor, previous_end = index + 1, end
+        if cursor < len(words) and words[cursor][0] == "the":
+            previous_end = words[cursor][2]  # "in the Springs": the place is "springs"
+            cursor += 1
         while cursor < len(words) and len(phrase) < 3:
             token, start, stop = words[cursor]
             if BLANK in text[previous_end:start] or token in PLACE_STOP or token.isdigit():
@@ -296,16 +313,11 @@ def parse(text: str, lexicon: Lexicon) -> ParsedQuery:
     working, unknown = _unrecognised_places(working)
     area = next((place for place in places if place.kind == "area"), None)
     named = next((place for place in places if place.kind != "area"), None)
-    if area is not None:
-        area_ids = area.area_ids
-    elif named is not None:
-        area_ids = named.area_ids
-    else:
-        area_ids = ()
     return ParsedQuery(
-        area_ids=area_ids,
+        area_ids=area.area_ids if area else (),
         area_name=area.name if area else None,
         building=named.name if named else None,
+        building_area_ids=named.area_ids if named else (),
         bedrooms=bedrooms,
         property_type=property_type,
         budget_min=budget_min,
