@@ -6,6 +6,7 @@ data/raw/*
 !data/raw/.gitkeep
 data/listings/
 data/search/
+data/forecast/
 mlruns/
 .pytest_cache/
 .ruff_cache/
