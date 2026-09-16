@@ -8,11 +8,13 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
+import polars as pl
 from dotenv import load_dotenv
 
 from ingestion.config import DbSettings
 from models.forecast.config import DATA_DIR, ForecastConfig
 from models.forecast.features import CORE_FEATURES, add_core_features, feature_coverage
+from models.forecast.infra import fetch_reference, load_projects, project_lines, validate_projects
 from models.forecast.rows import excluded_summary, load_rows
 from models.forecast.targets import build_targets
 
@@ -60,13 +62,14 @@ def _parser() -> argparse.ArgumentParser:
     build = commands.add_parser("build", help="rows, targets and features plus a quality report")
     build.add_argument("--sample", type=int, help="screen a seeded random sample of N rows")
     build.add_argument("--seed", type=int, default=DEFAULTS.seed)
+    commands.add_parser("infra-check", help="validate and list the infrastructure table")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     load_dotenv()  # before any settings are read: DbSettings.from_env() needs POSTGRES_PORT
-    handlers = {"build": _build}
+    handlers = {"build": _build, "infra-check": _infra_check}
     return handlers[args.command](args)
 
 
@@ -113,6 +116,29 @@ def _build(args: argparse.Namespace) -> int:
         },
     )
     stages.save()
+    return 0
+
+
+def _infra_check(args: argparse.Namespace) -> int:
+    try:
+        projects = load_projects()
+        area_names, data_end = fetch_reference(_settings())
+    except Exception as exc:  # noqa: BLE001 — CLI boundary: report and exit 1
+        print(f"Infrastructure check failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    _print(project_lines(projects, area_names))
+    late = projects.filter(pl.col("announced_date") > data_end).height
+    print(
+        f"{projects.height} projects; {late} announced after the data end ({data_end}) "
+        "and so affect no row"
+    )
+    problems = validate_projects(projects, set(area_names))
+    if problems:
+        print("Infrastructure table problems:", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+    print("Infrastructure table OK")
     return 0
 
 

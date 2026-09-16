@@ -124,3 +124,36 @@ def fake_load_rows(rows_and_end, quality=None):
         return rows, quality, data_end, history_areas(), history_aliases()
 
     return load
+
+
+def project_record(index, **overrides):
+    from models.forecast.config import INFRA_TYPES
+
+    record = {
+        "project_id": f"P{index:02d}",
+        "name": f"Project number {index}",
+        "type": INFRA_TYPES[index % len(INFRA_TYPES)],
+        "announced_date": "2016-01-01",
+        "planned_completion_date": "2019-01-01",
+        "actual_completion_date": "2019-06-01" if index % 2 else "",
+        "affected_area_ids": "1;2",
+        "source_url": f"https://example.org/projects/{index}",
+        "source_accessed": "2026-09-16",
+        "notes": "synthetic test row",
+    }
+    return {**record, **overrides}
+
+
+def write_projects(directory, records):
+    from models.forecast.infra import INFRA_COLUMNS
+
+    path = directory / "projects.csv"
+    pl.DataFrame(records, schema=dict.fromkeys(INFRA_COLUMNS, pl.Utf8)).write_csv(path)
+    return path
+
+
+def project_table(directory, count=15, **overrides):
+    from models.forecast.infra import load_projects
+
+    records = [project_record(index, **overrides) for index in range(count)]
+    return load_projects(write_projects(directory, records))

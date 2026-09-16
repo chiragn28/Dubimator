@@ -97,3 +97,58 @@ def test_build_runs_on_the_test_database(pg_test_db, monkeypatch, tmp_path, caps
     assert "Dropped" in capsys.readouterr().out
     payload = json.loads((tmp_path / "quality.json").read_text(encoding="utf-8"))
     assert payload["quality"]["loaded"] <= 1000
+
+
+def test_infra_check_lists_a_valid_table(monkeypatch, tmp_path, capsys):
+    from forecast_fixtures import project_table
+
+    quiet(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "load_projects", lambda: project_table(tmp_path))
+    monkeypatch.setattr(
+        cli,
+        "fetch_reference",
+        lambda settings: ({1: "Dubai Marina", 2: "Al Barsha"}, date(2017, 1, 1)),
+    )
+    assert cli.main(["infra-check"]) == 0
+    out = capsys.readouterr().out
+    assert "P00" in out and "Dubai Marina (1)" in out
+    assert "15 projects; 0 announced after the data end (2017-01-01)" in out
+    assert "Infrastructure table OK" in out
+
+
+def test_infra_check_fails_on_problems(monkeypatch, tmp_path, capsys):
+    from forecast_fixtures import project_table
+
+    quiet(monkeypatch, tmp_path)
+    monkeypatch.setattr(
+        cli, "load_projects", lambda: project_table(tmp_path, affected_area_ids="5")
+    )
+    monkeypatch.setattr(cli, "fetch_reference", lambda settings: ({1: "A"}, date(2015, 1, 1)))
+    assert cli.main(["infra-check"]) == 1
+    captured = capsys.readouterr()
+    assert "15 announced after the data end" in captured.out
+    assert "P00: area id 5 is not in dld.areas" in captured.err
+
+
+def test_infra_check_runs_on_the_test_database(pg_test_db, monkeypatch, tmp_path, capsys):
+    from pathlib import Path
+
+    from forecast_fixtures import project_record, write_projects
+
+    from ingestion.pipeline import run_pipeline
+    from models.forecast.infra import load_projects
+
+    run_pipeline(Path("tests/fixtures/price_sample.csv"), pg_test_db)
+    conn = pg_test_db.connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT area_id FROM dld.areas ORDER BY area_id LIMIT 2")
+            ids = ";".join(str(row[0]) for row in cur.fetchall())
+    finally:
+        conn.close()
+    path = write_projects(tmp_path, [project_record(i, affected_area_ids=ids) for i in range(15)])
+    monkeypatch.setattr(cli, "load_dotenv", lambda: None)
+    monkeypatch.setattr(cli, "_settings", lambda: pg_test_db)
+    monkeypatch.setattr(cli, "load_projects", lambda: load_projects(path))
+    assert cli.main(["infra-check"]) == 0
+    assert "Infrastructure table OK" in capsys.readouterr().out
