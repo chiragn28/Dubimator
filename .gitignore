@@ -8,6 +8,7 @@ data/listings/
 data/search/
 data/forecast/
 data/pipelines/
+data/api/
 mlruns/
 .pytest_cache/
 .ruff_cache/
