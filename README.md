@@ -1035,15 +1035,90 @@ known.
 Hosting stays at $0: Phase 10 (deploy and monitor) shares the local Docker stack
 through a free Cloudflare Tunnel instead of a cloud service.
 
+## CI/CD
+
+**Local runner.** `uv run python scripts/ci.py` runs the same checks as CI, in order — ruff
+check, ruff format --check, pytest, `docker compose config -q`, and (when `uvx` and network
+access are available) actionlint on `.github/workflows/*.yml` — and prints a PASS/FAIL/SKIP
+table with durations. It exits 1 if anything failed; SKIP (a missing `uvx`, or actionlint
+unreachable offline) never fails the run. `uv run python scripts/ci.py --fast` additionally
+excludes the `db` marker, for a quick check without the Docker stack up.
+
+**What CI runs.** `.github/workflows/ci.yml` runs on every push and pull request to `master`,
+with three jobs:
+
+- `lint` — `uv run ruff check .` and `uv run ruff format --check .`.
+- `test` — an Ubuntu runner with a `pgvector/pgvector:pg16` service on port 5433, `uv sync
+  --frozen`, and `uv run pytest -q -W error -m "not gpu and not live"`.
+- `docker` — builds `Dockerfile.mlflow` and `Dockerfile.airflow`. Phase 10 adds the API and
+  demo images to this job once their Dockerfiles exist.
+
+Three pytest markers, registered in `pyproject.toml`, control what runs where:
+
+| Marker | Meaning | Deselected in CI? |
+|---|---|---|
+| `gpu` | needs a CUDA-capable GPU | yes (`-m "not gpu and not live"`) |
+| `live` | needs the full running Docker stack plus registered MLflow champions (`tests/test_infra_smoke.py`) | yes |
+| `db` | uses the `pg_test_db` fixture (a live Postgres test database); applied automatically by a `pytest_collection_modifyitems` hook in `tests/conftest.py` | no — CI's `test` job brings up Postgres, so these run there |
+
+**`REQUIRE_INFRA`.** By default, a test that needs infra that isn't reachable (Postgres for
+`pg_test_db`, or Postgres/MLflow/Airflow for the `live` smoke tests) SKIPs with a message
+explaining how to start it. Setting `REQUIRE_INFRA=1` turns those same gaps into `pytest.fail`
+instead — CI's `test` job sets it, since it does bring Postgres up, so a DB test that can't
+reach it there is a real regression, not something to quietly skip.
+
+**Retraining pipeline.** `python -m pipelines retrain` runs the full retrain end to end, one
+stage at a time, each stage its own `python -m ...` subprocess: `ingestion` (skipped if the
+source CSV is missing), `models.price train`, `listings detect`, `search queries` + `search
+train`, `models.forecast build` + `models.forecast train`. It stops at the first real failure.
+A stage exiting 2 — the gate-failure convention used by `models.price train` and
+`models.forecast train` — is recorded as `gate_failed` and the pipeline keeps going, since a
+failed acceptance gate is an expected, legitimate outcome. Every run writes
+`data/pipelines/retrain_<UTC timestamp>.json` with each stage's status, duration, exit code and
+its output's last 20 lines.
+
+```bash
+uv run python -m pipelines retrain --dry-run              # print the plan, run nothing
+uv run python -m pipelines retrain --only forecast         # just the forecast stage
+uv run python -m pipelines retrain --skip listings search  # everything except those two
+```
+
+CI runners have neither the 637 MB DLD CSV nor a GPU, so retraining stays local and scheduled
+instead of running in GitHub Actions. Windows Task Scheduler (weekly, Sunday 03:00):
+
+```bat
+schtasks /Create /TN "Zestimator retrain" /SC WEEKLY /D SUN /ST 03:00 ^
+  /TR "C:\path\to\zestimator\.venv\Scripts\python.exe -m pipelines retrain" ^
+  /RU "%USERNAME%"
+```
+
+or, on a machine that runs cron, the equivalent weekly line:
+
+```cron
+0 3 * * 0 cd /path/to/zestimator && /path/to/zestimator/.venv/bin/python -m pipelines retrain >> data/pipelines/retrain.log 2>&1
+```
+
+**First push checklist.** This repository has no git remote yet. Before relying on any of the
+above:
+
+1. Create the GitHub remote and push `master` to it.
+2. Confirm the `ci.yml` workflow appears and runs under the repo's Actions tab.
+3. Expect the first `test` job run to take noticeably longer than later ones — `uv sync
+   --frozen` downloads the cu128 torch wheel (large) on a cold cache; `astral-sh/setup-uv`'s
+   cache absorbs that cost on every run after.
+4. `release.yml` stays dormant until a `v*` tag is pushed to that remote.
+
 ## Module layout
 
 - `ingestion/` — DLD CSV validation, cleaning, and Postgres load (`python -m ingestion`)
 - `dags/` — Airflow DAGs (`dld_ingestion`)
-- `scripts/` — maintenance scripts (test-fixture builder)
+- `scripts/` — maintenance scripts (test-fixture builder) and the local CI runner (`scripts/ci.py`)
 - `models/price/` — home price model: features, training, evaluation, predictor (`python -m models.price`)
 - `listings/` — synthetic listings corpus, duplicate detection, fraud flags (`python -m listings`)
 - `search/` — query parser, two-channel retrieval, learning-to-rank ranker, search engine (`python -m search`)
 - `models/forecast/` — 3-month / 1-year / 3-year price-growth forecasts: rows, targets, features, walk-forward folds, XGBoost per horizon, conformal ranges, predictor (`python -m models.forecast`)
 - `api/` — FastAPI service (Phase 7)
 - `demo/` — Streamlit app (Phase 8)
+- `pipelines/` — scheduled retraining pipeline: ingest → price → listings → search → forecast, one gated stage at a time (`python -m pipelines retrain`, Phase 9)
+- `.github/` — CI/CD: `workflows/ci.yml` (lint, test, docker), `workflows/release.yml` (GHCR on a `v*` tag), `dependabot.yml` (Phase 9)
 - `data/raw/` — drop DLD CSVs here (gitignored)
