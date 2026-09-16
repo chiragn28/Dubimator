@@ -174,3 +174,111 @@ def test_infra_check_runs_on_the_test_database(pg_test_db, monkeypatch, tmp_path
     monkeypatch.setattr(cli, "load_projects", lambda: load_projects(path))
     assert cli.main(["infra-check"]) == 0
     assert "Infrastructure table OK" in capsys.readouterr().out
+
+
+def _fast_config(**overrides):
+    from models.forecast.config import ForecastConfig
+
+    values = {
+        "n_trials": 1, "n_estimators": 200, "learning_rate": 0.1, "tune_folds": 2,
+        "min_test_rows": 50, "n_bootstrap": 200, **overrides,
+    }  # fmt: skip
+    return lambda: ForecastConfig(**values)
+
+
+def test_train_end_to_end_then_evaluate_and_predict(monkeypatch, tmp_path, capsys, temp_mlflow):
+    import mlflow
+    from forecast_fixtures import FakePrice
+
+    from models.forecast import predict as predict_module
+
+    rich = prepared_history(per_building_per_week=4)
+    quiet(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "load_rows", fake_load_rows(rich))
+    monkeypatch.setattr(cli, "ForecastConfig", _fast_config())
+    monkeypatch.setattr(predict_module, "load_rows", fake_load_rows(rich))
+    monkeypatch.setattr(predict_module, "load_projects", lambda: project_table(tmp_path))
+    monkeypatch.setattr("listings.fraud.load_price_predictor", lambda uri: FakePrice())
+    mlflow.create_experiment("price-forecast", artifact_location=temp_mlflow["artifact_location"])
+
+    assert cli.main(["train", "--trials", "1", "--device", "cpu"]) == 0
+    out = capsys.readouterr().out
+    assert "3m: passed" in out
+    assert "3y: insufficient_data" in out
+    assert "segment" in out and "area_trend" in out
+    assert "Registered zestimator-forecast-3m version 1 as @champion" in out
+
+    assert cli.main(["evaluate"]) == 0
+    out = capsys.readouterr().out
+    assert "3m champion v1" in out
+    assert "3y: not deployed (3y: only 0 walk-forward folds (needs 2))" in out
+
+    code = cli.main(
+        ["predict", "--area", "Dubai Marina", "--kind", "apartment", "--status", "ready",
+         "--size", "80", "--bedrooms", "1", "--building", "Tower 1-0", "--property-id", "p-9"]
+    )  # fmt: skip
+    assert code == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["property_id"] == "p-9"
+    assert set(result["forecast_3m"]) >= {"point", "ci_low", "ci_high", "confidence"}
+    assert result["forecast_3y"]["status"] == "not_deployed"
+    assert result["model_versions"]["forecast_3m"] == "1"
+
+
+def test_train_exits_2_when_nothing_passes(monkeypatch, tmp_path, capsys):
+    from types import SimpleNamespace
+
+    quiet(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "load_rows", fake_load_rows(HISTORY))
+    result = SimpleNamespace(
+        horizon="3m", status="failed", reasons=("3m resale MAPE 16.0% exceeds the 15% gate",),
+        folds=[], table=None, fold_scores=None, coverage={}, upper=None, seconds=1.0,
+    )  # fmt: skip
+    summary = SimpleNamespace(
+        device="cpu", run_id="r1", results={"3m": result}, versions={}, seconds=2.0
+    )
+    seen = {}
+
+    def fake_run(frame, report, quality, projects, data_end, config, **kwargs):
+        seen.update(trials=config.n_trials, kwargs=kwargs)
+        return summary
+
+    monkeypatch.setattr(cli, "run_training", fake_run)
+    assert cli.main(["train", "--trials", "3", "--device", "cpu", "--no-register"]) == 2
+    assert seen == {"trials": 3, "kwargs": {"device": "cpu", "register": False}}
+    captured = capsys.readouterr()
+    assert "3m: failed" in captured.out
+    assert "3m resale MAPE 16.0% exceeds the 15% gate" in captured.out
+    assert "No horizon passed its gate; nothing was registered." in captured.err
+
+
+def test_train_reports_errors(monkeypatch, tmp_path, capsys):
+    quiet(monkeypatch, tmp_path)
+    monkeypatch.setattr(cli, "load_rows", fake_load_rows(HISTORY))
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("GPU lost")
+
+    monkeypatch.setattr(cli, "run_training", boom)
+    assert cli.main(["train"]) == 1
+    assert "Training failed: RuntimeError: GPU lost" in capsys.readouterr().err
+
+
+def test_predict_reports_invalid_input(monkeypatch, tmp_path, capsys):
+    from models.price.predictor import PriceInputError
+
+    quiet(monkeypatch, tmp_path)
+
+    class Refuses:
+        @classmethod
+        def from_registry(cls, settings, config):
+            return cls()
+
+        def forecast(self, request):
+            raise PriceInputError("area", "unknown area 'Atlantis'")
+
+    monkeypatch.setattr(cli, "Forecaster", Refuses)
+    code = cli.main(["predict", "--area", "Atlantis", "--kind", "apartment", "--status", "ready",
+                     "--size", "100"])  # fmt: skip
+    assert code == 1
+    assert "Invalid input: area: unknown area 'Atlantis'" in capsys.readouterr().err
