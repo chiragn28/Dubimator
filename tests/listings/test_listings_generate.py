@@ -63,7 +63,7 @@ def test_clones_point_at_their_source_and_post_later(sales_frame, areas_frame, s
     assert (joined["posted_at"] > joined["src_posted_at"]).all()
     assert (joined["agent_id"] != joined["src_agent_id"]).all()
     assert (joined["source_transaction_id"] == joined["src_source_transaction_id"]).all()
-    assert joined["dup_group_id"].is_in(corpus.listings["listing_id"]).all()
+    assert joined["dup_group_id"].is_in(corpus.listings["listing_id"].to_list()).all()
 
 
 def test_the_three_clone_patterns_are_present_and_distinguishable(
