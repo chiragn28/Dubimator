@@ -617,3 +617,163 @@ Tests run sequentially only, against `zestimator_test`.
   adding `listings.listings.search_tsv` and its index. Row counts and
   content hashes of every other `listings` table were identical before and
   after.
+
+## Amendments after the final review (2026-09-16)
+
+The first run's numbers above are kept as history. The numbers in this section
+supersede them.
+
+### Rulings
+
+- **A14: re-run after parser changes.** The parser fixes below change parsing,
+  so the published numbers come from a fresh `queries`, `train` and
+  `evaluate` run on the fixed code.
+- **A15: gate against the stronger baseline.** The registration gate now
+  compares the winner with the stronger of `baseline_fused` and the new
+  `baseline_rules`. Both conditions still apply: the winner's report NDCG@10
+  must exceed that baseline's NDCG@10, and so must the lower bound of the
+  winner's 95% CI.
+  - `train` logs the baseline used as param `gate.baseline`, and its NDCG@10
+    as metric `gate.baseline_ndcg`.
+- **A16: model packaging.** `log_ranker` no longer passes `code_paths`, so
+  MLflow no longer prepends a bundled copy of `search/` to `sys.path`.
+  - The ranker is only ever loaded in-process from this repository, which
+    must be importable.
+  - There is **no model signature**, which supersedes "the model signature
+    checks the feature order" under Ranker. The ranker selects its features
+    from the input frame by name, in `FEATURES` order.
+
+### Parser
+
+- **One-word building and project names** (`Place.single_token`) match only
+  right after "in", "at", "near" or "around", optionally followed by "the".
+  One-word derived community names follow the same rule.
+- **A building never filters by area.** `ParsedQuery.building_area_ids`
+  holds a named building's areas. `area_ids` holds only directly named areas,
+  so it is the only area filter in retrieval and the only area checked by
+  the reasons.
+- **Community names.** `load_lexicon` reads `master_project` aliases
+  separately, and each one yields derived names:
+  - the part before the first " - ";
+  - a base name without a trailing number or roman numeral, also dropping a
+    "Phase" that precedes it;
+  - both spellings of the number ("II" and "2");
+  - each name without a leading "The".
+
+  Each derived name maps to the union of its aliases' areas. It never
+  replaces an official, curated or existing alias key, but like every area
+  key it wins over a building or project name. On the real data, 144
+  aliases yield 27 derived names. Examples: "Arabian Ranches" maps to areas
+  434, 452 and 463, "Arabian Ranches 2" to 463, and "Springs" and "Meadows"
+  to 352.
+- **"in the X"** now notes X as an unrecognised place.
+
+### Engine
+
+- **Session settings.** `retrieve.configure_session` sets `hnsw.ef_search`
+  and `hnsw.iterative_scan` with a plain, session-level `SET`.
+  - The engine calls it once, then commits, because Postgres undoes a
+    session `SET` made inside a transaction that is later rolled back.
+  - `build_query_set` also calls it once.
+  - `semantic_channel` issues no `SET`.
+- **No open transactions.** The engine rolls back at the end of
+  construction, and before and after the retrieval in every `search()`
+  (also on error).
+- **Warm-up.** Construction embeds "warm up" once, and `query` prints the
+  construction time separately.
+- **Stale estimates.** If the stored estimates do not belong to the latest
+  corpus, or are missing, the engine ignores them (the value features become
+  NaN) and adds the note "price estimates are out of date; value signals
+  skipped".
+- **Closest-match note.** "nothing meets every requirement; showing the
+  closest matches" is added when no returned hit meets every parsed slot
+  exactly (`features.meets_every_slot`).
+- **Ordering and labels.** NaN scores sort last.
+  - `ranker.load_pinned` resolves the alias to a version and then loads
+    exactly that version, so the label and the model always agree.
+  - `SearchResult` and `Hit` gain `to_dict()`.
+- **Docstring.** It states the snapshot contract: there is no reload, and the
+  engine must be rebuilt after `listings build`, `search queries` or a new
+  champion. It also states that exceptions propagate, that
+  `k ≤ candidate_k`, and that `search` must be imported first.
+
+### Evaluation and leakage
+
+- **`baseline_rules`.** It scores each candidate 3, 2 or 1 by applying the
+  grading rules to the *parsed* slots (`features.rule_grade`) and breaks
+  ties by `rrf_score`. It uses no labels.
+  - A stated bedroom count against a listing with no bedroom count holds
+    neither exactly nor nearly, as in `grade.py`.
+  - The reviewer's probe counted that case as a match and got 0.960 on the
+    first run's report split. This implementation gets 0.972 on the same
+    split.
+- **Per-contender Phase 4 effects.** Every contender, including the
+  ablation, logs `<contender>.fraud.top10_share` and
+  `<contender>.dup.top10_removed`.
+  - The champion keys `fraud.top10_share` and `dup.top10_removed` remain.
+  - `candidates.fraud_share` is the fraud base rate across report
+    candidates.
+  - For the champion, `note.closest.rate.no_match` and
+    `note.closest.rate.other` give the closest-match note's rate by query
+    kind.
+- **Label readers.** `store.read_queries` no longer returns
+  `seed_listing_id` or `n_grade3`, and `read_query_labels` (used only by
+  `evaluate`) returns them. Both names are in `SEARCH_FORBIDDEN`, and the
+  leakage scan exempts exactly `search/<name>.py`.
+- **Timings.** `train` logs only this query set's `queries` timing plus
+  `train_before_logging`.
+- **Reading the metrics.** NDCG@10 measures re-ranking *within* the
+  retrieved candidates. `n_grade3`, the recall denominator, also counts
+  duplicate-cluster members that the collapse never shows.
+- **What the template split holds out.** Each report frame is an unseen
+  *combination*. Every opening phrase, slot order and bedroom/budget style
+  in the report frames also occurs in some training frame.
+
+### Re-run and headline numbers (2026-09-16, RTX 3060)
+
+**Stages** (wall-clock):
+- `queries`: 685s. It embedded on cuda and printed no skip warning. The
+  estimates were already current (`estimates_cached` 1). It produced 6,000
+  queries and 1,098,524 graded candidates. The report split again holds 864
+  `specified`, 215 `vague` and 113 `no_match` queries.
+- `train`: 1,177s.
+- `evaluate`: 18s.
+
+**Runs:**
+- MLflow `search-train`: `6682999844ed46adad2a4720b1f1d619`.
+- `search-evaluate`: `549171a2a35b45fab5f0e003de5cd958`, which reports
+  ranker version 2.
+
+**Results** (report split, 1,079 answerable queries):
+
+| Contender | NDCG@10 (95% CI) | Top-10 fraud share |
+|---|---|---|
+| LightGBM (winner) | 0.997 (0.995–0.999) | 0.96% |
+| XGBoost | 0.997 (0.995–0.998) | 0.93% |
+| Rules over parsed slots (`baseline_rules`) | 0.972 (0.968–0.976) | 3.95% |
+| Fused retrieval (`baseline_fused`) | 0.566 (0.549–0.583) | 3.13% |
+| Semantic channel | 0.470 (0.454–0.486) | 3.22% |
+| Newest first | 0.435 (0.419–0.450) | 4.10% |
+| No-trust ablation | 0.997 (0.995–0.998) | 0.98% |
+
+- **Base rate.** The fraud base rate across report candidates is 3.45%.
+- **Lifts** (paired bootstrap over queries):
+  - learned over rules: +0.025 (0.021–0.029);
+  - learned over fused: +0.431 (0.414–0.449).
+- **Gate: passed against `baseline_rules`** (0.972). LightGBM was
+  registered as `zestimator-search-ranker` v2 with alias `@champion`. Tune
+  NDCG@10 was 0.9979 for LightGBM against 0.9977 for XGBoost.
+- **By kind:**
+  - `specified`: 0.996 for the winner, 0.975 for the rules and 0.483 for
+    fused;
+  - `vague`: 1.000, 0.963 and 0.897;
+  - `no_match`: the mean top-10 grade is 1.00 for all seven contenders.
+- **Closest-match note** (winner's top 10): it would appear on 100% of the
+  `no_match` queries and on 1.9% of the others.
+- **Retrieval and parsing.** Retrieval recall@200 is 0.525 (0.646 with the
+  denominator capped at 200). Parser accuracy is 1.000 on every slot except
+  `building`, at 0.996, with the same five misses as the first run.
+- **Unchanged report figures.** The report-split fused, recall and parser
+  figures are identical to the first run's.
+- **Duplicates.** `dup.top10_removed` is 0.44 for the winner and 0.40 for
+  the ablation.

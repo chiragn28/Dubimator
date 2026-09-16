@@ -414,10 +414,11 @@ explained list of listings from the Phase 4 corpus.
 
 **How it works.**
 1. **Parse.** A rule-based parser turns the text into slots: area (official
-   DLD name or alias), building or project, bedrooms, property type, budget,
-   minimum size and amenities. Whatever it cannot place is kept as free text.
+   DLD name, alias or community name), building or project, bedrooms, property
+   type, budget, minimum size and amenities. Whatever it cannot place is kept
+   as free text.
 2. **Retrieve.** Two channels each return up to 200 candidates, restricted to
-   the stated area and property type:
+   the directly named area and the property type:
    - pgvector kNN over the listings' MiniLM text embeddings;
    - Postgres full-text search over a generated `search_tsv` column.
 3. **Fuse and collapse.** Reciprocal-rank fusion (RRF) merges the two lists.
@@ -431,22 +432,43 @@ explained list of listings from the Phase 4 corpus.
    - the Phase 4 trust flags and duplicate-cluster size;
    - freshness.
 5. **Explain.** Every hit carries its reasons ("area ✓", "within budget",
-   "priced 9% below estimate", "flagged: photo reuse").
+   "priced 9% below estimate", "flagged: photo reuse"). When no returned hit
+   meets every parsed requirement exactly, the result says "nothing meets
+   every requirement; showing the closest matches".
 
 The winning ranker is registered as `zestimator-search-ranker@champion` only if
 it passes the gate described under Results. If no champion is registered, the
 engine falls back to fused order.
 
+**Parser rules worth knowing.**
+- **One-word building names need a place word.** Some DLD building and
+  project names are ordinary words ("European", "Lakeside", "Diamond"). A
+  one-word name counts only right after "in", "at", "near" or "around"
+  (optionally followed by "the"). So "flat at Lakeside" names the building,
+  but "villa with lakeside view" does not.
+- **A building never filters by area.** A named building's areas are kept as
+  context (`building_area_ids`); only a directly named area restricts
+  retrieval. The building itself is a ranking signal.
+- **Community names come from DLD master-project aliases.** An alias such as
+  "Arabian Ranches II - Casa" also yields "Arabian Ranches II", "Arabian
+  Ranches 2" and "Arabian Ranches". Each derived name maps to every area its
+  aliases point at. A derived name never replaces an official or curated
+  name. On the real data this derives 27 names, for example "Arabian
+  Ranches" (three DLD areas), "Springs" and "Meadows". One-word derived
+  names follow the place-word rule above.
+
 ```bash
-uv run python -m search queries    # 1,023s: price 20,000 listings, generate 6,000 queries, embed them on the RTX 3060, retrieve and grade 1,098,438 candidates
-uv run python -m search train      # 1,454s: 40 Optuna trials each for XGBoost (GPU) and LightGBM (CPU), the no-trust ablation, evaluation, gate, registration
-uv run python -m search evaluate   # 22s: re-score the registered champion and the three baselines on the report split
+uv run python -m search queries    # 685s: generate 6,000 queries, embed them on the RTX 3060, retrieve and grade 1,098,524 candidates (the price estimates were already current)
+uv run python -m search train      # 1,177s: 40 Optuna trials each for XGBoost (GPU) and LightGBM (CPU), the no-trust ablation, evaluation, gate, registration
+uv run python -m search evaluate   # 18s: re-score the registered champion and the four baselines on the report split
 uv run python -m search query "2BR in Dubai Marina under 1.5M"
 ```
 
-Those are wall-clock times from the 2026-09-16 run. `data/search/stage_timings.json`
-records in-process times of 1,019.1s, 1,450.3s and 18.8s. The MLflow run is
-`search-train`, id `daddafc0afe940fc97bad7a58826ac80`, in experiment
+Those are wall-clock times from the 2026-09-16 re-run, made after the final
+review's parser fixes. `data/search/stage_timings.json` records in-process
+times of 680.4s, 1,173.1s and 12.9s. The first run's `queries` also priced
+20,000 listings with the Phase 3 model and took 1,023s. The MLflow run is
+`search-train`, id `6682999844ed46adad2a4720b1f1d619`, in experiment
 `search-ranking`. Its artifacts are:
 - `ndcg_comparison.png`;
 - `feature_importance.csv`;
@@ -468,9 +490,9 @@ records in-process times of 1,019.1s, 1,450.3s and 18.8s. The MLflow run is
 
   Listings with a ground-truth fraud label are capped at grade 1.
 - **What the numbers mean.** The ranker's features describe the same slots the
-  rules grade, so it largely learns the grading rules back. The numbers below
-  measure how well the pipeline reproduces those rules. They say nothing
-  about real user satisfaction.
+  rules grade, so a hand-written rule scorer over the *parsed* slots already
+  does very well. That rule scorer is the baseline that matters, and the
+  results below lead with it.
 
 **Results** (report split: 1,192 queries phrased with 6 of the 30 frames,
 never used for fitting, tuning or model selection):
@@ -479,10 +501,28 @@ NDCG@10, MRR, P@5 and the CI cover the 1,079 answerable report queries
 (`specified` and `vague`). `no_match` queries have no answer by construction,
 so they are scored separately below.
 
+NDCG@10 here measures how well each contender **re-orders the retrieved
+candidates** (at most 200 per query): the ideal ordering is computed from
+those candidates' grades, not from every grade-3 listing in the corpus.
+Retrieval is measured separately, under "Retrieval and parsing".
+
+**Rules versus learned.** The rule baseline (`baseline_rules`) scores each
+candidate 3, 2 or 1 by applying the grading rules to the *parsed* query
+(labels are never used), and breaks ties by fused rank. It reaches NDCG@10
+**0.972** (95% CI 0.968–0.976). The LightGBM ranker reaches **0.997**
+(0.995–0.999). The learned lift over the rules is **+0.025**, with a paired
+bootstrap 95% CI of 0.021–0.029. The ranker is better on 279 queries, worse
+on 17 and tied on 783. Most of the "learning" is therefore the grading rules
+themselves; the model adds a small, consistent gain on top.
+
+**Learned versus fused retrieval.** Against fused retrieval order (0.566),
+the lift is +0.431 (paired 95% CI 0.414–0.449).
+
 | Contender | NDCG@10 | 95% CI | MRR | P@5 |
 |---|---|---|---|---|
-| LightGBM ranker (winner, registered) | **0.997** | 0.995–0.999 | 0.987 | 0.851 |
+| LightGBM ranker (winner, registered) | **0.997** | 0.995–0.999 | 0.988 | 0.851 |
 | XGBoost ranker | 0.997 | 0.995–0.998 | 0.987 | 0.851 |
+| Rules over parsed slots (`baseline_rules`) | 0.972 | 0.968–0.976 | 0.964 | 0.825 |
 | Fused retrieval order (`baseline_fused`) | 0.566 | 0.549–0.583 | 0.644 | 0.384 |
 | Semantic channel order (`baseline_semantic`) | 0.470 | 0.454–0.486 | 0.555 | 0.274 |
 | Newest first (`baseline_newest`) | 0.435 | 0.419–0.450 | 0.488 | 0.247 |
@@ -492,45 +532,49 @@ so they are scored separately below.
   the share of the top 5 with grade 3. P@5 cannot reach 1 for queries with
   fewer than five grade-3 candidates.
 - **Winner.** LightGBM won on the tune split, but only just: tune NDCG@10 was
-  0.9980 against XGBoost's 0.9977. On the report split the two are
+  0.9979 against XGBoost's 0.9977. On the report split the two are
   indistinguishable.
-- **Gate verdict: passed.** The gate requires the winner's report NDCG@10 and
-  the lower bound of its 95% CI to both beat `baseline_fused`. Here they are
-  0.997 and 0.995, against 0.566. The model was registered as
-  `zestimator-search-ranker` version 1 with alias `@champion`, and
+- **Gate verdict: passed.** The gate compares the winner with the *stronger*
+  of `baseline_fused` and `baseline_rules`, here `baseline_rules` at 0.972.
+  The winner's report NDCG@10 (0.997) and the lower bound of its 95% CI
+  (0.995) must both beat that. They do, so the model was registered as
+  `zestimator-search-ranker` version 2 with alias `@champion`, and
   `python -m search evaluate` re-scored it to the same figures.
-- **Why the scores are so high.** A near-perfect NDCG is what you should
-  expect when the ranker can see the grading rules' inputs. By gain, the
-  winner's five most important features are exactly the graded slots:
-  `price_over_max`, `size_ratio`, `beds_diff`, `amenity_hits` and
-  `price_under_min`. The gap over `baseline_fused` shows that retrieval alone
-  does not order candidates by those rules. It does **not** show that the
-  ranker is 0.997 good for real buyers.
+- **What drives the ranker.** By gain, the winner's top features are
+  `size_ratio` (24,606), `price_over_max` (23,321), `beds_diff` (21,371),
+  `fulltext_pos` (13,058) and `price_under_min` (10,470): mostly the graded
+  slots.
 
 **By query kind** (report split):
 
-| | LightGBM ranker | `baseline_fused` |
-|---|---|---|
-| `specified` NDCG@10 (864 queries) | 0.996 | 0.483 |
-| `vague` NDCG@10 (215 queries) | 1.000 | 0.897 |
-| `no_match` mean top-10 grade (113 queries) | 1.00 | 1.00 |
+| | LightGBM ranker | `baseline_rules` | `baseline_fused` |
+|---|---|---|---|
+| `specified` NDCG@10 (864 queries) | 0.996 | 0.975 | 0.483 |
+| `vague` NDCG@10 (215 queries) | 1.000 | 0.963 | 0.897 |
+| `no_match` mean top-10 grade (113 queries) | 1.00 | 1.00 | 1.00 |
 
 - **`vague` queries** state one or two of area, type and amenities, plus a
   vague word. Most of their candidates are already grade 3, so fused order
   does well on them too.
-- **`no_match` queries** state an area, a type and a budget below the
-  cheapest listing of that kind in that area. Every top-10 candidate is
-  therefore grade 1. All six contenders score exactly 1.00, which means this
-  metric cannot tell them apart on this data.
+- **`no_match` is saturated by construction.** These queries state an area, a
+  type and a budget below the cheapest listing of that kind in that area.
+  Retrieval enforces the area and type, and no candidate can be within
+  budget. Every candidate is therefore grade 1, and every contender (all
+  seven) scores exactly 1.00. The metric cannot tell them apart.
+- **The closest-match note separates them instead.** For the winner's top 10,
+  the note "nothing meets every requirement" would appear on **100%** of the
+  `no_match` queries and on **1.9%** of the others.
 
 **Retrieval and parsing** (report-split queries):
 - **Retrieval recall@200: 0.525.** This is the mean share of each query's
   grade-3 listings, over the whole corpus, that the 200 candidates contain.
-  It is limited by the candidate budget:
-  - 340 of the 1,078 report queries that have any grade-3 listing have more
-    than 200 of them;
-  - the median `vague` query has 914;
-  - with the denominator capped at 200 per query, the same mean is 0.646.
+  It understates what users see, for two reasons:
+  - **The candidate budget.** 340 of the 1,078 report queries that have any
+    grade-3 listing have more than 200 of them, and the median `vague` query
+    has 914. With the denominator capped at 200 per query, the same mean is
+    0.646.
+  - **Hidden duplicates.** The corpus-wide grade-3 count (`n_grade3`) also
+    counts duplicate-cluster members that the collapse never shows.
 - **Parser accuracy** (exact match against the generator's true slots):
 
   | Slot | Accuracy |
@@ -551,81 +595,118 @@ so they are scored separately below.
     families, so these figures measure consistency with the generator. They
     are not accuracy on real user text.
 
-**Phase 4 effects** (winner's top 10, report split):
-- **`dup.top10_removed` = 0.45.** On average, collapsing Phase 4 duplicate
-  clusters hides 0.45 near-copies behind each query's top 10 (0.41 for the
-  no-trust ablation). Without the collapse, those reposts would take up
-  result slots.
-- **`fraud.top10_share` = 0.88%.** This is the share of top-10 slots held by
-  listings that carry a ground-truth fraud label. The no-trust ablation
-  scores 0.93%, so the trust features barely matter here. The grading rules
-  already cap fraud-labelled listings at grade 1, and the match features
-  push most of them down on their own. The flag features have low gain:
-  - `flag_bait_price`: 1,741;
-  - `flag_photo_reuse`: 7.5;
-  - `flag_inconsistent_relist`: 6.4.
+**Phase 4 effects** (top 10, report split):
 
-  For comparison, `price_over_max` has a gain of 45,028. The ablation's
-  NDCG@10 is also unchanged, at 0.997.
+| Contender | Fraud-labelled share of top-10 slots | Duplicates hidden per top 10 |
+|---|---|---|
+| XGBoost ranker | 0.93% | 0.44 |
+| LightGBM ranker (winner) | 0.96% | 0.44 |
+| No-trust ablation | 0.98% | 0.40 |
+| `baseline_fused` | 3.13% | 0.46 |
+| `baseline_semantic` | 3.22% | 0.38 |
+| `baseline_rules` | 3.95% | 0.45 |
+| `baseline_newest` | 4.10% | 0.25 |
+
+- **Base rate.** 3.45% of all report-split candidates carry a ground-truth
+  fraud label.
+- **Fraud share.** Every learned model cuts the fraud share to under 1%,
+  against 3–4% for the baselines. The rule baseline is *above* the base rate
+  (3.95%), because bait-priced listings look like good budget matches.
+- **Where the effect comes from.** The ablation, which drops the four trust
+  features, still gets 0.98%, close to the winner's 0.96%. So most of the
+  reduction does not come from the flags. It is probably the value features:
+  `price_to_estimate` (gain 3,600) sees a bait price as far below its
+  estimate. The flag features themselves have low gain:
+  - `flag_bait_price`: 2,148;
+  - `flag_photo_reuse`: 7.9;
+  - `flag_inconsistent_relist`: 2.6;
+  - `cluster_size`: 2.2.
+- **Duplicates.** Collapsing Phase 4 duplicate clusters hides 0.44
+  near-copies behind the winner's average top 10. Without the collapse,
+  those reposts would take up result slots.
 
 **Caveats.**
 - **In-sample value features.** `price_to_estimate` and `within_interval` use
   the Phase 3 champion (registry version 2), which was refit on every source
   sale. The estimates have therefore already seen each base listing's real
   sale.
-- **The template split is partial.** Report queries use 6 phrasing frames
-  that training never saw: different word order, opening words and
-  bedroom/budget phrasing. Per-query randomness (alias or official name,
-  number formats) is shared across splits.
+- **The template split holds out combinations, not phrasings.** A frame
+  combines an opening phrase, a slot order, a bedroom style and a budget
+  style. The 6 report frames are combinations training never saw, but every
+  one of their opening phrases, slot orders and bedroom/budget styles also
+  appears in some training frame. Per-query randomness (alias or official
+  name, number formats) is shared across splits too.
 - **No geographic proximity.** DLD has no coordinates, so "near the Marina"
   cannot be scored.
 - **The tests prove plumbing, not semantics.** The test suite uses a
   deterministic fake embedder, so it proves the pipeline works end to end.
   It is no evidence of semantic quality. Only the real run above used
   MiniLM.
-- **Latency is cold.** One CLI `query` reported about 11s. That covers a
-  cold process's first GPU embedding and database round trips, not warm
-  serving latency, which this run did not measure.
+- **Latency.** The engine is built once per process and warms the embedder
+  up while it is built. In a one-shot CLI `query`, building it took 12.0s to
+  13.3s: loading the data, the ranker and MiniLM, plus the first embedding.
+  The search itself then took 19–94 ms per query on the examples below.
+  These are single measurements from a CLI process, not a serving benchmark.
 
-**Examples** (from the 2026-09-16 run, ranker `zestimator-search-ranker/v1`;
+**Examples** (from the 2026-09-16 re-run, ranker `zestimator-search-ranker/v2`;
 top 3 of 10 shown, area column omitted for width):
 
 ```text
 $ uv run python -m search query "2BR in Dubai Marina under 1.5M"
 understood: {"area_ids": [330], "area_name": "Dubai Marina", "bedrooms": 2, "budget_max": 1500000.0}
- 1. #472 2-bedroom flat in Escan Marina Tower, Marsa Dubai | 2 bed | 110 sqm | AED 930,000
-    area ✓, 2 bedrooms ✓, within budget, priced 9% below estimate, flagged: photo reuse
- 2. #894 2-bedroom apartment in Escan Marina Tower, Marsa Dubai | 2 bed | 109 sqm | AED 920,000
+ 1. #894 2-bedroom apartment in Escan Marina Tower, Marsa Dubai | 2 bed | 109 sqm | AED 920,000
     area ✓, 2 bedrooms ✓, within budget, priced 7% below estimate
- 3. #16500 2-bedroom flat in Marina Wharf Ii, Marsa Dubai | 2 bed | 71 sqm | AED 1,180,000
-    area ✓, 2 bedrooms ✓, within budget, priced 34% above estimate, flagged: photo reuse
+ 2. #472 2-bedroom flat in Escan Marina Tower, Marsa Dubai | 2 bed | 110 sqm | AED 930,000
+    area ✓, 2 bedrooms ✓, within budget, priced 9% below estimate, flagged: photo reuse
+ 3. #14999 2-bedroom flat in Marina Wharf Ii, Marsa Dubai | 2 bed | 90 sqm | AED 1,490,000
+    area ✓, 2 bedrooms ✓, within budget, priced 43% above estimate
+engine ready in 13348 ms (data, ranker and embedder warm-up)
+took 94 ms
 
 $ uv run python -m search query "studio in JVC max 600k"
 understood: {"area_ids": [441], "area_name": "JVC", "bedrooms": 0, "budget_max": 600000.0}
- 1. #44 Studio flat in Samana Waves, Al Barsha South Fourth | 0 bed | 35 sqm | AED 500,000
-    area ✓, studio ✓, within budget
- 2. #124 Studio flat in ELYSEE lll BY PANTHEON, Al Barsha South Fourth | 0 bed | 39 sqm | AED 550,000
+ 1. #2500 Studio apartment in Oxford 212, Al Barsha South Fourth | 0 bed | 42 sqm | AED 590,000
+    area ✓, studio ✓, within budget, priced 15% above estimate, flagged: photo reuse
+ 2. #1522 Studio apartment in Bloom Towers B, Al Barsha South Fourth | 0 bed | 35 sqm | AED 400,000
     area ✓, studio ✓, within budget, flagged: photo reuse
  3. #155 Studio apartment in Levanto By Oro24, Al Barsha South Fourth | 0 bed | 34 sqm | AED 540,000
     area ✓, studio ✓, within budget, priced 15% above estimate (+1 duplicate)
 
 $ uv run python -m search query "family villa with pool in Arabian Ranches"
-understood: {"area_ids": [434], "building": "Arabian Ranches", "property_type": "villa", "amenities": ["shared pool"], "free_text": "family"}
- 1. #5735 family villa in Arabian Ranches, Wadi Al Safa 6 | ? bed | 899 sqm | AED 10,010,000
-    type ✓, Arabian Ranches ✓, shared pool ✓, priced 61% above estimate
- 2. #16353 3-bedroom villa in Arabian Ranches, Wadi Al Safa 6 | 3 bed | 225 sqm | AED 2,910,000
-    type ✓, Arabian Ranches ✓, shared pool ✓, priced 28% above estimate
- 3. #13268 family villa in Wadi Al Safa 6, Wadi Al Safa 6 | ? bed | 585 sqm | AED 4,350,000
-    type ✓, shared pool ✓, flagged: photo reuse
+understood: {"area_ids": [434, 452, 463], "area_name": "Arabian Ranches", "property_type": "villa", "amenities": ["shared pool"], "free_text": "family"}
+ 1. #8991 family villa in Arabian Ranches- Rosa Community, Wadi Al Safa 7 | ? bed | 722 sqm | AED 6,740,000
+    area ✓, type ✓, shared pool ✓, priced 33% above estimate
+ 2. #14837 family villa in Arabian Ranches - Samara Community, Wadi Al Safa 7 | ? bed | 431 sqm | AED 4,270,000
+    area ✓, type ✓, shared pool ✓
+ 3. #4768 family villa in Arabian Ranches - Palma Community, Wadi Al Safa 7 | ? bed | 405 sqm | AED 3,700,000
+    area ✓, type ✓, shared pool ✓
+
+$ uv run python -m search query "townhouse in Arabian Ranches 2"
+understood: {"area_ids": [463], "area_name": "Arabian Ranches 2", "property_type": "townhouse"}
+note: no listings match; try widening the budget or removing a filter
+
+$ uv run python -m search query "2 bed flat with european kitchen under 1.2M"
+understood: {"bedrooms": 2, "property_type": "flat", "budget_max": 1200000.0, "free_text": "european kitchen"}
+ 1. #16374 2-bedroom flat in European, Al Hebiah Fourth | 2 bed | 131 sqm | AED 840,000
+    type ✓, 2 bedrooms ✓, within budget, priced 7% below estimate
+ 2. #8321 2-bedroom flat in Oakwood Residency, Me'Aisem First | 2 bed | 108 sqm | AED 1,020,000
+    type ✓, 2 bedrooms ✓, within budget, priced 32% above estimate, flagged: photo reuse
+ 3. #504 2-bedroom flat in European, Al Hebiah Fourth | 2 bed | 191 sqm | AED 930,000
+    type ✓, 2 bedrooms ✓, within budget, priced 26% below estimate, flagged: photo reuse
 ```
 
 - **Aliases.** "Dubai Marina" and "JVC" are aliases, resolved to the DLD
   areas Marsa Dubai and Al Barsha South Fourth.
-- **The villa query shows two parser limits.**
-  - "Arabian Ranches" is a DLD *project* name inside Wadi Al Safa 6. Only 2
-    of the area's 119 corpus listings carry it. It becomes a project slot,
-    so from result 3 on the hits are other villas in the same area.
-  - "pool" maps to the amenity phrase "shared pool".
+- **Community names.** "Arabian Ranches" now resolves to its three DLD areas
+  (Wadi Al Safa 6, Al Hebiah Second and Wadi Al Safa 7). The first run read
+  it as a project name that only 2 listings carry. "Arabian Ranches 2"
+  resolves to Wadi Al Safa 7 alone. The corpus has no townhouses there, only
+  flats and villas, so the engine correctly reports no match.
+- **Common words stay words.** In the last query, "european" is not read as
+  the building "European", so there is no area or building filter. The word
+  still reaches full-text search, which is why listings in the European
+  building rank first.
+- **"pool"** maps to the amenity phrase "shared pool".
 - **Photo-reuse flags stay visible.** Flagged listings still rank high when
   they match. The flag is shown as a reason and is not used as a filter.
 
@@ -636,19 +717,23 @@ and put the listings that actually fit them first, while keeping reposts and
 suspicious listings from crowding the page.
 
 *Metric optimised.* NDCG@10 on rule-graded synthetic queries, with a
-registration gate: the winner's bootstrap lower bound must beat fused
-retrieval.
+registration gate: the winner's bootstrap lower bound must beat the stronger
+of fused retrieval and a hand-written rule scorer.
 
-*The honest result.* The pipeline works end to end:
-- parsing, two-channel retrieval, duplicate collapse, a gated ranker in the
-  registry, and explained results;
-- the ranker reorders candidates far better than retrieval alone against the
-  grading rules (NDCG@10 0.997 against 0.566).
+*The honest result.* The pipeline works end to end: parsing, two-channel
+retrieval, duplicate collapse, a gated ranker in the registry, and explained
+results.
 
-Because the rules and the features describe the same slots, that gap mostly
-shows the ranker can apply the rules. Three further weaknesses:
-- The trust features change almost nothing measurable.
-- `no_match` scoring cannot separate the contenders.
+Against the grading rules, a hand-written rule scorer over the parsed slots
+already reaches 0.972. The learned ranker adds a small but consistent +0.025
+(paired CI 0.021–0.029). Both are far ahead of retrieval order (0.566).
+
+What the learned model adds that the rules do not is mostly trust: its top-10
+fraud share is under 1%, against 3.95% for the rule scorer. That effect
+survives removing the flag features, so it probably comes from the value
+features. Further weaknesses:
+- `no_match` NDCG cannot separate contenders; only the closest-match note
+  does.
 - Recall is bounded by the 200-candidate budget on broad queries.
 
 *With real users I would:*
