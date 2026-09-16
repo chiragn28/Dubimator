@@ -1,0 +1,108 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: ruff check
+        run: uv run ruff check .
+
+      - name: ruff format --check
+        run: uv run ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: zestimator
+          POSTGRES_PASSWORD: changeme
+          POSTGRES_DB: zestimator
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd "pg_isready -U zestimator -d zestimator"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: 5433
+      POSTGRES_USER: zestimator
+      POSTGRES_PASSWORD: changeme
+      POSTGRES_DB: zestimator
+      # CI really does bring Postgres up (above), so a missing/unreachable DB is a real
+      # problem, not something to quietly skip — see tests/conftest.py::pg_test_db.
+      REQUIRE_INFRA: "1"
+      # No MLflow server in CI; tests that need one are marked `live` and deselected below.
+      # This keeps any code that reads MLFLOW_TRACKING_URI pointed at something harmless.
+      MLFLOW_TRACKING_URI: sqlite:///mlflow-ci.db
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      # The lockfile pins the cu128 torch wheel (large, but it also runs on CPU-only
+      # runners — tests never need CUDA). `--frozen` installs it unchanged; setup-uv's cache
+      # means the wheel only downloads once across runs.
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      # Code under test calls load_dotenv(), so it needs an actual .env file, not just the
+      # job's `env:` — a heredoc rebuilds it from that same env.
+      - name: Write .env
+        run: |
+          cat <<EOF > .env
+          POSTGRES_USER=$POSTGRES_USER
+          POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+          POSTGRES_DB=$POSTGRES_DB
+          POSTGRES_PORT=$POSTGRES_PORT
+          POSTGRES_HOST=$POSTGRES_HOST
+          MLFLOW_TRACKING_URI=$MLFLOW_TRACKING_URI
+          EOF
+
+      # The postgres service container has no way to mount docker/postgres-init.sql the way
+      # docker-compose.yml does, so run it by hand once the service is healthy.
+      - name: Apply docker/postgres-init.sql (pgvector extension)
+        env:
+          PGPASSWORD: ${{ env.POSTGRES_PASSWORD }}
+        run: |
+          psql -h "$POSTGRES_HOST" -p "$POSTGRES_PORT" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -f docker/postgres-init.sql
+
+      - name: Run tests
+        run: uv run pytest -q -W error -m "not gpu and not live"
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build MLflow image
+        run: docker build -f Dockerfile.mlflow -t zestimator-mlflow:ci .
+
+      - name: Build Airflow image
+        run: docker build -f Dockerfile.airflow -t zestimator-airflow:ci .
+
+      # Phase 10 adds Dockerfiles for the API and the Streamlit demo; this job builds them
+      # here too once they exist.

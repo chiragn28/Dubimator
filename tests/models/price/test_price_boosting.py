@@ -57,6 +57,7 @@ def test_fixed_round_fit_needs_num_rounds():
     assert predict_xgb(booster, x).shape == (400,)  # no best_iteration: uses all trees
 
 
+@pytest.mark.gpu
 @pytest.mark.skipif(not cuda_available(), reason="no CUDA-capable XGBoost + GPU on this machine")
 def test_gpu_training_smoke():
     x, y = toy_data()

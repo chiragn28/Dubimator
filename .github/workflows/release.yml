@@ -1,0 +1,50 @@
+# Builds and pushes container images to GHCR on a version tag (v*).
+#
+# Inactive until a remote exists: this workflow can only run once the repo has been pushed to
+# GitHub and a `v*` tag is pushed to it — see the README's "## CI/CD" section for the
+# first-push checklist.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push MLflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.mlflow
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/mlflow:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}/mlflow:latest
+
+      - name: Build and push Airflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.airflow
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/airflow:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}/airflow:latest
+
+      # Phase 10 adds Dockerfiles for the FastAPI service and the Streamlit demo; this
+      # workflow builds and pushes those images too once they exist.

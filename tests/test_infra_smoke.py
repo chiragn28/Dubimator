@@ -19,6 +19,10 @@ import requests
 CONNECT_TIMEOUT = 5
 HOST = "127.0.0.1"
 
+# The whole stack (Postgres + MLflow + Airflow) must already be up: CI has no such stack, so
+# these are deselected there (`-m "not gpu and not live"`) and only run locally.
+pytestmark = pytest.mark.live
+
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
@@ -28,21 +32,36 @@ def _mlflow_url() -> str:
     return _env("MLFLOW_TRACKING_URI", f"http://{HOST}:5000").rstrip("/")
 
 
+def _infra_unavailable(message: str) -> None:
+    """SKIP normally; FAIL when REQUIRE_INFRA=1 says the stack is expected to be up."""
+    if os.environ.get("REQUIRE_INFRA") == "1":
+        pytest.fail(message)
+    pytest.skip(message)
+
+
 def _http_get_or_skip(url: str, service: str, **kwargs) -> requests.Response:
     try:
         return requests.get(url, timeout=CONNECT_TIMEOUT, **kwargs)
     except requests.exceptions.ConnectionError as exc:
-        pytest.skip(
+        _infra_unavailable(
             f"{service} not reachable at {url} — start the stack with `docker compose up -d --wait`. ({exc})"
         )
 
 
 def test_postgres_pgvector():
-    port = int(_env("POSTGRES_PORT", "5432"))
+    # No default: an unset POSTGRES_PORT here is a real gap, not "use 5432" — this machine's own
+    # Postgres holds 5432, and connecting to the wrong server is the hazard this guards against.
+    port = os.environ.get("POSTGRES_PORT")
+    if port is None:
+        _infra_unavailable(
+            "POSTGRES_PORT is not set — start the stack with `docker compose up -d --wait` "
+            "(or export POSTGRES_PORT) before running infra smoke tests."
+        )
+    port = int(port)
     try:
         socket.create_connection((HOST, port), timeout=CONNECT_TIMEOUT).close()
     except OSError as exc:
-        pytest.skip(
+        _infra_unavailable(
             f"Postgres not reachable at {HOST}:{port} — start the stack with `docker compose up -d --wait`. ({exc})"
         )
 

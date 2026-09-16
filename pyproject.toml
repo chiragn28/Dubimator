@@ -46,6 +46,11 @@ torch = { index = "pytorch-cu128" }
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "gpu: needs a CUDA-capable GPU (deselected in CI, which has none)",
+    "live: needs the running Docker stack and registered MLflow champions",
+    "db: uses the pg_test_db fixture (a live Postgres test database); auto-applied, see tests/conftest.py",
+]
 
 [tool.ruff]
 line-length = 100
