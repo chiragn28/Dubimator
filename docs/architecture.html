@@ -1,0 +1,702 @@
+<title>Zestimator Architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@700;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper: #eaeff2;
+    --surface: #ffffff;
+    --surface-sunk: #f2f6f8;
+    --ink: #0d1a22;
+    --ink-soft: #46606e;
+    --ink-faint: #6d838f;
+    --rule: #ccdae1;
+    --rule-soft: #dfe9ed;
+    --accent: #0e6e7e;
+    --accent-soft: #d5e8ec;
+    --done: #2e7d5b;
+    --done-soft: #d8ebe1;
+    --active: #a9620a;
+    --active-soft: #f6e6cf;
+    --planned: #6f818c;
+    --planned-soft: #e3eaee;
+    --shadow: 0 1px 2px rgba(13, 26, 34, .06), 0 8px 24px -16px rgba(13, 26, 34, .25);
+    --step: clamp(.9rem, .6rem + .8vw, 1.15rem);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0a1218;
+      --surface: #13212a;
+      --surface-sunk: #0f1b23;
+      --ink: #dcebf1;
+      --ink-soft: #9fb6c1;
+      --ink-faint: #7d94a0;
+      --rule: #243843;
+      --rule-soft: #1b2b34;
+      --accent: #46b0c0;
+      --accent-soft: #143038;
+      --done: #62b98c;
+      --done-soft: #122e22;
+      --active: #d99341;
+      --active-soft: #33230f;
+      --planned: #8ea3ae;
+      --planned-soft: #1a2831;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .8);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #0a1218;
+    --surface: #13212a;
+    --surface-sunk: #0f1b23;
+    --ink: #dcebf1;
+    --ink-soft: #9fb6c1;
+    --ink-faint: #7d94a0;
+    --rule: #243843;
+    --rule-soft: #1b2b34;
+    --accent: #46b0c0;
+    --accent-soft: #143038;
+    --done: #62b98c;
+    --done-soft: #122e22;
+    --active: #d99341;
+    --active-soft: #33230f;
+    --planned: #8ea3ae;
+    --planned-soft: #1a2831;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 10px 30px -18px rgba(0, 0, 0, .8);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .wrap {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding-inline: 20px;
+    padding-block: 40px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 44px;
+  }
+
+  h1, h2, h3 { font-family: Chivo, ui-sans-serif, system-ui, sans-serif; text-wrap: balance; margin: 0; }
+  h1 { font-size: clamp(2rem, 1.3rem + 2.6vw, 3rem); font-weight: 800; letter-spacing: -.02em; line-height: 1.05; }
+  h2 { font-size: 1.25rem; font-weight: 700; letter-spacing: -.01em; }
+  h3 { font-size: .95rem; font-weight: 700; }
+  p { margin: 0; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .7rem;
+    font-weight: 600;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+
+  .lede { max-width: 62ch; color: var(--ink-soft); font-size: 1.05rem; }
+
+  header .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 22px;
+    margin-top: 18px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .78rem;
+    color: var(--ink-faint);
+  }
+  header .meta b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+  section { display: flex; flex-direction: column; gap: 16px; }
+  .section-head { display: flex; flex-direction: column; gap: 4px; }
+  .section-head p { color: var(--ink-soft); max-width: 68ch; }
+
+  /* Phase progress strip ------------------------------------------------ */
+  .strip { display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; }
+  .strip .seg {
+    height: 8px;
+    border-radius: 2px;
+    background: var(--planned-soft);
+    border: 1px solid var(--rule-soft);
+  }
+  .strip .seg[data-state="done"] { background: var(--done); border-color: var(--done); }
+  .strip .seg[data-state="active"] {
+    background: linear-gradient(90deg, var(--active) 40%, var(--active-soft) 40%);
+    border-color: var(--active);
+  }
+  .strip-key {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 18px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem;
+    color: var(--ink-faint);
+  }
+  .strip-key span { display: inline-flex; align-items: center; gap: 7px; }
+  .dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  /* Flow ---------------------------------------------------------------- */
+  .flow { display: flex; flex-direction: column; gap: 10px; }
+  .lane {
+    display: grid;
+    grid-template-columns: 116px 1fr;
+    gap: 14px;
+    align-items: start;
+  }
+  .lane-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .7rem;
+    letter-spacing: .1em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+    padding-top: 14px;
+  }
+  .stations { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; }
+  .station {
+    flex: 1 1 150px;
+    min-width: 0;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    padding: 11px 13px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .station[data-state="planned"] { border-left-color: var(--planned); background: var(--surface-sunk); }
+  .station[data-state="active"] { border-left-color: var(--active); }
+  .station .name { font-weight: 600; font-size: .9rem; }
+  .station .detail {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .72rem;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .arrow {
+    align-self: center;
+    color: var(--ink-faint);
+    font-size: .85rem;
+    padding-inline: 2px;
+  }
+
+  /* Phase ledger -------------------------------------------------------- */
+  .ledger { display: flex; flex-direction: column; gap: 8px; }
+  .phase {
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1.35fr) minmax(0, 2fr) auto;
+    gap: 16px;
+    align-items: baseline;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 14px 16px;
+    box-shadow: var(--shadow);
+  }
+  .phase[data-state="planned"] { background: transparent; box-shadow: none; border-style: dashed; }
+  .phase[data-state="active"] { border-color: var(--active); }
+  .num {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 1rem;
+    font-weight: 600;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .phase[data-state="planned"] .num { color: var(--planned); }
+  .phase[data-state="active"] .num { color: var(--active); }
+  .phase .what { display: flex; flex-direction: column; gap: 2px; }
+  .phase .what b { font-size: .98rem; font-weight: 600; }
+  .phase .what span { font-size: .82rem; color: var(--ink-faint); }
+  .phase .detail { color: var(--ink-soft); font-size: .88rem; }
+  .phase .detail code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .82em;
+    background: var(--surface-sunk);
+    border: 1px solid var(--rule-soft);
+    border-radius: 3px;
+    padding: 1px 5px;
+  }
+  .pill {
+    justify-self: end;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 3px 9px;
+    border-radius: 999px;
+    white-space: nowrap;
+    background: var(--planned-soft);
+    color: var(--planned);
+  }
+  .pill[data-state="done"] { background: var(--done-soft); color: var(--done); }
+  .pill[data-state="active"] { background: var(--active-soft); color: var(--active); }
+
+  /* Panels -------------------------------------------------------------- */
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-shadow: var(--shadow);
+  }
+  .panel h3 { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .panel h3 em {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-style: normal;
+    font-size: .7rem;
+    font-weight: 500;
+    color: var(--ink-faint);
+    letter-spacing: .06em;
+  }
+
+  table { width: 100%; border-collapse: collapse; font-size: .85rem; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--rule-soft); }
+  th {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .68rem;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: var(--ink-faint);
+  }
+  td.n, th.n { text-align: right; padding-right: 0; font-variant-numeric: tabular-nums; font-family: "IBM Plex Mono", ui-monospace, monospace; }
+  tr:last-child td { border-bottom: none; }
+  tr.best td { font-weight: 600; color: var(--accent); }
+  .scroll { overflow-x: auto; }
+
+  .facts { display: flex; flex-direction: column; gap: 9px; }
+  .fact { display: flex; align-items: baseline; justify-content: space-between; gap: 14px; }
+  .fact span { color: var(--ink-soft); font-size: .88rem; }
+  .fact b {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-variant-numeric: tabular-nums;
+    font-weight: 600;
+    font-size: .95rem;
+  }
+  .note { font-size: .82rem; color: var(--ink-faint); border-top: 1px solid var(--rule-soft); padding-top: 10px; }
+
+  /* Repo map ------------------------------------------------------------ */
+  .tree {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .82rem;
+    background: var(--surface);
+    border: 1px solid var(--rule);
+    border-radius: 4px;
+    padding: 16px 18px;
+    display: grid;
+    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    gap: 6px 20px;
+    overflow-x: auto;
+  }
+  .tree b { font-weight: 600; color: var(--accent); white-space: nowrap; }
+  .tree b[data-state="planned"] { color: var(--planned); }
+  .tree span { color: var(--ink-soft); }
+
+  /* Log ----------------------------------------------------------------- */
+  .log { display: flex; flex-direction: column; gap: 0; }
+  .entry {
+    display: grid;
+    grid-template-columns: 92px 1fr;
+    gap: 18px;
+    padding: 12px 0;
+    border-top: 1px solid var(--rule-soft);
+  }
+  .entry:first-child { border-top: none; }
+  .entry time {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: .76rem;
+    color: var(--ink-faint);
+    font-variant-numeric: tabular-nums;
+  }
+  .entry p { color: var(--ink-soft); font-size: .9rem; }
+  .entry b { color: var(--ink); font-weight: 600; }
+
+  footer {
+    border-top: 1px solid var(--rule);
+    padding-top: 18px;
+    color: var(--ink-faint);
+    font-size: .82rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px 20px;
+    justify-content: space-between;
+  }
+
+  @media (max-width: 760px) {
+    .lane { grid-template-columns: 1fr; gap: 6px; }
+    .lane-label { padding-top: 0; }
+    .phase { grid-template-columns: 34px 1fr; }
+    .phase .detail { grid-column: 1 / -1; }
+    .pill { grid-column: 2; justify-self: start; }
+    .arrow { display: none; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <p class="eyebrow">Dubai Land Department · machine learning platform</p>
+    <h1>Zestimator</h1>
+    <p class="lede">Price estimation, duplicate &amp; fraud detection, and property search over 1,047,965 real Dubai
+      Land Department transactions. Ten phases, built one at a time — each with its own spec, plan, tests and review.</p>
+    <div class="meta">
+      <span>as of <b>16 Sep 2026</b></span>
+      <span><b>70</b> commits</span>
+      <span><b>273</b> tests</span>
+      <span>estimates as of <b>Q1 2023</b> (data ends 2023-03-17)</span>
+      <span>runs on <b>Docker + one RTX 3060</b></span>
+    </div>
+  </header>
+
+  <section>
+    <div class="section-head">
+      <h2>Build status</h2>
+      <p>Three phases shipped, one in flight. Phase 4 is 4 tasks into 11.</p>
+    </div>
+    <div class="strip" role="img" aria-label="Phase progress: phases 1 to 3 complete, phase 4 in progress, phases 5 to 10 planned">
+      <div class="seg" data-state="done"></div>
+      <div class="seg" data-state="done"></div>
+      <div class="seg" data-state="done"></div>
+      <div class="seg" data-state="active"></div>
+      <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+      <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+    </div>
+    <div class="strip-key">
+      <span><i class="dot" style="background: var(--done)"></i> shipped</span>
+      <span><i class="dot" style="background: var(--active)"></i> in progress</span>
+      <span><i class="dot" style="background: var(--planned-soft); border: 1px solid var(--rule)"></i> planned</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>How data moves</h2>
+      <p>One Postgres database holds everything. Real transactions feed the price model; the listings corpus is
+        generated on top of those same sales, because DLD publishes no photos or descriptions.</p>
+    </div>
+    <div class="flow">
+
+      <div class="lane">
+        <div class="lane-label">Source</div>
+        <div class="stations">
+          <div class="station">
+            <div class="name">Transactions.csv</div>
+            <div class="detail">637 MB · 1,047,965 rows · 1995–2023</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station">
+            <div class="name">Houses-dataset photos</div>
+            <div class="detail">2,140 images · 535 × 4 rooms</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">
+        <div class="lane-label">Ingest</div>
+        <div class="stations">
+          <div class="station">
+            <div class="name"><code>python -m ingestion</code></div>
+            <div class="detail">validate · normalise · classify · 29 s</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station">
+            <div class="name">schema <code>dld</code></div>
+            <div class="detail">707,655 market sales · 253 areas</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">
+        <div class="lane-label">Model</div>
+        <div class="stations">
+          <div class="station">
+            <div class="name">Price model</div>
+            <div class="detail">XGBoost on GPU · Optuna × 60 · 6.1 min</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station">
+            <div class="name">MLflow registry</div>
+            <div class="detail">zestimator-price v2 @champion</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">
+        <div class="lane-label">Listings</div>
+        <div class="stations">
+          <div class="station" data-state="active">
+            <div class="name">Corpus generator</div>
+            <div class="detail">20,000 synthetic listings · labelled</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station" data-state="active">
+            <div class="name">Embeddings</div>
+            <div class="detail">CLIP 512-d · MiniLM 384-d</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station" data-state="active">
+            <div class="name">schema <code>listings</code></div>
+            <div class="detail">pgvector HNSW · cosine</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station" data-state="active">
+            <div class="name">Duplicate &amp; fraud</div>
+            <div class="detail">12 signals · 98% precision floor</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="lane">
+        <div class="lane-label">Serve</div>
+        <div class="stations">
+          <div class="station" data-state="planned">
+            <div class="name">Search ranking</div>
+            <div class="detail">phase 5</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station" data-state="planned">
+            <div class="name">FastAPI</div>
+            <div class="detail">phase 6</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station" data-state="planned">
+            <div class="name">Streamlit demo</div>
+            <div class="detail">phase 7</div>
+          </div>
+          <div class="arrow" aria-hidden="true">→</div>
+          <div class="station" data-state="planned">
+            <div class="name">Cloud Run + Evidently</div>
+            <div class="detail">phases 8–9</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>The ten phases</h2>
+      <p>Order matters here: each phase consumes what the one before it produced.</p>
+    </div>
+    <div class="ledger">
+
+      <article class="phase" data-state="done">
+        <div class="num">01</div>
+        <div class="what"><b>Foundation</b><span>14 Sep 2026</span></div>
+        <div class="detail">Docker Compose stack: Postgres 16 + pgvector, MLflow, Airflow. <code>uv</code>, pytest, smoke tests.</div>
+        <div class="pill" data-state="done">shipped</div>
+      </article>
+
+      <article class="phase" data-state="done">
+        <div class="num">02</div>
+        <div class="what"><b>DLD ingestion</b><span>15 Sep 2026</span></div>
+        <div class="detail">Every row loaded and kept, each non-sale carrying exactly one exclusion reason. Area alias
+          table maps “JVC” and “Dubai Marina” to official names. Runs from the CLI or an Airflow trigger.</div>
+        <div class="pill" data-state="done">shipped</div>
+      </article>
+
+      <article class="phase" data-state="done">
+        <div class="num">03</div>
+        <div class="what"><b>Price model</b><span>16 Sep 2026</span></div>
+        <div class="detail">Homes sold 2015 on, priced relative to a leak-free market index with building → project →
+          area → city fallbacks. Beat a comps baseline by 27% to earn registration.</div>
+        <div class="pill" data-state="done">shipped</div>
+      </article>
+
+      <article class="phase" data-state="active">
+        <div class="num">04</div>
+        <div class="what"><b>Duplicate &amp; fraud</b><span>in progress · 4 of 11 tasks</span></div>
+        <div class="detail">Synthetic listings over real sales, with planted reposts and two kinds of listing that must
+          <em>not</em> be flagged. Candidates come from pgvector, decisions from twelve signals.</div>
+        <div class="pill" data-state="active">building</div>
+      </article>
+
+      <article class="phase" data-state="planned">
+        <div class="num">05</div>
+        <div class="what"><b>Search ranking</b><span>next</span></div>
+        <div class="detail">Natural-language property search — “2BR in Dubai Marina under 1.5M” — with a learned ranker
+          over semantic retrieval.</div>
+        <div class="pill">planned</div>
+      </article>
+
+      <article class="phase" data-state="planned">
+        <div class="num">06</div>
+        <div class="what"><b>API</b></div>
+        <div class="detail">One FastAPI service: price estimate, duplicate check, search. Loads the champion model as a
+          single MLflow artifact.</div>
+        <div class="pill">planned</div>
+      </article>
+
+      <article class="phase" data-state="planned">
+        <div class="num">07</div>
+        <div class="what"><b>Demo UI</b></div>
+        <div class="detail">Streamlit: area map, estimator form, search bar.</div>
+        <div class="pill">planned</div>
+      </article>
+
+      <article class="phase" data-state="planned">
+        <div class="num">08</div>
+        <div class="what"><b>CI/CD</b></div>
+        <div class="detail">GitHub Actions for tests and lint, plus scheduled retraining.</div>
+        <div class="pill">planned</div>
+      </article>
+
+      <article class="phase" data-state="planned">
+        <div class="num">09</div>
+        <div class="what"><b>Deploy &amp; monitor</b></div>
+        <div class="detail">Cloud Run on the free tier, with Evidently watching for drift and a billing alert.</div>
+        <div class="pill">planned</div>
+      </article>
+
+      <article class="phase" data-state="planned">
+        <div class="num">10</div>
+        <div class="what"><b>Documentation</b></div>
+        <div class="detail">Final README, this diagram, and the cost breakdown.</div>
+        <div class="pill">planned</div>
+      </article>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>What the numbers say</h2></div>
+    <div class="cols">
+
+      <div class="panel">
+        <h3>The data <em>phase 02</em></h3>
+        <div class="facts">
+          <div class="fact"><span>Transactions loaded</span><b>1,047,965</b></div>
+          <div class="fact"><span>Clean market sales</span><b>707,655</b></div>
+          <div class="fact"><span>Mortgages set aside</span><b>224,183</b></div>
+          <div class="fact"><span>Gifts set aside</span><b>35,890</b></div>
+          <div class="fact"><span>Non-market procedures</span><b>57,241</b></div>
+          <div class="fact"><span>Price outliers flagged</span><b>18,936</b></div>
+          <div class="fact"><span>Sizes likely in sq ft</span><b>2,808</b></div>
+        </div>
+        <p class="note">Nothing is deleted. Every excluded row keeps its reason, so the filter can be audited or
+          reversed.</p>
+      </div>
+
+      <div class="panel">
+        <h3>The price model <em>phase 03</em></h3>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>Model</th><th class="n">MdAPE</th><th class="n">±10%</th><th class="n">±20%</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Area comps rule</td><td class="n">17.3%</td><td class="n">32.3%</td><td class="n">55.1%</td></tr>
+              <tr><td>LightGBM</td><td class="n">13.0%</td><td class="n">39.6%</td><td class="n">67.3%</td></tr>
+              <tr class="best"><td>XGBoost (champion)</td><td class="n">12.6%</td><td class="n">41.2%</td><td class="n">69.1%</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="note">Measured on sales from Nov 2022 – Mar 2023, never used for fitting or tuning. Median error is
+          12.6%: half of estimates land within that of the real sale price.</p>
+      </div>
+
+      <div class="panel">
+        <h3>Listings corpus <em>phase 04</em></h3>
+        <div class="facts">
+          <div class="fact"><span>Listings generated</span><b>20,000</b></div>
+          <div class="fact"><span>Exact reposts planted</span><b>1,200</b></div>
+          <div class="fact"><span>Reworded copies</span><b>900</b></div>
+          <div class="fact"><span>Edited-photo copies</span><b>900</b></div>
+          <div class="fact"><span>Bait-priced listings</span><b>600</b></div>
+          <div class="fact"><span>Pairs if compared naively</span><b>200M</b></div>
+        </div>
+        <p class="note">Locations, sizes and prices are real DLD sales. Text, agents, dates and every duplicate are
+          invented and labelled — stated plainly wherever results appear.</p>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>What lives where</h2>
+      <p>One module per job, the same shape in every phase: pure functions first, database and model code at the edges.</p>
+    </div>
+    <div class="tree">
+      <b>ingestion/</b><span>read the DLD file, normalise it, classify every row, load Postgres</span>
+      <b>models/price/</b><span>features, market index, location priors, training, the DB-free predictor</span>
+      <b>listings/</b><span>photo pool, corpus generator, embeddings, pgvector retrieval, detection</span>
+      <b>dags/</b><span>Airflow: the ingestion pipeline, triggered by hand</span>
+      <b>api/</b><span data-state="planned">FastAPI service — phase 6</span>
+      <b>demo/</b><span data-state="planned">Streamlit app — phase 7</span>
+      <b>tests/</b><span>273 tests, including one per non-negotiable edge case</span>
+      <b>docs/</b><span>a spec and an implementation plan for every phase, plus this page</span>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head">
+      <h2>Stack and cost</h2>
+      <p>Everything runs locally on free, open tools. Cloud costs arrive in phase 9 and get documented here.</p>
+    </div>
+    <div class="scroll">
+      <table>
+        <thead>
+          <tr><th>Component</th><th>Version</th><th>Role</th><th class="n">Cost</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>PostgreSQL + pgvector</td><td>16 · 0.8.6</td><td>transactions, listings, vector search</td><td class="n">$0</td></tr>
+          <tr><td>MLflow</td><td>2.17.2</td><td>experiments, metrics, model registry</td><td class="n">$0</td></tr>
+          <tr><td>Airflow</td><td>2.10.3</td><td>pipeline orchestration</td><td class="n">$0</td></tr>
+          <tr><td>XGBoost / LightGBM</td><td>3.2 · 4.7</td><td>price model and baseline</td><td class="n">$0</td></tr>
+          <tr><td>PyTorch + sentence-transformers</td><td>2.9.1+cu128</td><td>CLIP and text embeddings on the GPU</td><td class="n">$0</td></tr>
+          <tr><td>Polars</td><td>1.44</td><td>all data wrangling</td><td class="n">$0</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="section-head"><h2>Build log</h2></div>
+    <div class="log">
+      <div class="entry">
+        <time>16 Sep 2026</time>
+        <p><b>Phase 4 under way.</b> Photo pool, corpus generator and the listings schema are in. Reviews caught four
+          ground-truth flaws before they could flatter the results — bait prices computed off the wrong base, control
+          groups collapsing into one district, stock photos indistinguishable from ordinary ones, and two columns that
+          gave the answer away for free.</p>
+      </div>
+      <div class="entry">
+        <time>16 Sep 2026</time>
+        <p><b>Phase 3 shipped.</b> Price model registered as v2. Beats the comps rule by 27% and LightGBM by 0.4 points.
+          Its 80% price ranges are calibrated on the test period, and the README says plainly where they under-cover.</p>
+      </div>
+      <div class="entry">
+        <time>15 Sep 2026</time>
+        <p><b>Phase 2 shipped.</b> The full DLD file loads in 29 seconds, atomically. MLflow's store moved off the
+          OneDrive-synced folder after intermittent 15–20 second stalls.</p>
+      </div>
+      <div class="entry">
+        <time>14 Sep 2026</time>
+        <p><b>Phase 1 shipped.</b> Docker Compose stack up, with smoke tests that fail loudly rather than skip when a
+          service is misconfigured.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>Real DLD transactions throughout. Listing text, photos and duplicates in phase 4 are synthetic and labelled.</span>
+    <span>Updated as each phase lands.</span>
+  </footer>
+
+</div>
