@@ -34,6 +34,7 @@ def test_reciprocal_rank_precision_and_mean_grade():
     assert mean_top_grade([3, 1]) == 2.0
     assert mean_top_grade([1] * 12 + [3], k=10) == 1.0
     assert math.isnan(mean_top_grade([]))
+    assert math.isnan(precision_at_k([3, 3, 0], k=0))
 
 
 FRAME = pl.DataFrame(
@@ -58,6 +59,21 @@ def test_per_query_metrics_rank_by_score_then_fused_position():
     assert rows[3]["top_ids"] == [31, 30] and rows[3]["mean_grade_top"] == 0.5
     assert [rows[q]["answerable"] for q in (1, 2, 3, 4)] == [True, True, False, False]
     assert math.isnan(rows[4]["ndcg"])
+
+
+def test_per_query_metrics_nan_scores_rank_last():
+    frame = pl.DataFrame(
+        {
+            "query_id": [1, 1, 1],
+            "kind": ["specified"] * 3,
+            "listing_id": [100, 101, 102],
+            "grade": [3, 0, 0],
+            "fused_pos": [1, 2, 3],
+            "score": [float("nan"), 0.5, 0.9],
+        }
+    )
+    out = per_query_metrics(frame, "score", k=10)
+    assert out.to_dicts()[0]["top_ids"] == [102, 101, 100]
 
 
 def test_summarize_uses_answerable_queries_only():

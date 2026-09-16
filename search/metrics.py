@@ -35,6 +35,8 @@ def reciprocal_rank(ranked_grades, min_grade: int = 2) -> float:
 
 
 def precision_at_k(ranked_grades, k: int = 5, grade: int = 3) -> float:
+    if k == 0:
+        return NAN
     return sum(value == grade for value in list(ranked_grades)[:k]) / k
 
 
@@ -45,7 +47,8 @@ def mean_top_grade(ranked_grades, k: int = 10) -> float:
 
 def per_query_metrics(frame: pl.DataFrame, score: str, k: int = 10) -> pl.DataFrame:
     grouped = (
-        frame.sort(["query_id", score, "fused_pos"], descending=[False, True, False])
+        frame.with_columns(pl.col(score).fill_nan(float("-inf")).alias("_rank_score"))
+        .sort(["query_id", "_rank_score", "fused_pos"], descending=[False, True, False])
         .group_by("query_id", maintain_order=True)
         .agg(pl.col("kind").first(), pl.col("grade"), pl.col("listing_id"))
     )
