@@ -4,7 +4,7 @@ Portfolio-grade ML platform for Dubai real estate: property price
 estimation, duplicate/fraud listing detection, and search ranking, built
 on real Dubai Land Department (DLD) transaction data.
 
-> **Status:** Phase 3 (price model) complete. See
+> **Status:** Phase 4 (duplicate and fraud detection) complete. See
 > `docs/superpowers/specs/` for the full 10-phase build plan.
 
 ## Architecture (current)
@@ -25,6 +25,11 @@ graph LR
     TRAIN["python -m models.price train<br/>(XGBoost on the GPU)"]
     PG -->|"home sales"| TRAIN
     TRAIN -->|"runs + zestimator-price@champion"| ML
+    LCLI["python -m listings"]
+    LISTINGS[("listings schema<br/>synthetic corpus + vectors")]
+    PG -->|"home sales"| LISTINGS
+    LCLI --> LISTINGS
+    LCLI -->|"listing-dedup runs"| ML
 ```
 
 More components (ingestion pipeline, models, FastAPI service, Streamlit
@@ -215,12 +220,120 @@ and an honest one, because the cleaning rule itself used the price.
 - Evaluate against listing-to-sale outcomes, not just registered prices.
 - Geocode buildings to use distances instead of area IDs.
 
+## Duplicate and fraud detection
+
+Finds duplicate property listings and suspicious postings using photo and text
+similarity, on a **synthetic listings corpus built over real DLD sales**.
+
+**What is real and what is not.** DLD publishes transactions, not listings: no
+photos, no descriptions, no agents. So Phase 4 generates 20,000 listings whose
+location, building, size, bedrooms and price level come from real 2021–2023 DLD
+sales, and whose text, agents, posting dates, duplicates and fraud cases are
+invented and labelled. Photos come from the public
+[Houses-dataset](https://github.com/emanhamed/Houses-dataset) (535 properties ×
+4 rooms; Ahmed & Moustafa, *House Price Estimation from Visual and Textual
+Features*, 2016). The images are downloaded, never committed. Every number below
+is measured on that synthetic corpus and does not transfer to a real portal.
+
+```bash
+uv run python -m listings build      # 206s: corpus + 3,600 edited photo variants (includes the 176 MB photo download)
+uv run python -m listings embed      # 286s on the RTX 3060 (CLIP ViT-B/32 + all-MiniLM-L6-v2), models already cached
+uv run python -m listings detect     # 482s: candidates, scores, duplicate_pairs + fraud_flags
+uv run python -m listings evaluate   # 559s: metrics against ground truth, logged to MLflow
+```
+
+The first `embed` took 1,800s end to end, most of it the one-off download of
+the two models; the 286s above is a re-run with the models cached, including
+the HNSW index build. `detect` and `evaluate` each spend most of their time
+pricing all 20,000 listings with the Phase 3 model.
+
+**What gets planted** (all labelled): 1,200 exact reposts, 900 reworded copies,
+900 with cropped/resized/recompressed photos, plus two kinds of listing that must
+**not** be flagged — different units in the same building (often sharing developer
+photos) and unrelated listings sharing an agency photo set — and 600 bait-priced
+listings. 300 of the exact reposts carry an asking price shifted by 15–30%.
+
+**How it decides.** Candidates come from three indexed lookups per listing (text
+neighbours, image neighbours, and listings sharing an identical photo), never from
+comparing all pairs. Each candidate is then scored on twelve signals — text and
+photo similarity, shared photos, price and size gaps, same area/building/project,
+bedrooms, days apart, same agent — by a logistic regression whose threshold is the
+lowest score that reaches 98% precision on the validation split (it reached 98.3%
+there), because wrongly accusing a real listing is worse than missing a repost.
+
+**Results** on the reporting split (the most recent posting dates, never used for
+fitting or threshold selection; 210,924 candidate pairs, 817 of them duplicates):
+
+| | Multi-signal model | Photos-only baseline |
+|---|---|---|
+| Precision | 97.3% | 0.6% |
+| Recall | 34.9% | 91.7% |
+| PR-AUC | 0.919 | — |
+| False positives on same-building controls (419 pairs) | 0.0% | 9.1% |
+| False positives on stock-photo controls (36,744 pairs) | 0.0% | 99.7% |
+
+The baseline is `image_max_cosine ≥ 0.95` alone. On held-out data the model
+landed just under its 98% target, at 97.3% (285 true and 8 false flags), and it
+buys that precision with low recall: it finds about one duplicate in three.
+
+Recall by planted pattern (share of all planted pairs whose later listing falls in
+the reporting split, including pairs retrieval never found): exact repost 50.6%
+(336 pairs), reworded 10.0% (241), edited photos 34.5% (264). Reworded copies are
+the weak spot. Price-shifted reposts are missed entirely: of the reporting-split
+duplicates whose price gap is above the median, 0 of 88 were flagged, against
+39.1% below the median.
+Retrieval recall (planted duplicate pairs that reached the scoring stage at all,
+counted across all splits because retrieval runs before any model is fit): 97.2%.
+
+**Why an index and not brute force.** Comparing every pair of 20,000 listings is
+200 million comparisons (about 3.2 billion at photo level). Measured here:
+18.7s for all three indexed lookups (598,065 candidate pairs) versus 297.1s for a
+single exact text scan, and the index returned 99.3% of what the exact scan found
+(253,538 of 255,309 pairs).
+
+**Fraud flags.** `bait_price` asks the Phase 3 price model what the home is worth
+and flags asking prices more than 10% below its 80% range: precision 46.9%, recall
+95.9% against the planted cases (706 labelled listings: the 600 planted plus 106
+duplicates of them; 1,444 flagged; 17 of 20,000 listings could not be priced). So
+roughly half its flags land on listings that were not planted as bait, which
+makes it a review-queue signal, not a verdict. `photo_reuse` flags a photo set
+spanning 5 or more areas (5,098 listings), and `inconsistent_relist` flags
+duplicate clusters whose asking prices differ by more than 20% (0 listings on
+this run: it only sees clusters the duplicate model flagged, and no flagged
+cluster had an asking-price spread above 20%, consistent with the model missing
+the price-shifted reposts). If the price
+model cannot be loaded, that flag is skipped and the rest still run.
+
+**Write-up**
+
+*Business problem.* Duplicate and fraudulent listings waste buyers' time and
+damage a portal's credibility. The cost of a wrong accusation is high, so the
+system is tuned for precision and every flag records the evidence behind it in
+`listings.duplicate_pairs.signals`, ready for a review queue.
+
+*Metric optimised.* Precision first (a floor of 98% chosen on the validation
+split), with recall reported at that bar, plus the false-positive rate on the two
+control groups — the cases a naive photo-similarity rule gets wrong. The honest
+result is a high-precision, low-recall detector: it beats the photo rule by a wide
+margin on the controls, but it misses most reworded and price-shifted reposts.
+
+*What I would do differently with real listings.* Real duplicate labels do not
+exist, so I would bootstrap from agent-reported duplicates and moderator actions
+and treat them as noisy positives; add watermark and logo detection, which real
+agency photos carry; use ANN over photo embeddings with a fanout cap per photo
+once stock photos are identified; and re-check the threshold per market segment,
+since a luxury villa repost and a studio repost do not carry the same cost. On
+this corpus the next fix is the price-gap signal: a repost with a changed price is
+still a repost, so price should feed the relist flag rather than veto the
+duplicate decision.
+
 ## Cost breakdown (current)
 
 | Component | Cost |
 |---|---|
 | Postgres, MLflow, Airflow (local Docker) | $0 — runs on your machine |
 | Price model training (local RTX 3060) | $0 — runs on your machine |
+| Photo dataset + embedding models (one-off download) | $0 — about 0.8 GB on disk |
 
 Cloud costs are introduced in Phase 9 (deployment) and documented here as
 they're added.
@@ -231,6 +344,7 @@ they're added.
 - `dags/` — Airflow DAGs (`dld_ingestion`)
 - `scripts/` — maintenance scripts (test-fixture builder)
 - `models/price/` — home price model: features, training, evaluation, predictor (`python -m models.price`)
+- `listings/` — synthetic listings corpus, duplicate detection, fraud flags (`python -m listings`)
 - `api/` — FastAPI service (Phase 6)
 - `demo/` — Streamlit app (Phase 7)
 - `data/raw/` — drop DLD CSVs here (gitignored)

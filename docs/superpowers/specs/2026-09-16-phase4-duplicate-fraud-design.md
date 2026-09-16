@@ -312,3 +312,93 @@ real listings).
   place names).
 - Any claim that measured precision or recall transfers to real portal data;
   the README states that these are synthetic-corpus numbers.
+
+## Amendments during implementation
+
+Recorded 2026-09-16, after the real 20,000-listing run (corpus run 1, detect
+run 1, MLflow run `2da1554409394a399d95c33ee2015d28` in experiment
+`listing-dedup`).
+
+- **Retrieval changed.** Per-photo kNN (top 10 photos for each of a listing's
+  photos) was replaced by two channels: the top 20 listings by the listing's
+  *average image vector* (its own HNSW index on `listing_embeddings`), and a
+  *shared-photo* channel that pairs listings using the same photo, skipping
+  any photo used by more than `max_photo_fanout = 50` listings. Reason: stock
+  and developer photo sets are shared by hundreds of listings, so per-photo
+  kNN fills every neighbour slot with the same stock photo and either explodes
+  quadratically or crowds out the real duplicates; the fanout cap keeps the
+  exact-copy signal without that blow-up. The text channel is unchanged
+  (top 20, `ef_search = 100`). Measured on the real run: 598,065 candidate
+  pairs (text 255,613, image 341,443, shared photo 57,297 before de-duplication
+  across channels, about 30 per listing), retrieval recall 97.2% of the 3,000
+  planted duplicate pairs (pooled across splits by design — retrieval runs
+  before any model is fit). All three lookups took 18.7s against 297.1s for a
+  single exact (index-disabled) text scan, and the indexed candidates contained
+  253,538 of the 255,309 exact text-neighbour pairs (99.3%).
+- **`truth.py` is the only module that reads labels** (`dup_group_id`,
+  `control_group_id`, `fraud_label`); the detection modules (candidates,
+  features, detect, fraud) never select them or the generator's provenance
+  columns, and a test scans the source to enforce it. The pair model *is*
+  trained on those labels by design: `detect` joins them to the train split to
+  fit the logistic regression and to the validation split to choose the
+  threshold. They are never model inputs.
+- **`reg_type` was added to the corpus** (copied from the source DLD sale), so
+  the Phase 3 price model, which needs ready/off-plan status, can be called
+  from `bait_price`.
+- **The integration test uses `tests/fixtures/price_sample.csv`** (the existing
+  Phase 2/3 fixture) as its DLD source rather than a new listings fixture.
+- **`detect` writes only flagged pairs** to `listings.duplicate_pairs`
+  (1,144 on the real run, out of 598,065 scored); `evaluate` re-runs retrieval
+  and scoring in memory, because the metrics need every scored pair, not just
+  the flagged ones. Both use the same seed and config, and the real run
+  reproduced the same candidate count and threshold in both.
+- **Bait pricing uses the listing's own asking price.** The corpus deliberately
+  stores no sale price, so `bait_price` compares the asking price against the
+  price model's 80% range (flag when more than 10% below the lower bound).
+  Clones of bait-priced listings inherit the cheap price and the `bait_price`
+  label, so the real corpus has 706 labelled listings (600 planted + 106
+  clones), which is the recall denominator.
+- **`load_price_predictor` degrades only on the model load itself.** A missing
+  `mlflow` or unresolvable tracking URI aborts the run; a model that cannot be
+  loaded logs a warning naming the tracking URI, sets
+  `stats.bait_price_skipped = 1`, and the CLI prints a loud warning. The real
+  run recorded `bait_price_skipped = 0` and `bait_price_checked = 20,000`
+  (17 listings unsupported by the price model).
+- **Metrics are per split.** `report.*`, `control.*` and `pattern.*` are scoped
+  to the reporting split (`pattern.*.recall` uses a denominator derived from
+  planted pairs' posting dates, so retrieval misses count as misses);
+  `train.*` and `tune.*` are in-sample; `pooled.*` keys are for debugging only.
+  `evaluate --brute-force` is opt-in because it disables index scans over the
+  whole corpus.
+- **Real-run headline numbers (2026-09-16, RTX 3060 Laptop GPU, `cuda`).**
+  Reporting split (posting dates after the first 80%; 210,924 pairs, 817
+  duplicates), threshold 0.9993:
+  - model precision 97.3%, recall 34.9%, PR-AUC 0.919 (validation precision
+    98.3% — the held-out number landed just under the 98% floor);
+  - photos-only baseline (`image_max_cosine ≥ 0.95`) precision 0.6%, recall
+    91.7%;
+  - same-building controls (419 pairs): model 0.0% false positives, baseline
+    9.1%; stock-photo controls (36,744 pairs): model 0.0%, baseline 99.7%;
+  - recall by pattern: exact repost 50.6% (336 pairs), reworded 10.0% (241),
+    edited photo 34.5% (264);
+  - price-shift gap: duplicates with an above-median price gap 0 of 88 flagged,
+    below-median 39.1% of 729;
+  - fraud: `bait_price` 1,444 flagged, precision 46.9%, recall 95.9%;
+    `photo_reuse` 5,098 listings; `inconsistent_relist` 0 listings.
+  - Stage times: build 206s, embed 1,800s on first use (dominated by the model
+    download) and 286s with models cached, detect 482s, evaluate 559s.
+- **Known weaknesses the real run exposed.** Recall is low at the 98%
+  precision bar (about one duplicate in three); reworded copies are the weakest
+  pattern; reposts with a shifted asking price are effectively never flagged,
+  which is why `inconsistent_relist` (which only sees flagged clusters) fired
+  zero times; and `bait_price` flags about twice as many listings as were
+  planted, so it needs human review. The spec's expected "baseline fires on the
+  controls" held strongly for stock photos (99.7%) and modestly for
+  same-building units (9.1%).
+- **Other implementer notes.** The integration test's corpus uses
+  `stock_min_areas = 3` and its own larger photo-pool fixture so every fraud
+  and control path is reachable at test scale; the task-3 generator rounds
+  shifted prices after drawing the shift, so about 5% of seeds other than 42
+  would fail the price-shift band test; the tests' shared `zestimator_test`
+  database means the suite must never be run concurrently; the leakage scan
+  looks at most five lines past a `SELECT` in inline SQL literals.
