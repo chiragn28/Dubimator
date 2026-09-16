@@ -15,7 +15,7 @@ class Place:
     area_ids: tuple[int, ...]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)
 class Lexicon:
     entries: dict[str, Place]  # match_key -> place
     max_tokens: int

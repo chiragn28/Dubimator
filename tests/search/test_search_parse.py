@@ -22,6 +22,8 @@ CASES = [
     ("4 bedrooms", {"bedrooms": 4}),
     ("1 BHK", {"bedrooms": 1}),
     ("seven bed villa", {"bedrooms": 7, "property_type": "villa"}),
+    ("3+ bedroom villa", {"bedrooms": 3, "property_type": "villa"}),
+    ("2+ br apartment", {"bedrooms": 2, "property_type": "flat"}),
     # budget
     ("under 1.5M", {"budget_max": 1_500_000.0, "budget_min": None}),
     ("below AED 900k", {"budget_max": 900_000.0}),
@@ -29,6 +31,7 @@ CASES = [
     ("up to 1.2 million", {"budget_max": 1_200_000.0}),
     ("budget 850k", {"budget_max": 850_000.0}),
     ("900k-1.2M", {"budget_min": 900_000.0, "budget_max": 1_200_000.0}),
+    ("budget 900k—2M", {"budget_min": 900_000.0, "budget_max": 2_000_000.0}),
     ("1-1.5M", {"budget_min": 1_000_000.0, "budget_max": 1_500_000.0}),
     ("between 1M and 2M", {"budget_min": 1_000_000.0, "budget_max": 2_000_000.0}),
     ("from 800k to 1.1m", {"budget_min": 800_000.0, "budget_max": 1_100_000.0}),
@@ -165,6 +168,10 @@ def test_every_synonym_maps_to_a_real_amenity():
 
     assert set(AMENITY_SYNONYMS.values()) <= set(AMENITIES)
     assert all(amenity in AMENITY_SYNONYMS for amenity in AMENITIES)
+
+
+def test_lexicon_is_hashable():
+    assert isinstance(hash(LEXICON), int)
 
 
 def test_areas_win_over_buildings_with_the_same_key_and_short_names_are_ignored():

@@ -51,7 +51,7 @@ _SIZE = re.compile(
 )
 _BEDS = re.compile(
     r"(?<![a-z0-9])(?:(?P<studio>studios?)"
-    r"|(?P<n>\d)\s*-?\s*(?:br|bhk|beds?|bedrooms?)"
+    r"|(?P<n>\d)\s*[-+]?\s*(?:br|bhk|beds?|bedrooms?)"
     r"|(?P<w>one|two|three|four|five|six|seven)[\s-]*(?:br|bhk|beds?|bedrooms?))(?![a-z])"
 )
 _MONEY = (
@@ -59,7 +59,7 @@ _MONEY = (
     r"\s*(?P<sX>million|thousand|mn|m|k)?(?![a-z0-9])(?P<postX>\s*aed(?![a-z]))?"
 )
 M1, M2 = _MONEY.replace("X", "1"), _MONEY.replace("X", "2")
-_RANGE = re.compile(rf"(?:between\s+|from\s+)?{M1}\s*(?:-|–|to|and)\s*{M2}")
+_RANGE = re.compile(rf"(?:between\s+|from\s+)?{M1}\s*(?:-|–|—|to|and)\s*{M2}")
 _MAX = re.compile(
     r"(?:under|below|max(?:imum)?|up\s+to|less\s+than|within|budget(?:\s+of)?|at\s+most"
     rf"|no\s+more\s+than)\s*:?\s*{M1}"
