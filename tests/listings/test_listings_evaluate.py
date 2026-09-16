@@ -1,5 +1,5 @@
 import math
-from datetime import date
+from datetime import date, timedelta
 
 import polars as pl
 import pytest
@@ -406,56 +406,65 @@ def test_evaluate_detection_pattern_recall_denominator_is_date_derived_not_retri
 
 
 def test_evaluate_detection_price_shift_recall_gap_isolates_shifted_clones():
-    # Four report-split duplicates: two with a small price ratio (both caught), two with a
-    # large one (only one caught) — the split the corpus's price-shifted reposts create.
+    # Five report-split duplicates: two listed at the same price (both caught), three with a
+    # price gap (one caught) -- the split the corpus's price-shifted reposts create. With
+    # three of five shifted the median gap is non-zero, so a median split would put one
+    # shifted pair on the "unshifted" side; the metric must split on "any gap" instead.
     rows = [
-        _pairs_row(1, 2, "report", 0.95, True, True, ratio=0.01),
-        _pairs_row(3, 4, "report", 0.95, True, True, ratio=0.02),
+        _pairs_row(1, 2, "report", 0.95, True, True, ratio=0.0),
+        _pairs_row(3, 4, "report", 0.95, True, True, ratio=0.0),
         _pairs_row(5, 6, "report", 0.60, True, True, ratio=0.30),
         _pairs_row(7, 8, "report", 0.10, False, True, ratio=0.35),
+        _pairs_row(9, 10, "report", 0.10, False, True, ratio=0.02),
     ]
     pairs = pl.DataFrame(rows)
     attributes = pl.DataFrame(
         {
-            "listing_id": list(range(1, 9)),
-            "photo_set_id": list(range(1, 9)),
-            "area_id": list(range(1, 9)),
+            "listing_id": list(range(1, 11)),
+            "photo_set_id": list(range(1, 11)),
+            "area_id": list(range(1, 11)),
         }
     )
     truth = pl.DataFrame(
         {
-            "listing_a": [1, 3, 5, 7],
-            "listing_b": [2, 4, 6, 8],
-            "pattern": ["exact_repost"] * 4,
+            "listing_a": [1, 3, 5, 7, 9],
+            "listing_b": [2, 4, 6, 8, 10],
+            "pattern": ["exact_repost"] * 5,
         }
     )
     metrics = evaluate_detection(
         type("R", (), {"pairs": pairs, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
     )
 
-    assert metrics["price_shift.below_median.pairs"] == pytest.approx(2.0)
-    assert metrics["price_shift.below_median.recall"] == pytest.approx(1.0)
-    assert metrics["price_shift.above_median.pairs"] == pytest.approx(2.0)
-    assert metrics["price_shift.above_median.recall"] == pytest.approx(0.5)
+    assert metrics["price_shift.unshifted.pairs"] == pytest.approx(2.0)
+    assert metrics["price_shift.unshifted.recall"] == pytest.approx(1.0)
+    assert metrics["price_shift.shifted.pairs"] == pytest.approx(3.0)
+    assert metrics["price_shift.shifted.recall"] == pytest.approx(1 / 3)
     # the gap this metric exists to surface
-    assert metrics["price_shift.above_median.recall"] < metrics["price_shift.below_median.recall"]
+    assert metrics["price_shift.shifted.recall"] < metrics["price_shift.unshifted.recall"]
+    assert not [key for key in metrics if "median" in key]
 
 
-def test_evaluate_detection_price_shift_gap_is_nan_without_enough_report_duplicates():
-    # A single report-split duplicate can't be median-split into two groups: both buckets
-    # are undefined (NaN), not zero — there is no computed "zero pairs" fact here, only an
-    # uncomputed one.
-    rows = [_pairs_row(1, 2, "report", 0.9, True, True, ratio=0.05)]
-    pairs = pl.DataFrame(rows)
+def test_evaluate_detection_price_shift_gap_is_nan_without_report_duplicates():
+    # No report-split duplicate at all: both buckets are undefined (NaN), not zero -- there is
+    # no computed "zero pairs" fact here, only an uncomputed one. A bucket that is merely
+    # empty while the other is not gets 0 pairs and a NaN recall.
     attributes = pl.DataFrame({"listing_id": [1, 2], "photo_set_id": [1, 2], "area_id": [1, 2]})
     truth = pl.DataFrame(schema={"listing_a": pl.Int64, "listing_b": pl.Int64, "pattern": pl.Utf8})
+    none = pl.DataFrame([_pairs_row(1, 2, "report", 0.9, True, False, ratio=0.05)])
     metrics = evaluate_detection(
-        type("R", (), {"pairs": pairs, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
+        type("R", (), {"pairs": none, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
     )
-    assert math.isnan(metrics["price_shift.below_median.pairs"])
-    assert math.isnan(metrics["price_shift.below_median.recall"])
-    assert math.isnan(metrics["price_shift.above_median.pairs"])
-    assert math.isnan(metrics["price_shift.above_median.recall"])
+    for key in ("unshifted.pairs", "unshifted.recall", "shifted.pairs", "shifted.recall"):
+        assert math.isnan(metrics[f"price_shift.{key}"])
+
+    one = pl.DataFrame([_pairs_row(1, 2, "report", 0.9, True, True, ratio=0.05)])
+    metrics = evaluate_detection(
+        type("R", (), {"pairs": one, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
+    )
+    assert metrics["price_shift.shifted.pairs"] == pytest.approx(1.0)
+    assert metrics["price_shift.unshifted.pairs"] == pytest.approx(0.0)
+    assert math.isnan(metrics["price_shift.unshifted.recall"])
 
 
 def test_evaluate_detection_pr_auc_matches_hand_computed_average_precision():
@@ -551,3 +560,158 @@ def test_evaluate_fraud_reports_photo_reuse_and_relist_counts_and_stats():
     assert metrics["fraud.inconsistent_relist.flagged"] == pytest.approx(2.0)
     assert metrics["stats.bait_price_skipped"] == pytest.approx(0.0)
     assert metrics["stats.listings"] == pytest.approx(5.0)
+
+
+def _dated_attributes(n: int) -> pl.DataFrame:
+    """n listings posted one per day, so the 60/20/20 blocks are easy to count."""
+    return pl.DataFrame(
+        {
+            "listing_id": list(range(1, n + 1)),
+            "posted_at": [date(2023, 1, 1) + timedelta(days=i) for i in range(n)],
+            "photo_set_id": list(range(1, n + 1)),
+            "area_id": list(range(1, n + 1)),
+        }
+    )
+
+
+def _relist_flags(ids):
+    return pl.DataFrame(
+        {
+            "listing_id": ids,
+            "flag": ["inconsistent_relist"] * len(ids),
+            "detail": ["{}"] * len(ids),
+        },
+        schema={"listing_id": pl.Int64, "flag": pl.Utf8, "detail": pl.Utf8},
+    )
+
+
+EMPTY_TRUTH = pl.DataFrame(
+    schema={
+        "listing_id": pl.Int64, "dup_group_id": pl.Int64,
+        "control_group_id": pl.Utf8, "fraud_label": pl.Utf8,
+    }
+)  # fmt: skip
+
+
+def test_evaluate_fraud_scores_relist_on_report_listings_only():
+    # 10 listings, one per day: 1-6 train, 7-8 threshold, 9-10 report.
+    attributes = _dated_attributes(10)
+    # flagged: 1, 2 (train, both true), 9 (report, true), 10 (report, false)
+    # truth:   1, 2, 9 and 8 (threshold block)
+    flags = _relist_flags([1, 2, 9, 10])
+    relist_truth = pl.DataFrame({"listing_id": [1, 2, 8, 9]})
+    metrics = evaluate_fraud(
+        type("F", (), {"flags": flags, "stats": {}})(),
+        EMPTY_TRUTH,
+        CONFIG,
+        relist_truth,
+        attributes,
+    )
+    assert metrics["fraud.inconsistent_relist.flagged"] == pytest.approx(4.0)  # all listings
+    assert metrics["fraud.inconsistent_relist.report_flagged"] == pytest.approx(2.0)
+    assert metrics["fraud.inconsistent_relist.report_positives"] == pytest.approx(1.0)
+    assert metrics["fraud.inconsistent_relist.precision"] == pytest.approx(0.5)
+    assert metrics["fraud.inconsistent_relist.recall"] == pytest.approx(1.0)
+    assert metrics["pooled.fraud.inconsistent_relist.precision"] == pytest.approx(3 / 4)
+    assert metrics["pooled.fraud.inconsistent_relist.recall"] == pytest.approx(3 / 4)
+
+
+def test_relist_rates_are_nan_when_undefined():
+    attributes = _dated_attributes(10)
+    metrics = evaluate_fraud(
+        type("F", (), {"flags": _relist_flags([]), "stats": {}})(),
+        EMPTY_TRUTH,
+        CONFIG,
+        pl.DataFrame({"listing_id": []}, schema={"listing_id": pl.Int64}),
+        attributes,
+    )
+    assert metrics["fraud.inconsistent_relist.flagged"] == 0.0
+    assert math.isnan(metrics["fraud.inconsistent_relist.precision"])
+    assert math.isnan(metrics["fraud.inconsistent_relist.recall"])
+    # Without relist truth the rates are simply not computed.
+    metrics = evaluate_fraud(
+        type("F", (), {"flags": _relist_flags([1]), "stats": {}})(), EMPTY_TRUTH, CONFIG
+    )
+    assert "fraud.inconsistent_relist.precision" not in metrics
+
+
+def test_end_to_end_recall_divides_by_every_planted_report_pair():
+    # 10 listings one per day; pairs (2,9) and (3,10) are planted and report-split by date.
+    # Only (2,9) was retrieved (and flagged), so report.recall is 1.0 but end-to-end is 0.5.
+    attributes = _dated_attributes(10)
+    pairs = pl.DataFrame([_pairs_row(2, 9, "report", 0.9, True, True)])
+    truth = pl.DataFrame(
+        {"listing_a": [2, 3], "listing_b": [9, 10], "pattern": ["exact_repost", "reworded"]}
+    )
+    metrics = evaluate_detection(
+        type("R", (), {"pairs": pairs, "threshold": 0.5, "stats": {}})(), truth, attributes, CONFIG
+    )
+    assert metrics["report.recall"] == pytest.approx(1.0)
+    assert metrics["report.planted_pairs"] == pytest.approx(2.0)
+    assert metrics["report.end_to_end_recall"] == pytest.approx(0.5)
+
+
+def test_threshold_table_scores_the_tuning_split_only():
+    from listings.evaluate import threshold_table
+
+    pairs = pl.DataFrame(
+        [
+            _pairs_row(1, 2, "threshold", 0.999, True, True),
+            _pairs_row(3, 4, "threshold", 0.97, True, False),
+            _pairs_row(5, 6, "threshold", 0.6, False, True),
+            _pairs_row(7, 8, "report", 0.9999, True, False),  # must be ignored
+        ]
+    )
+    table = threshold_table(pairs, chosen=0.97)
+    rows = {row["threshold"]: row for row in table.iter_rows(named=True)}
+    assert rows[0.97]["chosen"] and sum(table["chosen"]) == 1
+    assert (rows[0.97]["flagged"], rows[0.97]["precision"]) == (2, 0.5)
+    assert rows[0.97]["recall"] == pytest.approx(0.5)
+    assert (rows[0.5]["flagged"], rows[0.5]["recall"]) == (3, 1.0)
+    assert rows[0.999]["precision"] == 1.0
+    assert rows[0.9999]["flagged"] == 0 and math.isnan(rows[0.9999]["precision"])
+
+
+def test_confusion_matrix_is_report_split_for_model_and_baseline():
+    from listings.evaluate import confusion_matrix
+
+    pairs = pl.DataFrame(
+        [
+            _pairs_row(1, 2, "report", 0.9, True, True, baseline=True),
+            _pairs_row(3, 4, "report", 0.9, True, False, baseline=True),
+            _pairs_row(5, 6, "report", 0.1, False, True, baseline=False),
+            _pairs_row(7, 8, "report", 0.1, False, False, baseline=True),
+            _pairs_row(9, 10, "train", 0.9, True, False),  # must be ignored
+        ]
+    )
+    matrix = confusion_matrix(pairs)
+    assert matrix["model"] == {
+        "true_positives": 1, "false_positives": 1, "false_negatives": 1, "true_negatives": 1,
+    }  # fmt: skip
+    assert matrix["baseline"] == {
+        "true_positives": 1, "false_positives": 2, "false_negatives": 1, "true_negatives": 0,
+    }  # fmt: skip
+
+
+def test_run_artifacts_are_written_as_strict_json_and_csv(tmp_path):
+    import json
+
+    from listings.evaluate import write_run_artifacts
+
+    pairs = pl.DataFrame(
+        [
+            _pairs_row(1, 2, "threshold", 0.9, True, True),
+            _pairs_row(3, 4, "report", 0.9, True, True),
+        ]
+    )
+    result = type("R", (), {"pairs": pairs, "threshold": 0.9})()
+    timings = {"build": {"seconds": 1.5, "finished_at": "2026-09-16T00:00:00+00:00"}}
+    paths = write_run_artifacts(result, timings, tmp_path)
+    assert [path.name for path in paths] == [
+        "threshold_table.csv", "confusion_matrix.json", "timings.json",
+    ]  # fmt: skip
+    assert json.loads(paths[1].read_text())["model"]["true_positives"] == 1
+    assert json.loads(paths[2].read_text()) == timings
+    assert pl.read_csv(paths[0]).height >= 1
+    with pytest.raises(ValueError):
+        write_run_artifacts(result, {"evaluate": {"seconds": float("nan")}}, tmp_path)

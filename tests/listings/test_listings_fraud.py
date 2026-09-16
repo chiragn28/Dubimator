@@ -212,3 +212,70 @@ def test_fraud_sql_selects_no_free_duplicate_oracle():
 
     for name in DETECTION_FORBIDDEN_COLUMNS:
         assert name not in FRAUD_LISTING_SQL
+
+
+def test_a_price_shifted_repost_is_relist_flagged(loaded_corpus):
+    """inconsistent_relist looks for duplicate clusters whose prices disagree, so it must be fed
+    a price-BLIND duplicate decision: the headline model penalises a price gap so heavily that
+    a price-shifted repost is exactly what it never flags (final review, Important 1)."""
+    from listings.detect import run_detection
+    from listings.truth import load_relist_truth
+
+    settings, _, _ = loaded_corpus
+    conn = settings.connect()
+    try:
+        result = run_detection(conn, CONFIG)
+        relist_truth = set(load_relist_truth(conn, CONFIG.relist_price_spread)["listing_id"])
+        fraud = run_fraud_checks(conn, result.relist_pairs, CONFIG, predictor=None)
+    finally:
+        conn.close()
+
+    assert relist_truth, "the fixture must plant at least one repost shifted beyond the spread"
+    relist = fraud.flags.filter(pl.col("flag") == "inconsistent_relist")
+    caught = set(relist["listing_id"].to_list()) & relist_truth
+    assert caught, "no price-shifted repost was relist-flagged"
+    # The price-blind pairs are a superset of the headline decisions, scored by the same model
+    # at the same threshold with only the price gap zeroed.
+    headline = set(
+        zip(
+            *result.pairs.filter(pl.col("decision"))
+            .select("listing_a", "listing_b")
+            .to_dict(as_series=False)
+            .values()
+        )
+    )
+    blind = set(zip(result.relist_pairs["listing_a"], result.relist_pairs["listing_b"]))
+    assert headline <= blind
+    # ...and the truth listings it caught include ones the headline decision alone misses.
+    headline_flags = inconsistent_relist_flags(
+        fraud_attributes_for(settings), result.pairs.filter(pl.col("decision")), CONFIG
+    )
+    assert caught - set(headline_flags["listing_id"].to_list())
+
+
+def fraud_attributes_for(settings):
+    from listings.fraud import load_fraud_attributes
+
+    conn = settings.connect()
+    try:
+        return load_fraud_attributes(conn)
+    finally:
+        conn.close()
+
+
+def test_price_model_version_resolves_through_the_alias(temp_mlflow):
+    import mlflow
+
+    from listings.fraud import resolve_price_model_version
+
+    mlflow.set_tracking_uri(temp_mlflow["tracking_uri"])
+    client = mlflow.MlflowClient()
+    client.create_registered_model("toy-price")
+    for _ in range(2):
+        client.create_model_version("toy-price", source="file:///nowhere", run_id=None)
+    client.set_registered_model_alias("toy-price", "champion", "2")
+
+    assert resolve_price_model_version("models:/toy-price@champion") == "2"
+    assert resolve_price_model_version("models:/toy-price/1") == "1"
+    assert resolve_price_model_version("models:/missing@champion") is None
+    assert resolve_price_model_version("runs:/abc/model") is None

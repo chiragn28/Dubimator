@@ -2,15 +2,18 @@
 
 import argparse
 import dataclasses
+import json
 import logging
 import sys
 import tempfile
+import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from ingestion.config import DbSettings
-from listings.candidates import brute_force_pairs
+from listings.candidates import benchmark_text_retrieval
 from listings.config import CorpusConfig, DetectConfig
 from listings.detect import run_detection, write_detection
 from listings.embed import (
@@ -20,8 +23,15 @@ from listings.embed import (
     embed_photos,
     resolve_device,
 )
-from listings.evaluate import evaluate_detection, evaluate_fraud, log_run, save_pr_curve
-from listings.fraud import run_fraud_checks, write_fraud_flags
+from listings.evaluate import (
+    evaluate_detection,
+    evaluate_fraud,
+    log_run,
+    save_pr_curve,
+    write_run_artifacts,
+)
+from listings.features import load_listing_attributes
+from listings.fraud import resolve_price_model_version, run_fraud_checks, write_fraud_flags
 from listings.generate import generate_corpus, load_areas, load_sales, render_variants
 from listings.load import (
     create_vector_indexes,
@@ -32,7 +42,9 @@ from listings.load import (
     write_photo_embeddings,
 )
 from listings.photos import DATA_DIR, ensure_pool
-from listings.truth import load_duplicate_truth, load_truth
+from listings.truth import load_duplicate_truth, load_relist_truth, load_truth
+
+TIMINGS_FILE = "stage_timings.json"
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -54,17 +66,21 @@ def _parser() -> argparse.ArgumentParser:
     embed.add_argument("--data-dir", type=Path, default=DATA_DIR)
     embed.add_argument("--fake", action="store_true", help="use the deterministic test embedder")
 
-    commands.add_parser("detect", help="score candidates and write duplicates and fraud flags")
+    detect = commands.add_parser(
+        "detect", help="score candidates and write duplicates and fraud flags"
+    )
+    detect.add_argument("--data-dir", type=Path, default=DATA_DIR)
     evaluate = commands.add_parser(
         "evaluate", help="measure against ground truth and log to MLflow"
     )
+    evaluate.add_argument("--data-dir", type=Path, default=DATA_DIR)
     evaluate.add_argument(
         "--brute-force",
         action="store_true",
         help=(
-            "also measure retrieval vs. a brute-force (index-disabled) scan; off by default "
-            "because it disables index scans over the whole corpus and takes minutes at full "
-            "scale — Task 11's own script measures this comparison"
+            "also time the indexed text lookup against the exact (index-disabled) text scan "
+            "over the whole corpus and log the share of exact pairs the index returned; off "
+            "by default because the exact scan takes minutes at full scale"
         ),
     )
     return parser
@@ -75,11 +91,35 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     load_dotenv()  # before any settings are read
     commands = {"build": _build, "embed": _embed, "detect": _detect, "evaluate": _evaluate}
+    args.started = time.perf_counter()
     try:
-        return commands[args.command](args)
+        status = commands[args.command](args)
     except Exception as exc:  # noqa: BLE001 — CLI boundary: report and exit 1
         print(f"{args.command} failed: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+    if status == 0:
+        seconds = time.perf_counter() - args.started
+        _record_timing(args.data_dir, args.command, seconds)
+        print(f"{args.command} took {seconds:.1f}s")
+    return status
+
+
+def _read_timings(data_dir: Path) -> dict:
+    path = Path(data_dir) / TIMINGS_FILE
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
+
+
+def _record_timing(data_dir: Path, stage: str, seconds: float) -> None:
+    """Each stage's wall-clock seconds in a sidecar under the (gitignored) data dir. `build`
+    starts a new corpus, so it starts a fresh table."""
+    timings = {} if stage == "build" else _read_timings(data_dir)
+    timings[stage] = {
+        "seconds": round(seconds, 3),
+        "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    path = Path(data_dir) / TIMINGS_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(timings, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def _build(args) -> int:
@@ -138,7 +178,8 @@ def _detect(args) -> int:
         result = run_detection(conn, config)
         detect_run_id = write_detection(conn, result, corpus_run_id)
         flagged = result.pairs.filter(result.pairs["decision"])
-        fraud = run_fraud_checks(conn, flagged, config)
+        # inconsistent_relist reads the price-blind decisions; the other flags read listings.
+        fraud = run_fraud_checks(conn, result.relist_pairs, config)
         write_fraud_flags(conn, fraud, detect_run_id)
         conn.commit()
     finally:
@@ -153,32 +194,36 @@ def _detect(args) -> int:
         )
     print(
         f"detect run {detect_run_id}: {result.pairs.height:,} candidate pairs, "
-        f"{flagged.height:,} flagged at threshold {result.threshold:.4f}, "
-        f"{fraud.flags.height:,} fraud flags"
+        f"{flagged.height:,} flagged at threshold {result.threshold:.4f} "
+        f"({result.relist_pairs.height:,} price-blind), {fraud.flags.height:,} fraud flags"
     )
     return 0
 
 
 def _evaluate(args) -> int:
     settings, config = DbSettings.from_env(), DetectConfig()
+    price_model_version = resolve_price_model_version(config.price_model_uri)
     conn = settings.connect()
     try:
         corpus_run_id = latest_corpus_run(conn)
         result = run_detection(conn, config)
-        flagged = result.pairs.filter(result.pairs["decision"])
-        fraud = run_fraud_checks(conn, flagged, config)
+        fraud = run_fraud_checks(conn, result.relist_pairs, config)
         truth_pairs, truth = load_duplicate_truth(conn), load_truth(conn)
-        from listings.features import load_listing_attributes
-
+        relist_truth = load_relist_truth(conn, config.relist_price_spread)
         attributes = load_listing_attributes(conn)
-        exact = brute_force_pairs(conn, "text", config.text_top_k) if args.brute_force else None
+        bench = (
+            benchmark_text_retrieval(conn, config, candidates=result.pairs)
+            if args.brute_force
+            else None
+        )
     finally:
         conn.close()
 
     metrics = evaluate_detection(result, truth_pairs, attributes, config)
-    metrics |= evaluate_fraud(fraud, truth, config)
-    if exact is not None:
-        metrics["retrieval.exact_pairs"] = float(exact.height)
+    metrics |= evaluate_fraud(fraud, truth, config, relist_truth, attributes)
+    if bench is not None:
+        metrics |= bench
+        metrics["retrieval.exact_pairs"] = bench["retrieval.bench.text_exact_pairs"]
     if fraud.stats.get("bait_price_skipped"):
         print(
             "WARNING: bait_price check was SKIPPED — the champion price model "
@@ -187,13 +232,24 @@ def _evaluate(args) -> int:
             "fraud.bait_price.* metrics below are computed against zero flags.",
             file=sys.stderr,
         )
+
+    # Per-stage wall-clock table: the earlier stages from the sidecar, plus this one so far.
+    timings = _read_timings(args.data_dir)
+    timings["evaluate_before_logging"] = {
+        "seconds": round(time.perf_counter() - args.started, 3),
+        "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
+    }
+    for stage, entry in timings.items():
+        metrics[f"timing.{stage}_seconds"] = float(entry["seconds"])
+
     for name, value in sorted(metrics.items()):
-        print(f"{name:<45}{value:>12.4f}")
+        print(f"{name:<50}{value:>12.4f}")
 
     with tempfile.TemporaryDirectory() as tmp:
         curve = save_pr_curve(
             result.pairs["score"], result.pairs["is_duplicate"], Path(tmp) / "pr.png"
         )
+        artifacts = write_run_artifacts(result, timings, Path(tmp))
         run_id = log_run(
             metrics,
             {
@@ -203,8 +259,13 @@ def _evaluate(args) -> int:
                 "photo_top_k": config.photo_top_k,
                 "max_photo_fanout": config.max_photo_fanout,
                 "target_precision": config.target_precision,
+                "relist_price_spread": config.relist_price_spread,
+                "relist_decision": "price_blind",
+                "price_model_uri": config.price_model_uri,
+                "price_model_version": price_model_version or "unavailable",
+                "brute_force": bool(args.brute_force),
             },
-            [curve],
+            [curve, *artifacts],
             config,
         )
     print(f"logged MLflow run {run_id} in experiment {config.experiment}")

@@ -86,10 +86,54 @@ def test_detection_beats_the_single_signal_baseline_on_controls(loaded_corpus):
     controls = result.pairs.filter(pl.col("same_building_control"))
     model_flags = controls["decision"].sum()
     baseline_flags = controls["baseline_decision"].sum()
-    assert model_flags <= baseline_flags, (
+    # Spec: the baseline DOES fire on these controls; otherwise the comparison proves nothing.
+    assert baseline_flags > 0, "the image-only baseline flagged no same-building control"
+    assert model_flags < baseline_flags, (
         f"the model flagged {model_flags} same-building controls, the image-only baseline "
         f"{baseline_flags} — multi-signal agreement is supposed to help here"
     )
+
+
+def test_detection_beats_the_single_signal_baseline_on_stock_photo_controls(loaded_corpus):
+    from listings.evaluate import stock_photo_control_pairs
+    from listings.features import load_listing_attributes
+
+    settings, _, _ = loaded_corpus
+    conn = settings.connect()
+    try:
+        result = run_detection(conn, CONFIG)
+        attributes = load_listing_attributes(conn)
+    finally:
+        conn.close()
+    controls = result.pairs.filter(stock_photo_control_pairs(result.pairs, attributes))
+    assert controls.height > 0, "the fixture must retrieve some stock-photo control pairs"
+    model_flags = controls["decision"].sum()
+    baseline_flags = controls["baseline_decision"].sum()
+    assert baseline_flags > 0, "the image-only baseline flagged no stock-photo control"
+    assert model_flags < baseline_flags, (model_flags, baseline_flags)
+
+
+def test_price_blind_pairs_rescore_with_only_the_price_gap_zeroed(loaded_corpus):
+    """Same model, same threshold, abs_log_price_ratio = 0 — and the headline is untouched."""
+    from listings.config import PAIR_FEATURES as FEATURES
+
+    settings, _, _ = loaded_corpus
+    conn = settings.connect()
+    try:
+        result = run_detection(conn, CONFIG)
+    finally:
+        conn.close()
+    blind = result.pairs.select(FEATURES).with_columns(pl.lit(0.0).alias("abs_log_price_ratio"))
+    expected = result.model.predict_proba(blind.to_numpy())[:, 1]
+    mask = expected >= result.threshold
+    flagged = result.pairs.filter(pl.Series(mask))
+    assert result.relist_pairs.height == int(mask.sum())
+    assert result.relist_pairs["listing_a"].to_list() == flagged["listing_a"].to_list()
+    assert result.relist_pairs["listing_b"].to_list() == flagged["listing_b"].to_list()
+    assert result.stats["price_blind_flagged"] == float(mask.sum())
+    # the headline decision still uses the real price gap
+    real = result.model.predict_proba(result.pairs.select(FEATURES).to_numpy())[:, 1]
+    assert result.pairs["decision"].to_list() == (real >= result.threshold).tolist()
 
 
 def test_write_detection_stores_flagged_pairs_with_their_signals(loaded_corpus):

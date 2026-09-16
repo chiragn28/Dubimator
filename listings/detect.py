@@ -2,7 +2,7 @@
 
 import json
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import polars as pl
@@ -21,6 +21,9 @@ from listings.features import (
 )
 from listings.truth import label_pairs, load_truth
 
+PRICE_FEATURE = "abs_log_price_ratio"
+RELIST_PAIR_SCHEMA = {"listing_a": pl.Int64, "listing_b": pl.Int64, "price_blind_score": pl.Float64}
+
 
 @dataclass(frozen=True)
 class DetectionResult:
@@ -29,6 +32,23 @@ class DetectionResult:
     model: Pipeline
     feature_names: tuple[str, ...]
     stats: dict[str, float]
+    # Pairs the SAME fitted model flags at the SAME threshold once the price gap is zeroed.
+    # inconsistent_relist looks for duplicate clusters whose prices disagree, which the
+    # headline decision (it penalises a price gap heavily) can by construction never supply.
+    relist_pairs: pl.DataFrame = field(
+        default_factory=lambda: pl.DataFrame(schema=RELIST_PAIR_SCHEMA)
+    )
+
+
+def split_cutoffs(attributes: pl.DataFrame, config: DetectConfig):
+    """The last posting dates of the train block and of the threshold block."""
+    dates = attributes["posted_at"].sort()
+
+    def block_end(share: float):
+        """The last date inside the first `share` of listings, not the first date after it."""
+        return dates[min(max(int(dates.len() * share) - 1, 0), dates.len() - 1)]
+
+    return block_end(config.train_share), block_end(config.train_share + config.threshold_share)
 
 
 def assign_pair_split(
@@ -46,14 +66,7 @@ def assign_pair_split(
         suffix="_b",
         maintain_order="left",
     )
-    dates = attributes["posted_at"].sort()
-
-    def block_end(share: float):
-        """The last date inside the first `share` of listings, not the first date after it."""
-        return dates[min(max(int(dates.len() * share) - 1, 0), dates.len() - 1)]
-
-    train_end = block_end(config.train_share)
-    threshold_end = block_end(config.train_share + config.threshold_share)
+    train_end, threshold_end = split_cutoffs(attributes, config)
     later = pl.max_horizontal("posted_at", "posted_at_b")
     split = (
         pl.when(later <= train_end)
@@ -114,6 +127,12 @@ def baseline_decisions(features: pl.DataFrame, config: DetectConfig) -> np.ndarr
     return features["image_max_cosine"].to_numpy() >= config.baseline_image_cosine
 
 
+def price_blind_scores(model: Pipeline, features: pl.DataFrame) -> np.ndarray:
+    """The fitted pair model's scores with the price gap set to 0 — nothing else changes."""
+    blind = features.select(PAIR_FEATURES).with_columns(pl.lit(0.0).alias(PRICE_FEATURE))
+    return model.predict_proba(blind.select(PAIR_FEATURES).to_numpy())[:, 1]
+
+
 def run_detection(conn, config: DetectConfig) -> DetectionResult:
     started = time.perf_counter()
     pairs, candidate_stats = fetch_candidates(conn, config)
@@ -155,6 +174,12 @@ def run_detection(conn, config: DetectConfig) -> DetectionResult:
         (pl.col("score") >= threshold).alias("decision"),
         pl.Series("baseline_decision", baseline_decisions(labelled, config)),
     )
+    blind = price_blind_scores(model, labelled)
+    relist_pairs = (
+        labelled.select("listing_a", "listing_b")
+        .with_columns(pl.Series("price_blind_score", blind, dtype=pl.Float64))
+        .filter(pl.col("price_blind_score") >= threshold)
+    )
     stats = {
         "candidate_pairs": float(labelled.height),
         "text_pairs": float(candidate_stats.text_pairs),
@@ -169,8 +194,12 @@ def run_detection(conn, config: DetectConfig) -> DetectionResult:
         "threshold_pairs": float(validation.height),
         "threshold_positives": float(validation["is_duplicate"].sum()),
         "flagged": float(labelled["decision"].sum()),
+        "price_blind_flagged": float(relist_pairs.height),
+        "text_seconds": candidate_stats.text_seconds,
+        "image_seconds": candidate_stats.image_seconds,
+        "shared_photo_seconds": candidate_stats.shared_photo_seconds,
     }
-    return DetectionResult(labelled, threshold, model, PAIR_FEATURES, stats)
+    return DetectionResult(labelled, threshold, model, PAIR_FEATURES, stats, relist_pairs)
 
 
 def write_detection(conn, result: DetectionResult, corpus_run_id: int) -> int:

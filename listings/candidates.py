@@ -63,6 +63,9 @@ class CandidateStats:
     shared_photo_pairs: int
     total: int
     seconds: float
+    text_seconds: float = 0.0
+    image_seconds: float = 0.0
+    shared_photo_seconds: float = 0.0
 
 
 def _query(conn, sql: str, params: dict) -> pl.DataFrame:
@@ -75,11 +78,16 @@ def fetch_candidates(conn, config: DetectConfig) -> tuple[pl.DataFrame, Candidat
     started = time.perf_counter()
     with conn.cursor() as cur:
         cur.execute("SET LOCAL hnsw.ef_search = %s", (config.ef_search,))
-    channels = {
-        "text": _query(conn, TEXT_SQL, {"k": config.text_top_k}),
-        "image": _query(conn, IMAGE_SQL, {"k": config.photo_top_k}),
-        "shared_photo": _query(conn, SHARED_PHOTO_SQL, {"fanout": config.max_photo_fanout}),
+    queries = {
+        "text": (TEXT_SQL, {"k": config.text_top_k}),
+        "image": (IMAGE_SQL, {"k": config.photo_top_k}),
+        "shared_photo": (SHARED_PHOTO_SQL, {"fanout": config.max_photo_fanout}),
     }
+    channels, seconds = {}, {}
+    for name, (sql, params) in queries.items():
+        channel_started = time.perf_counter()
+        channels[name] = _query(conn, sql, params)
+        seconds[name] = time.perf_counter() - channel_started
     labelled = [
         frame.with_columns(pl.lit(name).alias("source"))
         for name, frame in channels.items()
@@ -90,7 +98,16 @@ def fetch_candidates(conn, config: DetectConfig) -> tuple[pl.DataFrame, Candidat
             {"listing_a": [], "listing_b": [], "sources": []},
             schema={**PAIR_SCHEMA, "sources": pl.Utf8},
         )
-        return empty, CandidateStats(0, 0, 0, 0, time.perf_counter() - started)
+        return empty, CandidateStats(
+            0,
+            0,
+            0,
+            0,
+            time.perf_counter() - started,
+            seconds["text"],
+            seconds["image"],
+            seconds["shared_photo"],
+        )
 
     pairs = (
         pl.concat(labelled)
@@ -104,6 +121,9 @@ def fetch_candidates(conn, config: DetectConfig) -> tuple[pl.DataFrame, Candidat
         shared_photo_pairs=channels["shared_photo"].height,
         total=pairs.height,
         seconds=time.perf_counter() - started,
+        text_seconds=seconds["text"],
+        image_seconds=seconds["image"],
+        shared_photo_seconds=seconds["shared_photo"],
     )
 
 
@@ -118,3 +138,43 @@ def brute_force_pairs(conn, metric: str, top_k: int) -> pl.DataFrame:
         cur.execute("SET LOCAL enable_indexscan = on")
         cur.execute("SET LOCAL enable_bitmapscan = on")
     return pl.DataFrame(rows, schema=PAIR_SCHEMA, orient="row").unique()
+
+
+def _pair_set(frame: pl.DataFrame) -> set[tuple[int, int]]:
+    return set(zip(frame["listing_a"].to_list(), frame["listing_b"].to_list()))
+
+
+def benchmark_text_retrieval(
+    conn, config: DetectConfig, candidates: pl.DataFrame | None = None
+) -> dict[str, float]:
+    """Index vs. exact, like for like: the HNSW text lookup against the same text query run as
+    an exact, index-disabled sequential scan (same k, whole corpus). Both are timed here.
+
+    `text_index_recall` is the share of the exact text-neighbour pairs the indexed text
+    channel returned. `candidates_exact_text_recall` is the share of them present anywhere in
+    `candidates` (all three channels) — the looser figure, logged under its own name.
+    """
+    with conn.cursor() as cur:
+        cur.execute("SET LOCAL hnsw.ef_search = %s", (config.ef_search,))
+    started = time.perf_counter()
+    indexed = _query(conn, TEXT_SQL, {"k": config.text_top_k})
+    index_seconds = time.perf_counter() - started
+    started = time.perf_counter()
+    exact = brute_force_pairs(conn, "text", config.text_top_k)
+    exact_seconds = time.perf_counter() - started
+
+    exact_pairs = _pair_set(exact)
+
+    def share(found: set[tuple[int, int]]) -> float:
+        return len(exact_pairs & found) / len(exact_pairs) if exact_pairs else float("nan")
+
+    metrics = {
+        "retrieval.bench.text_index_seconds": index_seconds,
+        "retrieval.bench.text_exact_seconds": exact_seconds,
+        "retrieval.bench.text_index_pairs": float(indexed.height),
+        "retrieval.bench.text_exact_pairs": float(exact.height),
+        "retrieval.bench.text_index_recall": share(_pair_set(indexed)),
+    }
+    if candidates is not None:
+        metrics["retrieval.bench.candidates_exact_text_recall"] = share(_pair_set(candidates))
+    return metrics

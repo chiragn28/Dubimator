@@ -86,3 +86,29 @@ def test_a_corpus_without_vectors_yields_no_pairs(
     finally:
         conn.close()
     assert pairs.height == 0 and stats.total == 0
+
+
+def test_benchmark_compares_the_text_index_with_the_exact_text_scan(loaded_corpus):
+    """`evaluate --brute-force` compares like with like: the indexed text channel against the
+    exact (index-disabled) text scan, with both timed and the overlap measured."""
+    from listings.candidates import benchmark_text_retrieval
+
+    settings, _, _ = loaded_corpus
+    conn = settings.connect()
+    try:
+        pairs, _ = fetch_candidates(conn, CONFIG)
+        bench = benchmark_text_retrieval(conn, CONFIG, candidates=pairs)
+        exact = brute_force_pairs(conn, "text", CONFIG.text_top_k)
+    finally:
+        conn.close()
+
+    assert bench["retrieval.bench.text_index_seconds"] > 0.0
+    assert bench["retrieval.bench.text_exact_seconds"] > 0.0
+    assert bench["retrieval.bench.text_exact_pairs"] == float(exact.height)
+    assert bench["retrieval.bench.text_index_pairs"] > 0.0
+    assert 0.95 <= bench["retrieval.bench.text_index_recall"] <= 1.0
+    # all three channels together contain at least what the text channel alone found
+    assert (
+        bench["retrieval.bench.candidates_exact_text_recall"]
+        >= bench["retrieval.bench.text_index_recall"]
+    )

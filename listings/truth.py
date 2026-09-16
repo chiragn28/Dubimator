@@ -97,3 +97,39 @@ def load_duplicate_truth(conn) -> pl.DataFrame:
         {"listing_a": listing_a, "listing_b": listing_b, "pattern": pattern},
         schema={"listing_a": pl.Int64, "listing_b": pl.Int64, "pattern": pl.Utf8},
     )
+
+
+# A duplicate group is a planted source plus its clones (the clones' dup_group_id is the
+# source's listing_id). Its listings are relist truth when the group's planted asking prices
+# spread by more than `spread` — the same max/min - 1 test inconsistent_relist applies.
+RELIST_TRUTH_SQL = """
+WITH members AS (
+    SELECT dup_group_id AS group_id, listing_id, asking_price_aed
+    FROM listings.listings
+    WHERE dup_group_id IS NOT NULL
+    UNION
+    SELECT source.listing_id AS group_id, source.listing_id, source.asking_price_aed
+    FROM listings.listings source
+    WHERE EXISTS (
+        SELECT 1 FROM listings.listings clone WHERE clone.dup_group_id = source.listing_id
+    )
+), spread AS (
+    SELECT group_id
+    FROM members
+    GROUP BY group_id
+    HAVING count(*) > 1
+       AND min(asking_price_aed) > 0
+       AND max(asking_price_aed) / min(asking_price_aed) - 1 > %(spread)s
+)
+SELECT DISTINCT m.listing_id
+FROM members m
+JOIN spread USING (group_id)
+ORDER BY m.listing_id
+"""
+
+
+def load_relist_truth(conn, spread: float) -> pl.DataFrame:
+    """Listings in planted duplicate groups whose asking prices differ by more than `spread`."""
+    with conn.cursor() as cur:
+        cur.execute(RELIST_TRUTH_SQL, {"spread": spread})
+        return pl.DataFrame(cur.fetchall(), schema={"listing_id": pl.Int64}, orient="row")

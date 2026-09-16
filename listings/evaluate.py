@@ -37,13 +37,14 @@ A rate whose denominator cannot be determined at all — a pattern's report-spli
 population when posting dates aren't available to compute it, or too few
 report-split duplicates to price-shift-bucket — is logged as `float("nan")`,
 never `0.0`: "caught none of these" and "there were none of these to catch" must
-not share a representation. This governs `pattern.*.recall`, `pattern.*.pairs`
-and `price_shift.*`. It does NOT extend to the per-split precision/recall/f1 from
-`pair_metrics` (`train.*`/`tune.*`/`report.*`) or to `retrieval.recall` with no
-planted pairs at all — both of those fall back to `0.0` on an empty/zero
+not share a representation. This governs `pattern.*.recall`, `pattern.*.pairs`,
+`price_shift.*`, `report.end_to_end_recall` and the inconsistent_relist rates.
+It does NOT extend to the per-split precision/recall/f1 from `pair_metrics`
+(`train.*`/`tune.*`/`report.*`) or to `retrieval.recall` with no planted pairs at all — both of those fall back to `0.0` on an empty/zero
 denominator, inherited from `pair_metrics`' own convention.
 """
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -51,7 +52,7 @@ import polars as pl
 from sklearn.metrics import average_precision_score
 
 from listings.config import DetectConfig
-from listings.detect import assign_pair_split
+from listings.detect import assign_pair_split, split_cutoffs
 from listings.truth import load_duplicate_truth  # noqa: F401  (re-exported for the CLI)
 
 # The `split` column's data values (unchanged — assign_pair_split in detect.py still writes
@@ -121,41 +122,40 @@ def _control_rates(pairs: pl.DataFrame, mask: pl.Series, prefix: str) -> dict[st
 
 
 def _price_shift_recall_gap(report: pl.DataFrame) -> dict[str, float]:
-    """Recall on report-split duplicates split by abs_log_price_ratio vs. their median.
+    """Recall on report-split duplicates with and without a price gap between the two.
 
-    abs_log_price_ratio carries the largest coefficient in the pair model (-4.31), and
-    ~300 of the 1,200 planted exact reposts carry a shifted asking price. If those
-    price-shifted clones score below threshold disproportionately, "above median"
-    recall reads visibly lower than "below median" recall here.
+    `price_shift.shifted.*` counts duplicates whose asking prices differ at all
+    (abs_log_price_ratio > 0) -- in the corpus, the price-shifted exact reposts -- and
+    `price_shift.unshifted.*` the ones listed at the same price. The pair model penalises a
+    price gap heavily, so this is where that shows up.
     """
     # There is no meaningful "0 pairs" to report when the computation itself could not run
-    # (no column, or too few report-split duplicates to split into two groups) — that would
-    # claim a fact ("zero pairs") we never actually checked. NaN throughout.
+    # (no column, or no report-split duplicates at all) -- that would claim a fact ("zero
+    # pairs") we never actually checked. NaN throughout.
     insufficient_data = {
-        "price_shift.below_median.pairs": _NAN,
-        "price_shift.below_median.recall": _NAN,
-        "price_shift.above_median.pairs": _NAN,
-        "price_shift.above_median.recall": _NAN,
+        "price_shift.unshifted.pairs": _NAN,
+        "price_shift.unshifted.recall": _NAN,
+        "price_shift.shifted.pairs": _NAN,
+        "price_shift.shifted.recall": _NAN,
     }
     if "abs_log_price_ratio" not in report.columns:
         return insufficient_data
     duplicates = report.filter(pl.col("is_duplicate"))
-    if duplicates.height < 2:
+    if duplicates.is_empty():
         return insufficient_data
-    ratios = duplicates["abs_log_price_ratio"].to_numpy()
-    median = float(np.median(ratios))
-    below = duplicates.filter(pl.Series(ratios <= median))
-    above = duplicates.filter(pl.Series(ratios > median))
+    gap = pl.col("abs_log_price_ratio") > 0
+    shifted = duplicates.filter(gap)
+    unshifted = duplicates.filter(~gap)
     return {
-        "price_shift.below_median.pairs": float(below.height),
-        "price_shift.below_median.recall": float(below["decision"].mean())
-        if below.height
-        else _NAN,
-        "price_shift.above_median.pairs": float(above.height),
-        "price_shift.above_median.recall": float(above["decision"].mean())
-        if above.height
-        else _NAN,
+        "price_shift.unshifted.pairs": float(unshifted.height),
+        "price_shift.unshifted.recall": _mean_or_nan(unshifted["decision"]),
+        "price_shift.shifted.pairs": float(shifted.height),
+        "price_shift.shifted.recall": _mean_or_nan(shifted["decision"]),
     }
+
+
+def _mean_or_nan(values: pl.Series) -> float:
+    return float(values.mean()) if values.len() else _NAN
 
 
 def _flagged_pairs(frame: pl.DataFrame) -> set[tuple[int, int]]:
@@ -245,8 +245,14 @@ def evaluate_detection(
             zip(report_truth["listing_a"].to_list(), report_truth["listing_b"].to_list())
         )
         report_patterns = report_truth["pattern"].to_list()
+        # report.recall is conditional on retrieval (its denominator is the retrieved
+        # duplicates); this one divides by every planted report-split pair.
+        metrics["report.planted_pairs"] = float(len(report_planted))
+        metrics["report.end_to_end_recall"] = _pattern_recall(report_planted, report_flagged)
     else:
         report_planted = report_patterns = None
+        metrics["report.planted_pairs"] = _NAN
+        metrics["report.end_to_end_recall"] = _NAN
 
     for pattern in PATTERNS:
         pooled_subset = [pair for pair, kind in zip(planted, patterns) if kind == pattern]
@@ -278,7 +284,35 @@ def evaluate_detection(
     return metrics
 
 
-def evaluate_fraud(fraud_result, truth: pl.DataFrame, config: DetectConfig) -> dict[str, float]:
+def _rate(hits: int, total: int) -> float:
+    return float(hits / total) if total else _NAN
+
+
+def _report_listing_ids(attributes: pl.DataFrame | None, config: DetectConfig) -> set[int] | None:
+    """Listings posted inside the report block -- the same date cut assign_pair_split uses."""
+    if attributes is None or attributes.is_empty() or "posted_at" not in attributes.columns:
+        return None
+    _, threshold_end = split_cutoffs(attributes, config)
+    return set(attributes.filter(pl.col("posted_at") > threshold_end)["listing_id"].to_list())
+
+
+def evaluate_fraud(
+    fraud_result,
+    truth: pl.DataFrame,
+    config: DetectConfig,
+    relist_truth: pl.DataFrame | None = None,
+    attributes: pl.DataFrame | None = None,
+) -> dict[str, float]:
+    """Fraud-flag metrics.
+
+    `fraud.inconsistent_relist.precision/recall` score the flag's listings against
+    `relist_truth` (listings in planted duplicate groups whose asking prices spread by more
+    than relist_price_spread), counting only listings posted in the report block, because the
+    price-blind decision that feeds the flag comes from a model fit on the train block and a
+    threshold chosen on the threshold block. `pooled.fraud.inconsistent_relist.*` is the
+    all-listings version, for debugging only. `fraud.inconsistent_relist.flagged` stays the
+    all-listings count, so it matches the rows in listings.fraud_flags. Undefined rates are NaN.
+    """
     metrics = {f"stats.{key}": float(value) for key, value in fraud_result.stats.items()}
     flagged = set(fraud_result.flags.filter(pl.col("flag") == "bait_price")["listing_id"].to_list())
     actual = set(truth.filter(pl.col("fraud_label") == "bait_price")["listing_id"].to_list())
@@ -292,7 +326,92 @@ def evaluate_fraud(fraud_result, truth: pl.DataFrame, config: DetectConfig) -> d
         metrics[f"fraud.{name}.flagged"] = float(
             fraud_result.flags.filter(pl.col("flag") == name)["listing_id"].n_unique()
         )
+    if relist_truth is None:
+        return metrics
+
+    relist = set(
+        fraud_result.flags.filter(pl.col("flag") == "inconsistent_relist")["listing_id"].to_list()
+    )
+    expected = set(relist_truth["listing_id"].to_list())
+    prefix = "fraud.inconsistent_relist"
+    metrics[f"pooled.{prefix}.precision"] = _rate(len(relist & expected), len(relist))
+    metrics[f"pooled.{prefix}.recall"] = _rate(len(relist & expected), len(expected))
+    metrics[f"pooled.{prefix}.positives"] = float(len(expected))
+    report_ids = _report_listing_ids(attributes, config)
+    if report_ids is None:
+        for key in ("precision", "recall", "report_flagged", "report_positives"):
+            metrics[f"{prefix}.{key}"] = _NAN
+        return metrics
+    relist, expected = relist & report_ids, expected & report_ids
+    metrics[f"{prefix}.precision"] = _rate(len(relist & expected), len(relist))
+    metrics[f"{prefix}.recall"] = _rate(len(relist & expected), len(expected))
+    metrics[f"{prefix}.report_flagged"] = float(len(relist))
+    metrics[f"{prefix}.report_positives"] = float(len(expected))
     return metrics
+
+
+THRESHOLD_GRID = (0.5, 0.8, 0.9, 0.95, 0.98, 0.99, 0.995, 0.998, 0.999, 0.9995, 0.9999)
+THRESHOLD_TABLE_SCHEMA = {
+    "threshold": pl.Float64,
+    "chosen": pl.Boolean,
+    "flagged": pl.Int64,
+    "true_positives": pl.Int64,
+    "precision": pl.Float64,
+    "recall": pl.Float64,
+}
+
+
+def threshold_table(pairs: pl.DataFrame, chosen: float) -> pl.DataFrame:
+    """Precision and recall on the threshold (tuning) split at candidate cut-offs."""
+    tune = pairs.filter(pl.col("split") == "threshold")
+    labels = tune["is_duplicate"].to_numpy().astype(bool)
+    scores = tune["score"].to_numpy().astype(float)
+    rows = []
+    for cut in sorted({*THRESHOLD_GRID, float(chosen)}):
+        flagged = scores >= cut
+        hits = int(np.sum(flagged & labels))
+        rows.append(
+            {
+                "threshold": cut,
+                "chosen": cut == float(chosen),
+                "flagged": int(flagged.sum()),
+                "true_positives": hits,
+                "precision": _rate(hits, int(flagged.sum())),
+                "recall": _rate(hits, int(labels.sum())),
+            }
+        )
+    return pl.DataFrame(rows, schema=THRESHOLD_TABLE_SCHEMA)
+
+
+def confusion_matrix(pairs: pl.DataFrame) -> dict[str, dict[str, int]]:
+    """Report-split confusion counts for the model and the single-signal baseline."""
+    report = pairs.filter(pl.col("split") == "report")
+    labels = report["is_duplicate"].to_numpy().astype(bool)
+    matrix = {}
+    for name, column in (("model", "decision"), ("baseline", "baseline_decision")):
+        decisions = report[column].to_numpy().astype(bool)
+        matrix[name] = {
+            "true_positives": int(np.sum(labels & decisions)),
+            "false_positives": int(np.sum(~labels & decisions)),
+            "false_negatives": int(np.sum(labels & ~decisions)),
+            "true_negatives": int(np.sum(~labels & ~decisions)),
+        }
+    return matrix
+
+
+def write_run_artifacts(result, timings: dict, directory: Path) -> list[Path]:
+    """The spec's MLflow artifacts besides the PR curve: the threshold table, the report-split
+    confusion matrix and the per-stage timing table (wall-clock seconds per CLI stage)."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    table = directory / "threshold_table.csv"
+    threshold_table(result.pairs, result.threshold).write_csv(table)
+    matrix = directory / "confusion_matrix.json"
+    payload = {"split": "report", **confusion_matrix(result.pairs)}
+    matrix.write_text(json.dumps(payload, indent=2, allow_nan=False), encoding="utf-8")
+    timing = directory / "timings.json"
+    timing.write_text(json.dumps(timings, indent=2, allow_nan=False), encoding="utf-8")
+    return [table, matrix, timing]
 
 
 def save_pr_curve(scores, labels, path: Path) -> Path:

@@ -93,6 +93,26 @@ def load_price_predictor(uri: str):
         return None
 
 
+def resolve_price_model_version(uri: str) -> str | None:
+    """The registry version a `models:/name@alias` (or `models:/name/version`) URI points at,
+    or None when it can't be resolved — recorded so bait metrics stay reproducible after the
+    alias moves."""
+    import mlflow
+
+    if not uri.startswith("models:/"):
+        return None
+    reference = uri.removeprefix("models:/")
+    try:
+        if "@" in reference:
+            name, alias = reference.split("@", 1)
+            return str(mlflow.MlflowClient().get_model_version_by_alias(name, alias).version)
+        name, _, version = reference.partition("/")
+        return version or None
+    except Exception as exc:  # noqa: BLE001 — a missing registry entry is not fatal here
+        LOGGER.warning("could not resolve the version of %s (%s)", uri, exc)
+        return None
+
+
 def _property_kind(sub_type: str | None) -> str:
     kind = KIND_BY_SUB_TYPE.get(sub_type)
     if kind is None:
@@ -211,11 +231,17 @@ def _clusters(pairs: pl.DataFrame) -> list[list[int]]:
 
 
 def inconsistent_relist_flags(
-    attributes: pl.DataFrame, flagged_pairs: pl.DataFrame, config: DetectConfig
+    attributes: pl.DataFrame, relist_pairs: pl.DataFrame, config: DetectConfig
 ) -> pl.DataFrame:
+    """Duplicate clusters whose asking prices spread by more than relist_price_spread.
+
+    `relist_pairs` should be the PRICE-BLIND duplicate decisions
+    (`DetectionResult.relist_pairs`): the headline decision penalises a price gap, so its
+    clusters never carry the price disagreement this flag exists to find.
+    """
     prices = dict(zip(attributes["listing_id"].to_list(), attributes["asking_price_aed"].to_list()))
     rows = []
-    for cluster in _clusters(flagged_pairs):
+    for cluster in _clusters(relist_pairs):
         # Only members present in `attributes` are priced, flagged and counted: listing_id has
         # an FK to listings.listings, so an id absent from attributes would fail the COPY, and
         # cluster_size must describe the listings the spread was actually computed over.
@@ -229,6 +255,7 @@ def inconsistent_relist_flags(
                 {
                     "spread": round(spread, 4),
                     "cluster_size": len(known),
+                    "decision": "price_blind",
                     "min_price_aed": min(values),
                     "max_price_aed": max(values),
                 },
@@ -245,8 +272,10 @@ _MISSING = object()
 
 
 def run_fraud_checks(
-    conn, flagged_pairs: pl.DataFrame, config: DetectConfig, predictor=_MISSING
+    conn, relist_pairs: pl.DataFrame, config: DetectConfig, predictor=_MISSING
 ) -> FraudResult:
+    """bait_price and photo_reuse read listings only; `relist_pairs` feeds inconsistent_relist
+    alone and should be `DetectionResult.relist_pairs` (the price-blind decision)."""
     attributes = load_fraud_attributes(conn)
     if predictor is _MISSING:
         predictor = load_price_predictor(config.price_model_uri)
@@ -264,7 +293,7 @@ def run_fraud_checks(
         bait, bait_stats = bait_price_flags(attributes, predictor, config)
         frames.append(bait)
         stats |= bait_stats
-    frames.append(inconsistent_relist_flags(attributes, flagged_pairs, config))
+    frames.append(inconsistent_relist_flags(attributes, relist_pairs, config))
 
     flags = pl.concat(frames).sort(["flag", "listing_id"])
     for name in FLAGS:
