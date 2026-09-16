@@ -65,12 +65,17 @@ def load_fraud_attributes(conn) -> pl.DataFrame:
 
 
 def load_price_predictor(uri: str):
-    """The Phase 3 champion, or None when it cannot be loaded (detection carries on).
+    """The Phase 3 champion, or None when the model load itself fails (detection carries on).
 
-    The warning names the resolved MLflow tracking URI, not just the model URI: a
-    misconfigured or missing MLFLOW_TRACKING_URI is the failure mode that silently
-    degrades a run to "no bait flags" while still looking successful, so the tracking
-    URI it actually tried to reach must be visible, not just the `models:/...` alias.
+    Resolving `mlflow` and its tracking URI happens outside the try on purpose, per this
+    phase's be-loud ruling: those are configuration errors (mlflow missing, or a URI that
+    doesn't even resolve) and should abort the whole detect/evaluate run loudly rather than
+    degrade silently to "no bait flags". Only the model load itself — `uri` not being
+    reachable or registered at an otherwise-valid tracking URI — is treated as non-fatal:
+    that's the expected shape of an environment with no price model available (e.g. this
+    project's test suite), and detection should carry on without it. The warning names the
+    resolved MLflow tracking URI, not just the model URI, so a misconfigured registry
+    connection is visible, not just the `models:/...` alias.
     """
     import mlflow
 

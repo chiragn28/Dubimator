@@ -34,8 +34,6 @@ from listings.load import (
 from listings.photos import DATA_DIR, ensure_pool
 from listings.truth import load_duplicate_truth, load_truth
 
-LOGGER = logging.getLogger("listings")
-
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -57,7 +55,18 @@ def _parser() -> argparse.ArgumentParser:
     embed.add_argument("--fake", action="store_true", help="use the deterministic test embedder")
 
     commands.add_parser("detect", help="score candidates and write duplicates and fraud flags")
-    commands.add_parser("evaluate", help="measure against ground truth and log to MLflow")
+    evaluate = commands.add_parser(
+        "evaluate", help="measure against ground truth and log to MLflow"
+    )
+    evaluate.add_argument(
+        "--brute-force",
+        action="store_true",
+        help=(
+            "also measure retrieval vs. a brute-force (index-disabled) scan; off by default "
+            "because it disables index scans over the whole corpus and takes minutes at full "
+            "scale — Task 11's own script measures this comparison"
+        ),
+    )
     return parser
 
 
@@ -74,12 +83,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _build(args) -> int:
+    reserved = CorpusConfig.n_exact_repost + CorpusConfig.n_reworded + CorpusConfig.n_edited_photo
+    n_base = args.listings - reserved
+    if n_base <= 0:
+        raise ValueError(
+            f"--listings {args.listings} is too small: {reserved:,} listings are reserved for "
+            "planted duplicates (exact reposts + reworded copies + edited-photo copies), "
+            f"which leaves n_base={n_base} <= 0. Pass a larger --listings."
+        )
     config = dataclasses.replace(
-        CorpusConfig(),
-        seed=args.seed,
-        n_listings=args.listings,
-        n_base=args.listings
-        - (CorpusConfig.n_exact_repost + CorpusConfig.n_reworded + CorpusConfig.n_edited_photo),
+        CorpusConfig(), seed=args.seed, n_listings=args.listings, n_base=n_base
     )
     settings = DbSettings.from_env()
     pool = ensure_pool(config, data_dir=args.data_dir)
@@ -100,6 +113,10 @@ def _embed(args) -> int:
     conn = settings.connect()
     try:
         photos, listings, listing_photos = read_corpus_for_embedding(conn)
+        if listings.height == 0:
+            raise RuntimeError(
+                "no corpus has been loaded yet — run `python -m listings build` first"
+            )
         print(f"embedding {photos.height} photos and {listings.height} listings on {device}")
         photo_frame, photo_vectors = embed_photos(photos, embedder, args.data_dir)
         listing_frame = embed_listings(listings, listing_photos, photo_vectors, embedder)
@@ -154,13 +171,14 @@ def _evaluate(args) -> int:
         from listings.features import load_listing_attributes
 
         attributes = load_listing_attributes(conn)
-        exact = brute_force_pairs(conn, "text", config.text_top_k)
+        exact = brute_force_pairs(conn, "text", config.text_top_k) if args.brute_force else None
     finally:
         conn.close()
 
     metrics = evaluate_detection(result, truth_pairs, attributes, config)
     metrics |= evaluate_fraud(fraud, truth, config)
-    metrics["retrieval.exact_pairs"] = float(exact.height)
+    if exact is not None:
+        metrics["retrieval.exact_pairs"] = float(exact.height)
     if fraud.stats.get("bait_price_skipped"):
         print(
             "WARNING: bait_price check was SKIPPED — the champion price model "

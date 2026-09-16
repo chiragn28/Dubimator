@@ -164,11 +164,13 @@ EMBEDDING_INPUT_SCHEMA = {
 
 
 def read_corpus_for_embedding(conn) -> tuple[pl.DataFrame, pl.DataFrame, pl.DataFrame]:
-    frames = []
+    frames = {}
     with conn.cursor() as cur:
         for name, sql in EMBEDDING_INPUT_SQL.items():
             cur.execute(sql)
-            frames.append(
-                pl.DataFrame(cur.fetchall(), schema=EMBEDDING_INPUT_SCHEMA[name], orient="row")
+            frames[name] = pl.DataFrame(
+                cur.fetchall(), schema=EMBEDDING_INPUT_SCHEMA[name], orient="row"
             )
-    return tuple(frames)
+    # An explicit 3-tuple, not tuple(frames.values()): the arity is then checkable by callers
+    # and by static analysis, and it doesn't silently depend on EMBEDDING_INPUT_SQL's key order.
+    return frames["photos"], frames["listings"], frames["listing_photos"]
