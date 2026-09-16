@@ -89,3 +89,38 @@ def prepared_history(**kwargs):
 
     rows, _ = prepare_rows(build_history(**kwargs), ForecastConfig())
     return rows, rows["instance_date"].max()
+
+
+def history_areas():
+    return pl.DataFrame(
+        {"area_id": list(AREA_NAMES), "name_en": list(AREA_NAMES.values())},
+        schema={"area_id": pl.Int64, "name_en": pl.Utf8},
+    )
+
+
+def history_aliases():
+    from ingestion.normalize import match_key
+
+    return pl.DataFrame(
+        {
+            "alias_key": [match_key(name) for name in AREA_NAMES.values()],
+            "area_id": list(AREA_NAMES),
+        },
+        schema={"alias_key": pl.Utf8, "area_id": pl.Int64},
+    )
+
+
+def fake_load_rows(rows_and_end, quality=None):
+    """A stand-in for models.forecast.rows.load_rows over prepared synthetic rows."""
+    from models.forecast.rows import EXCLUDED_SCHEMA, DataQuality
+
+    rows, data_end = rows_and_end
+    if quality is None:
+        quality = DataQuality(
+            rows.height, {"bad_price": 0}, rows.height, pl.DataFrame(schema=EXCLUDED_SCHEMA)
+        )
+
+    def load(settings, config):
+        return rows, quality, data_end, history_areas(), history_aliases()
+
+    return load

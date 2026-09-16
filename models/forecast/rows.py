@@ -136,3 +136,9 @@ def load_rows(
     homes = load_homes(settings, TrainConfig())
     rows, quality = prepare_rows(homes.rows, config)
     return rows, quality, rows["instance_date"].max(), homes.areas, homes.aliases
+
+
+def excluded_summary(excluded: pl.DataFrame) -> list[dict]:
+    """Excluded-row counts per area, kind, registration type and reason (for predict)."""
+    keys = ["area_id", "sub_kind", "reg_type", "reason"]
+    return excluded.group_by(keys).len(name="count").sort(keys, nulls_last=True).to_dicts()
