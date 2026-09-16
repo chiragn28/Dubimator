@@ -378,7 +378,10 @@ def _plant_clones(
                 "asking_price_aed": asking,
                 "dup_group_id": source_id,
                 "control_group_id": None,
-                "fraud_label": None,
+                # fraud_label is inherited from **source on purpose: a repost of a bait-priced
+                # listing carries the same cheap asking price, so it is bait too and a detector
+                # that flags it is right. Only control_group_id is cleared — a clone is never a
+                # member of a must-not-flag group.
             }
         )
     return (
@@ -436,7 +439,18 @@ def generate_corpus(
         "exact_repost": config.n_exact_repost,
         "reworded": config.n_reworded,
         "edited_photo": config.n_edited_photo,
-        "bait_price": int(listings.filter(pl.col("fraud_label") == "bait_price").height),
+        # bait_price counts the planted base listings; clones that inherited the label are
+        # counted separately so the corpus total stays visible without conflating the two.
+        "bait_price": int(
+            listings.filter(
+                (pl.col("fraud_label") == "bait_price") & pl.col("dup_group_id").is_null()
+            ).height
+        ),
+        "bait_price_clones": int(
+            listings.filter(
+                (pl.col("fraud_label") == "bait_price") & pl.col("dup_group_id").is_not_null()
+            ).height
+        ),
         "price_shifted": config.n_price_shifted_reposts,
         "photos": all_photos.height,
         "variants": variants.height,
