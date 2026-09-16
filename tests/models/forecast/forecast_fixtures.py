@@ -157,3 +157,41 @@ def project_table(directory, count=15, **overrides):
 
     records = [project_record(index, **overrides) for index in range(count)]
     return load_projects(write_projects(directory, records))
+
+
+class FakePrice:
+    """Stands in for the Phase 3 PricePredictor: a fixed 1,000,000 AED estimate."""
+
+    def __init__(self):
+        self.requests = []
+
+    def predict_one(self, request):
+        from types import SimpleNamespace
+
+        self.requests.append(request)
+        return SimpleNamespace(
+            estimate_aed=1_000_000.0, range_80=(900_000.0, 1_100_000.0), model_version="7"
+        )
+
+
+def small_model(frame, horizon="3m", rounds=30):
+    from models.forecast.config import ForecastConfig
+    from models.forecast.features import fit_categories
+    from models.forecast.model import ForecastModel
+    from models.forecast.train import fit_booster
+
+    config = ForecastConfig(device="cpu")
+    train = frame.filter(pl.col(f"growth_{horizon}").is_not_null())
+    categories = fit_categories(train, config)
+    booster, used = fit_booster(
+        train, None, {}, categories, "cpu", config, f"growth_{horizon}", rounds
+    )
+    return ForecastModel(
+        horizon=horizon,
+        booster=booster,
+        rounds=used,
+        categories=categories,
+        intervals={"_pooled": 0.05, "ready_unit": 0.04},
+        area_rows=dict(train.group_by("area_id").len().iter_rows()),
+        metadata={},
+    )
