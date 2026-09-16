@@ -1,6 +1,8 @@
 import dataclasses
+from datetime import timedelta
 
 import numpy as np
+import polars as pl
 import pytest
 from forecast_fixtures import fake_load_rows, prepared_history, project_table
 
@@ -45,8 +47,46 @@ def test_a_learnable_horizon_passes_its_gate(passed):
     assert metrics["gate.3m.passed"] == 1.0
     assert "3m.test.all.model.mape" in metrics
     assert "3m.folds.area_trend.mape_mean" in metrics
-    assert set(passed.fold_scores["role"].unique()) <= {"score", "tune"}
+    assert set(passed.fold_scores["role"].unique()) <= {"score", "tune", "gap"}
+    assert "gap" in set(passed.fold_scores["role"])
     assert passed.model.metadata["test_cutoff"] == passed.folds[-1].cutoff.isoformat()
+
+
+def test_gap_folds_are_scored_but_never_tune_or_calibrate(dataset, monkeypatch):
+    from models.forecast import train as train_module
+    from models.forecast.folds import fold_split
+
+    frame, _, _, data_end = dataset
+    calls, calibration = [], {}
+    run_fold = train_module._run_fold
+    fit_intervals = train_module.fit_intervals
+
+    def spy_fold(frame, horizon, fold, *args):
+        calls.append(fold.role)
+        return run_fold(frame, horizon, fold, *args)
+
+    def spy_intervals(segments, errors, config):
+        calibration["rows"] = len(segments)
+        return fit_intervals(segments, errors, config)
+
+    monkeypatch.setattr(train_module, "_run_fold", spy_fold)
+    monkeypatch.setattr(train_module, "fit_intervals", spy_intervals)
+    config = dataclasses.replace(FAST, n_trials=2)
+    result = run_horizon(frame, THREE_M, "cpu", config, data_end)
+    folds = result.folds
+    test = folds[-1]
+    tuning = [fold for fold in folds if fold.role == "tune"]
+    gaps = [fold for fold in folds if fold.role == "gap"]
+    assert gaps and tuning
+    assert all(f.end + timedelta(days=THREE_M.end_days) <= test.cutoff for f in tuning)
+    assert calls.count("gap") == len(gaps)  # scored once, never inside the Optuna objective
+    assert calls.count("tune") == len(tuning) * (config.n_trials + 1)
+    expected = sum(fold_split(frame, THREE_M, fold)[1].height for fold in tuning)
+    assert calibration["rows"] == expected
+    scored = result.fold_scores.filter(pl.col("model") == "model")
+    assert sorted(scored.filter(pl.col("role") == "gap")["fold"].to_list()) == [
+        fold.index for fold in gaps
+    ]
 
 
 def test_a_strict_gate_fails_but_still_reports(dataset):
