@@ -244,7 +244,8 @@ uv run python -m listings evaluate --brute-force   # 568s: metrics against groun
 
 Those are wall-clock times from the 2026-09-16 re-run (MLflow run
 `98a54b9fe60f45a99a36e27c435cd0c1`, experiment `listing-dedup`). Every stage
-also writes its own time to `data/listings/stage_timings.json`, and `evaluate`
+also writes its own in-process time (a few seconds under the wall-clock
+figures above) to `data/listings/stage_timings.json`, and `evaluate`
 logs that table as `timings.json` next to the PR curve, the threshold table
 (`threshold_table.csv`) and the reporting-split confusion matrix
 (`confusion_matrix.json`). A first-ever `build` also downloads the 176 MB photo
@@ -312,8 +313,8 @@ retrieval runs before any model is fit.
 **Why recall is low: how the data was generated.** Four features of the
 generator explain most of the weak recall:
 - *Missing values count as a mismatch.* `same_building`, `same_project` and
-  `bedrooms_equal` score 0 when both listings lack the value. `same_building`
-  carries a positive weight, so a repost of a listing with no building name
+  `bedrooms_equal` score 0 when both listings lack the value. On the previous
+  corpus `same_building` carried a positive weight, so a repost of a listing with no building name
   (most villas) looks less like its source than a repost of an apartment does.
 - *Recall depends on the repost delay.* Reposts appear 1–30 days after their
   source, and `days_apart` is a model input, so the model has learned that
@@ -324,7 +325,9 @@ generator explain most of the weak recall:
   final review measured that overlap on the previous corpus. This is why reworded
   recall is the lowest of the three patterns.
 - *Reposts never share an agent.* The generator always gives a repost a
-  different agent, so `same_agent` carries a negative weight in this model.
+  different agent, so the model learns to count a shared agent against a
+  duplicate (`same_agent` weighed −0.43 on the previous corpus; this run's
+  coefficients were not re-measured).
   Real reposts by the same agent would look *less* like duplicates to it.
 
 **Why an index and not brute force.** Comparing every pair of 20,000 listings is

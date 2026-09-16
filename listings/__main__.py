@@ -235,6 +235,8 @@ def _evaluate(args) -> int:
 
     # Per-stage wall-clock table: the earlier stages from the sidecar, plus this one so far.
     timings = _read_timings(args.data_dir)
+    # A previous evaluate's own entry would be logged as this run's time.
+    timings.pop("evaluate", None)
     timings["evaluate_before_logging"] = {
         "seconds": round(time.perf_counter() - args.started, 3),
         "finished_at": datetime.now(UTC).isoformat(timespec="seconds"),
