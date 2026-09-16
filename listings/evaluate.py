@@ -1,11 +1,29 @@
 """Measure the detector against ground truth and log the run to MLflow.
 
-Precision and recall are reported per split (train / threshold / report), never
-pooled: the pooled number in an earlier run mixed the in-sample train block into
-the headline figure, which is how a threshold tuned for 0.98 precision on held-out
-data read as 92.5% overall. `report.*` is the only held-out headline; `train.*` and
-`threshold.*` are logged alongside it, distinctly prefixed, so nobody mistakes an
-in-sample number for one.
+Precision, recall and f1 are reported per split — `train.*`, `tune.*` (the data's
+`split` column still says "threshold"; the metric prefix says "tune" so it can
+never be confused with the `threshold` decision-cutoff metric), and `report.*` —
+so nobody mistakes an in-sample number for a held-out one. `report.*` is the only
+headline.
+
+`pattern.{pattern}.recall` and every `control.*` rate are scored against
+report-split decisions only, for the same reason: a decision comes from a model
+fit on train and a cutoff tuned on tune, so pooling either metric across splits
+would readmit the in-sample contamination that made an earlier run's headline
+precision read 92.5% instead of the held-out number the threshold was actually
+tuned to hit. The pooled equivalents (`pooled.pattern.*`, `pooled.control.*`) are
+logged alongside them, explicitly named, for debugging — never under the bare
+name a reader would take as the held-out figure.
+
+`retrieval.recall` is the one metric that stays pooled across all splits on
+purpose: candidate generation runs before any model is fit or any threshold is
+picked, so it carries no in-sample leakage, and splitting it would only shrink
+an already-small denominator (the planted pairs).
+
+A rate with no denominator (no planted pairs of a pattern, no report-split
+duplicates to bucket by price ratio) is logged as `float("nan")`, never `0.0`:
+"detector caught none of these" and "there were none of these to catch" must not
+share a representation in a module whose numbers become README copy.
 """
 
 from pathlib import Path
@@ -17,8 +35,14 @@ from sklearn.metrics import average_precision_score
 from listings.config import DetectConfig
 from listings.truth import load_duplicate_truth  # noqa: F401  (re-exported for the CLI)
 
-SPLITS = ("train", "threshold", "report")
+# The `split` column's data values (unchanged — assign_pair_split in detect.py still writes
+# "threshold") mapped to the metric-name prefix each one is logged under.
+SPLIT_METRIC_PREFIX = {"train": "train", "threshold": "tune", "report": "report"}
 PATTERNS = ("exact_repost", "reworded", "edited_photo")
+# Already carried by train.pairs/train.positives and tune.pairs/tune.positives — do not also
+# pass these four through under stats.*.
+_STATS_EXCLUDE = {"train_pairs", "train_positives", "threshold_pairs", "threshold_positives"}
+_NAN = float("nan")
 
 
 def pair_metrics(labels, decisions) -> dict[str, float]:
@@ -55,14 +79,15 @@ def stock_photo_control_pairs(pairs: pl.DataFrame, attributes: pl.DataFrame) -> 
     return joined.select(mask.alias("stock_photo_control"))["stock_photo_control"]
 
 
-def _control_rates(pairs: pl.DataFrame, mask: pl.Series, name: str) -> dict[str, float]:
+def _control_rates(pairs: pl.DataFrame, mask: pl.Series, prefix: str) -> dict[str, float]:
+    """`prefix` carries both the scope (`control.` or `pooled.control.`) and the control name."""
     controls = pairs.filter(mask)
     if controls.is_empty():
-        return {f"control.{name}.pairs": 0.0}
+        return {f"{prefix}.pairs": 0.0}
     return {
-        f"control.{name}.pairs": float(controls.height),
-        f"control.{name}.model_fp_rate": float(controls["decision"].mean()),
-        f"control.{name}.baseline_fp_rate": float(controls["baseline_decision"].mean()),
+        f"{prefix}.pairs": float(controls.height),
+        f"{prefix}.model_fp_rate": float(controls["decision"].mean()),
+        f"{prefix}.baseline_fp_rate": float(controls["baseline_decision"].mean()),
     }
 
 
@@ -74,27 +99,50 @@ def _price_shift_recall_gap(report: pl.DataFrame) -> dict[str, float]:
     price-shifted clones score below threshold disproportionately, "above median"
     recall reads visibly lower than "below median" recall here.
     """
-    defaults = {
-        "price_shift.below_median.pairs": 0.0,
-        "price_shift.below_median.recall": 0.0,
-        "price_shift.above_median.pairs": 0.0,
-        "price_shift.above_median.recall": 0.0,
+    # There is no meaningful "0 pairs" to report when the computation itself could not run
+    # (no column, or too few report-split duplicates to split into two groups) — that would
+    # claim a fact ("zero pairs") we never actually checked. NaN throughout.
+    insufficient_data = {
+        "price_shift.below_median.pairs": _NAN,
+        "price_shift.below_median.recall": _NAN,
+        "price_shift.above_median.pairs": _NAN,
+        "price_shift.above_median.recall": _NAN,
     }
     if "abs_log_price_ratio" not in report.columns:
-        return defaults
+        return insufficient_data
     duplicates = report.filter(pl.col("is_duplicate"))
     if duplicates.height < 2:
-        return defaults
+        return insufficient_data
     ratios = duplicates["abs_log_price_ratio"].to_numpy()
     median = float(np.median(ratios))
     below = duplicates.filter(pl.Series(ratios <= median))
     above = duplicates.filter(pl.Series(ratios > median))
     return {
         "price_shift.below_median.pairs": float(below.height),
-        "price_shift.below_median.recall": float(below["decision"].mean()) if below.height else 0.0,
+        "price_shift.below_median.recall": float(below["decision"].mean())
+        if below.height
+        else _NAN,
         "price_shift.above_median.pairs": float(above.height),
-        "price_shift.above_median.recall": float(above["decision"].mean()) if above.height else 0.0,
+        "price_shift.above_median.recall": float(above["decision"].mean())
+        if above.height
+        else _NAN,
     }
+
+
+def _flagged_pairs(frame: pl.DataFrame) -> set[tuple[int, int]]:
+    return {
+        (a, b)
+        for a, b, decision in zip(
+            frame["listing_a"].to_list(), frame["listing_b"].to_list(), frame["decision"].to_list()
+        )
+        if decision
+    }
+
+
+def _pattern_recall(subset: list[tuple[int, int]], flagged: set[tuple[int, int]]) -> float:
+    if not subset:
+        return _NAN
+    return float(sum(pair in flagged for pair in subset) / len(subset))
 
 
 def evaluate_detection(
@@ -103,17 +151,17 @@ def evaluate_detection(
     pairs = result.pairs
     metrics: dict[str, float] = {}
 
-    # Per-split precision/recall/f1, split sizes and positive counts — train and threshold
-    # are in-sample/tuning splits and must never be read as the headline number.
-    for split_name in SPLITS:
-        split_pairs = pairs.filter(pl.col("split") == split_name)
+    # Per-split precision/recall/f1, split sizes and positive counts — train and tune are
+    # in-sample/tuning splits and must never be read as the headline number.
+    for split_value, prefix in SPLIT_METRIC_PREFIX.items():
+        split_pairs = pairs.filter(pl.col("split") == split_value)
         metrics |= {
-            f"{split_name}.{key}": value
+            f"{prefix}.{key}": value
             for key, value in pair_metrics(
                 split_pairs["is_duplicate"], split_pairs["decision"]
             ).items()
         }
-        metrics[f"{split_name}.positives"] = (
+        metrics[f"{prefix}.positives"] = (
             float(split_pairs["is_duplicate"].sum()) if split_pairs.height else 0.0
         )
 
@@ -127,37 +175,40 @@ def evaluate_detection(
             average_precision_score(report["is_duplicate"].to_numpy(), report["score"].to_numpy())
         )
     else:
-        metrics["report.pr_auc"] = float("nan")
+        metrics["report.pr_auc"] = _NAN
 
     metrics |= _price_shift_recall_gap(report)
 
+    # Pooled on purpose (see module docstring): candidate generation runs before any model
+    # is fit, so it carries no in-sample leakage.
     retrieved = set(zip(pairs["listing_a"].to_list(), pairs["listing_b"].to_list()))
     planted = list(zip(truth_pairs["listing_a"].to_list(), truth_pairs["listing_b"].to_list()))
     metrics["retrieval.recall"] = (
         float(sum(pair in retrieved for pair in planted) / len(planted)) if planted else 0.0
     )
 
-    flagged = {
-        (a, b)
-        for a, b, decision in zip(
-            pairs["listing_a"].to_list(), pairs["listing_b"].to_list(), pairs["decision"].to_list()
-        )
-        if decision
-    }
+    patterns = truth_pairs["pattern"].to_list() if truth_pairs.height else []
+    report_flagged = _flagged_pairs(report)
+    pooled_flagged = _flagged_pairs(pairs)
     for pattern in PATTERNS:
-        subset = [
-            (a, b)
-            for (a, b), kind in zip(planted, truth_pairs["pattern"].to_list())
-            if kind == pattern
-        ]
-        metrics[f"pattern.{pattern}.recall"] = (
-            float(sum(pair in flagged for pair in subset) / len(subset)) if subset else 0.0
-        )
+        subset = [pair for pair, kind in zip(planted, patterns) if kind == pattern]
+        metrics[f"pattern.{pattern}.recall"] = _pattern_recall(subset, report_flagged)
+        metrics[f"pooled.pattern.{pattern}.recall"] = _pattern_recall(subset, pooled_flagged)
 
-    metrics |= _control_rates(pairs, pairs["same_building_control"], "same_building")
-    metrics |= _control_rates(pairs, stock_photo_control_pairs(pairs, attributes), "stock_photo")
+    metrics |= _control_rates(report, report["same_building_control"], "control.same_building")
+    metrics |= _control_rates(pairs, pairs["same_building_control"], "pooled.control.same_building")
+    metrics |= _control_rates(
+        report, stock_photo_control_pairs(report, attributes), "control.stock_photo"
+    )
+    metrics |= _control_rates(
+        pairs, stock_photo_control_pairs(pairs, attributes), "pooled.control.stock_photo"
+    )
     metrics["threshold"] = float(result.threshold)
-    metrics |= {f"stats.{key}": float(value) for key, value in result.stats.items()}
+    metrics |= {
+        f"stats.{key}": float(value)
+        for key, value in result.stats.items()
+        if key not in _STATS_EXCLUDE
+    }
     return metrics
 
 
@@ -170,8 +221,10 @@ def evaluate_fraud(fraud_result, truth: pl.DataFrame, config: DetectConfig) -> d
     metrics["fraud.bait_price.precision"] = float(hits / len(flagged)) if flagged else 0.0
     metrics["fraud.bait_price.recall"] = float(hits / len(actual)) if actual else 0.0
     for name in ("photo_reuse", "inconsistent_relist"):
+        # Distinct listings, not row count: a listing must never be double-counted just
+        # because it happened to accumulate more than one row for the same flag.
         metrics[f"fraud.{name}.flagged"] = float(
-            fraud_result.flags.filter(pl.col("flag") == name).height
+            fraud_result.flags.filter(pl.col("flag") == name)["listing_id"].n_unique()
         )
     return metrics
 
