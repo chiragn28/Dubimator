@@ -169,3 +169,18 @@ def loaded_corpus(pg_test_db, sales_frame, areas_frame, small_corpus_config, pho
     finally:
         conn.close()
     return pg_test_db, corpus, corpus_run_id
+
+
+@pytest.fixture
+def temp_mlflow(tmp_path, monkeypatch):
+    """Throwaway MLflow tracking + registry store. Never the real server, never ./mlruns."""
+    import mlflow
+
+    uri = f"sqlite:///{(tmp_path / 'mlflow.db').as_posix()}"
+    monkeypatch.setenv("MLFLOW_TRACKING_URI", uri)
+    # mlflow.set_tracking_uri() writes this module global; monkeypatch restores it after the test.
+    monkeypatch.setattr("mlflow.tracking._tracking_service.utils._tracking_uri", uri)
+    monkeypatch.setattr("mlflow.tracking.fluent._active_experiment_id", None)
+    yield {"tracking_uri": uri, "artifact_location": (tmp_path / "artifacts").as_uri()}
+    while mlflow.active_run():
+        mlflow.end_run()

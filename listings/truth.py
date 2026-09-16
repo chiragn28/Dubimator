@@ -59,3 +59,41 @@ def label_pairs(pairs: pl.DataFrame, truth: pl.DataFrame) -> pl.DataFrame:
         is_duplicate.alias("is_duplicate"),
         control.alias("same_building_control"),
     )
+
+
+DUPLICATE_TRUTH_SQL = """
+SELECT clone.listing_id AS clone_id,
+       clone.dup_group_id AS source_id,
+       (clone.description = source.description) AS same_text,
+       EXISTS (
+           SELECT 1
+           FROM listings.listing_photos lp
+           JOIN listings.photos p ON p.photo_id = lp.photo_id
+           WHERE lp.listing_id = clone.listing_id AND p.variant_of IS NOT NULL
+       ) AS edited_photos
+FROM listings.listings clone
+JOIN listings.listings source ON source.listing_id = clone.dup_group_id
+WHERE clone.dup_group_id IS NOT NULL
+"""
+
+
+def load_duplicate_truth(conn) -> pl.DataFrame:
+    """Planted clone -> source pairs, with the pattern read off the content."""
+    with conn.cursor() as cur:
+        cur.execute(DUPLICATE_TRUTH_SQL)
+        rows = cur.fetchall()
+    pattern = []
+    listing_a, listing_b = [], []
+    for clone_id, source_id, same_text, edited_photos in rows:
+        listing_a.append(min(clone_id, source_id))
+        listing_b.append(max(clone_id, source_id))
+        if edited_photos:
+            pattern.append("edited_photo")
+        elif same_text:
+            pattern.append("exact_repost")
+        else:
+            pattern.append("reworded")
+    return pl.DataFrame(
+        {"listing_a": listing_a, "listing_b": listing_b, "pattern": pattern},
+        schema={"listing_a": pl.Int64, "listing_b": pl.Int64, "pattern": pl.Utf8},
+    )
