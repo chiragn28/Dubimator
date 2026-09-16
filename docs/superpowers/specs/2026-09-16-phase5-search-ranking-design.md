@@ -449,6 +449,171 @@ Tests run sequentially only, against `zestimator_test`.
 - Serving over HTTP. That is Phase 6, which will call `search.engine.search`.
 - Re-embedding listings or changing any Phase 4 detection logic.
 
-## Amendments during implementation
+## Amendments during implementation (2026-09-16)
 
-(none yet)
+### Planning rulings (from the plan header)
+
+1. **Judgments store the retrieval signals.** `search.judgments` carries
+   `semantic_cos`, `semantic_pos`, `fulltext_rank`, `fulltext_pos`,
+   `rrf_score`, `fused_pos` and `cluster_size` next to `grade`. Training and
+   evaluation therefore never re-run retrieval for 6,000 queries.
+2. **Duplicate-collapse representative.** The representative is the
+   earliest-posted member *among the retrieved members* of a cluster (ties go
+   to the lowest `listing_id`), not the earliest member overall. Its retrieval
+   signals and features are its own, never borrowed from a sibling.
+3. **`ParsedQuery.unrecognised` is a tuple of `(kind, text)` pairs**, with
+   kind `"place"` or `"type"`. The engine can then say "area not recognised:
+   …" or "property type not listed: land".
+4. **Corpus pinning.**
+   - `search.queries` and `search.listing_estimates` carry `corpus_run_id`.
+   - `train` and `evaluate` refuse to run when the stored queries were built
+     on an older corpus. The error tells the user to run
+     `python -m search queries`.
+   - `queries` recomputes the estimates whenever they belong to an older
+     corpus, not only when the table is empty.
+6. **`search/engine.py` exposes a `SearchEngine` class plus the module-level
+   `search(conn, text, k=10)`.**
+   - The class caches the lexicon, clusters, attributes, flags, estimates and
+     ranker.
+   - Its docstring states the contract: one long-lived engine per worker,
+     holding one connection, not safe for concurrent use from several
+     threads.
+   - The module-level `search` caches one engine per connection object and
+     never evicts it. The pool-aware engine is left to the API phase (now
+     Phase 7).
+7. **`train` fits, evaluates, gates and logs in one MLflow run
+   (`search-train`).**
+   - `evaluate` re-scores the registered champion and the three baselines in
+     a separate `search-evaluate` run, so results can be reproduced without
+     refitting.
+   - The Phase 4 effects and the no-trust ablation are logged only by
+     `train`, which has both fitted models in hand.
+8. **The 30 templates are frames: 6 prefixes × 5 slot orders.**
+   - A frame id also picks the phrasing style for bedrooms and budget.
+   - The split assigns 18 frames to train, 6 to tune and 6 to report.
+   - Per-query randomness (alias or official name, number format) is
+     independent of the frame.
+
+### Parser
+
+- **Pass order.** The parser runs its passes in this order:
+  1. size;
+  2. budget;
+  3. **places**;
+  4. bedrooms;
+  5. property type;
+  6. amenities;
+  7. unrecognised places.
+
+  Places now run *before* bedrooms and type because real DLD area, building
+  and project names contain slot words: "studio", "villa", number words and
+  digits. Matching the lexicon first blanks those names out, so their words
+  are not read as bedroom counts or property types.
+- **`ParsedQuery` fields.**
+  - It gained `area_name`, the matched area as the lexicon spells it.
+  - It has no separate `project` field: `building` holds a building *or*
+    project name, and the grade rule accepts either.
+- **Extra input forms**, added after review:
+  - "N+ bed";
+  - en and em dash ranges;
+  - range-suffix inheritance. "1-1.5M" inherits the "M". "900-1.2M" falls
+    back to thousands when the inherited first bound would exceed the
+    second. A first number that is already an amount ("1,500-2,000k")
+    inherits nothing.
+- **Known limitation, accepted.** A possessive ("Marina's Gate") breaks the
+  building match.
+
+### Leakage scan
+
+- **`store.py` is exempt from the label-name scan.** It is listed in
+  `LABEL_READERS` next to `grade.py`, `queries.py` and `evaluate.py`, and
+  `config.py` is exempt because it declares the forbidden list.
+- **Why the exemption is needed.** `store.py` persists `true_slots` with the
+  query set, but its `read_queries()` leaves them out.
+- **The scan covers everything else** in `search/`, including `engine.py` and
+  `__main__.py`.
+
+### Metrics and evaluation
+
+- **Contender names.** The contenders are logged as `xgboost` and `lightgbm`,
+  not `xgb` and `lgbm`.
+- **Which queries count.** NDCG@10, MRR, P@5 and the bootstrap CI average over
+  *answerable* queries: kind other than `no_match`, with at least one
+  candidate graded ≥ 1. `no_match` queries are scored only by
+  `kind.no_match.<contender>.mean_grade_top10`.
+- **Score ties and gaps.** Candidates with a NaN score are ranked last (ties
+  keep fused order), and `precision_at_k(k=0)` is NaN.
+- **Recall denominator.** `retrieval.recall_at_200` divides by *all* of a
+  query's grade-3 listings in the corpus (`search.queries.n_grade3`),
+  uncapped. It is therefore bounded by `candidate_k` on broad queries (see
+  the headline numbers below).
+
+### CLI
+
+- **Flags beyond the spec.**
+  - `queries`: `--device auto|cuda|cpu`, `--fake` (deterministic test
+    embedder, tests only) and `--data-dir`.
+  - `train`: `--device` and `--data-dir`.
+  - `query`: `--fake` and `--device`.
+- **Stats file.** `queries` writes `queries_stats.json`: the estimate stats
+  plus per-split and per-kind counts. It prints a stderr WARNING if the
+  price model could not be loaded and the value features were skipped.
+- **Gate failure.** A failing gate is a legitimate result: `train` still
+  exits 0 and registers nothing, and `evaluate` then exits 1 with "no
+  champion registered".
+- **Console encoding.** The CLI switches a non-UTF-8 stdout or stderr to
+  UTF-8 (commit 8d4b5e6). The first real run found that a piped Windows
+  console (cp1252) could not encode the "✓" in the reasons, so `query`
+  failed.
+
+### Other
+
+- **Test fixture.** The `temp_mlflow` fixture touches the sqlite store during
+  setup. MLflow's alembic migration replaces the root logging handlers, and
+  running it at setup keeps pytest's `caplog` working in the test body.
+- **Phase numbering.** Phases were renumbered on 2026-09-16, when price
+  forecasting became Phase 6. Where this spec says "Phase 6" for serving over
+  HTTP, read Phase 7 (API).
+- **Ranker label.** The engine labels its ranker
+  `zestimator-search-ranker/v<version>`, or `fallback_fused`.
+
+### Real run and headline numbers (2026-09-16, RTX 3060)
+
+**Stages** (wall-clock):
+- `queries`: 1,023s. It embedded on cuda, used the Phase 3 champion
+  (version 2) and wrote 19,983 estimates, with 17 listings unsupported. It
+  produced 6,000 queries and 1,098,438 graded candidates. The report split
+  holds 864 `specified`, 215 `vague` and 113 `no_match` queries.
+- `train`: 1,454s, with 40 trials per model.
+- `evaluate`: 22s.
+- MLflow run `search-train`: `daddafc0afe940fc97bad7a58826ac80`.
+
+**Results** (report split, 1,079 answerable queries):
+
+| Contender | NDCG@10 (95% CI) |
+|---|---|
+| LightGBM (winner) | 0.997 (0.995–0.999) |
+| XGBoost | 0.997 (0.995–0.998) |
+| Fused retrieval (`baseline_fused`) | 0.566 (0.549–0.583) |
+| Semantic channel | 0.470 |
+| Newest first | 0.435 |
+| No-trust ablation | 0.997 |
+
+- **Winner and gate.** Tune NDCG@10 was 0.9980 for LightGBM against 0.9977
+  for XGBoost. The gate passed, and the winner was registered as
+  `zestimator-search-ranker` v1 with alias `@champion`.
+- **By kind.** `specified` NDCG@10 is 0.996 against 0.483 for fused
+  retrieval. `vague` is 1.000 against 0.897. The `no_match` mean top-10
+  grade is 1.00 for every contender.
+- **Retrieval recall@200** is 0.525.
+- **Parser accuracy** is 1.000 on every slot except `building`, at 0.996.
+- **Phase 4 effects.**
+  - `dup.top10_removed`: 0.45 (0.41 for the ablation).
+  - `fraud.top10_share`: 0.88% (0.93% for the ablation).
+- **Interpretation.** The grades are rule-based and the features restate the
+  graded slots, so the near-perfect ranker NDCG mainly shows the ranker
+  reproduces the grading rules. The README states this plainly.
+- **Phase 4 tables unchanged.** The run changed no Phase 4 table beyond
+  adding `listings.listings.search_tsv` and its index. Row counts and
+  content hashes of every other `listings` table were identical before and
+  after.
