@@ -98,6 +98,19 @@ def fit_ablation(table: pl.DataFrame, result: TrainingResult, config: SearchConf
     return cls.fit(train, tune, features, result.best_params[result.winner], config)
 
 
+GATE_BASELINES = ("baseline_fused", "baseline_rules")
+
+
+def gate_baseline(metrics: dict[str, float]) -> tuple[str, float]:
+    """The stronger of fused retrieval order and the hand-written rules (report NDCG@10)."""
+    values = {name: metrics.get(f"{name}.ndcg_at_10", math.nan) for name in GATE_BASELINES}
+    finite = {name: value for name, value in values.items() if math.isfinite(value)}
+    if not finite:
+        return GATE_BASELINES[0], math.nan
+    name = max(finite, key=finite.get)
+    return name, finite[name]
+
+
 def gate_passes(ndcg: float, ci_low: float, baseline_ndcg: float) -> bool:
     values = (ndcg, ci_low, baseline_ndcg)
     if not all(math.isfinite(value) for value in values):

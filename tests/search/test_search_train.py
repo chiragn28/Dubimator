@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import math
 
 import numpy as np
 import polars as pl
@@ -16,6 +17,7 @@ from search.ranker import (
 )
 from search.train import (
     fit_ablation,
+    gate_baseline,
     gate_passes,
     mean_ndcg,
     register_ranker,
@@ -109,15 +111,22 @@ def test_train_rankers_picks_the_higher_tune_ndcg():
 
 def test_the_report_split_never_reaches_training(monkeypatch):
     seen = []
-    real_fit = XGBRanker.fit.__func__
 
-    def spy(cls, train, tune, features, params, config):
-        seen.append(set(train["split"]) | set(tune["split"]))
-        return real_fit(cls, train, tune, features, params, config)
+    def spy_for(ranker_class):
+        real_fit = ranker_class.fit.__func__
 
-    monkeypatch.setattr(XGBRanker, "fit", classmethod(spy))
-    train_rankers(TABLE, CONFIG, n_trials=1)
-    assert seen and all("report" not in splits for splits in seen)
+        def spy(cls, train, tune, features, params, config):
+            seen.append((cls.kind, set(train["split"]) | set(tune["split"])))
+            return real_fit(cls, train, tune, features, params, config)
+
+        return classmethod(spy)
+
+    for ranker_class in (XGBRanker, LGBMRanker):
+        monkeypatch.setattr(ranker_class, "fit", spy_for(ranker_class))
+    result = train_rankers(TABLE, CONFIG, n_trials=1)
+    fit_ablation(TABLE, result, CONFIG)
+    assert {kind for kind, _ in seen} == {"xgboost", "lightgbm"}
+    assert all("report" not in splits for _, splits in seen)
 
 
 def test_ablation_drops_the_trust_features():
@@ -135,6 +144,16 @@ def test_ablation_drops_the_trust_features():
 )  # fmt: skip
 def test_gate(ndcg, ci_low, baseline, expected):
     assert gate_passes(ndcg, ci_low, baseline) is expected
+
+
+def test_the_gate_uses_the_stronger_baseline():
+    fused, rules = "baseline_fused.ndcg_at_10", "baseline_rules.ndcg_at_10"
+    assert gate_baseline({fused: 0.56, rules: 0.96}) == ("baseline_rules", 0.96)
+    assert gate_baseline({fused: 0.70, rules: 0.60}) == ("baseline_fused", 0.70)
+    assert gate_baseline({fused: 0.70, rules: float("nan")}) == ("baseline_fused", 0.70)
+    name, value = gate_baseline({})
+    assert name == "baseline_fused" and math.isnan(value)  # the gate then fails
+    assert not gate_passes(0.97, 0.955, gate_baseline({fused: 0.56, rules: 0.96})[1])
 
 
 def test_pyfunc_registration_and_champion_loading(temp_mlflow, tmp_path):

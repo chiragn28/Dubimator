@@ -27,14 +27,20 @@ from search.evaluate import (
 from search.features import feature_table, refresh_estimates
 from search.lexicon import load_lexicon
 from search.queries import build_query_set
-from search.ranker import load_champion
+from search.ranker import load_pinned
 from search.store import (
     apply_schema,
     latest_corpus_run,
     queries_corpus_run,
     replace_query_set,
 )
-from search.train import fit_ablation, gate_passes, register_ranker, train_rankers
+from search.train import (
+    fit_ablation,
+    gate_baseline,
+    gate_passes,
+    register_ranker,
+    train_rankers,
+)
 
 TIMINGS_FILE = "stage_timings.json"
 STATS_FILE = "queries_stats.json"
@@ -207,13 +213,15 @@ def _train(args) -> int:
     for kind, value in result.tune_ndcg.items():
         metrics[f"tune.{kind}.ndcg_at_10"] = value
     winner = result.winner
+    baseline, baseline_ndcg = gate_baseline(metrics)
     passed = gate_passes(
-        metrics[f"{winner}.ndcg_at_10"],
-        metrics[f"{winner}.ci_low"],
-        metrics["baseline_fused.ndcg_at_10"],
+        metrics[f"{winner}.ndcg_at_10"], metrics[f"{winner}.ci_low"], baseline_ndcg
     )
     metrics["gate.passed"] = float(passed)
-    timings = _read_json(Path(args.data_dir) / TIMINGS_FILE)
+    metrics["gate.baseline_ndcg"] = baseline_ndcg
+    # only this query set's own `queries` timing: never an older train or evaluate entry
+    stored = _read_json(Path(args.data_dir) / TIMINGS_FILE)
+    timings = {"queries": stored["queries"]} if "queries" in stored else {}
     timings["train_before_logging"] = {"seconds": round(time.perf_counter() - args.started, 3)}
     for stage, entry in timings.items():
         metrics[f"timing.{stage}_seconds"] = float(entry["seconds"])
@@ -241,19 +249,27 @@ def _train(args) -> int:
             "corpus_run_id": corpus_run_id,
             "detect_run_id": detect_run_id,
             "registered_version": version or "none",
+            "gate.baseline": baseline,
         }
         log_results(metrics, params, artifacts)
 
     _print_contenders(metrics, [*CONTENDERS, "ablation.no_trust"])
     print("tune NDCG@10: " + ", ".join(f"{k} {v:.3f}" for k, v in result.tune_ndcg.items()))
+    for name in [*CONTENDERS, "ablation.no_trust"]:
+        if f"{name}.fraud.top10_share" in metrics:
+            print(f"fraud top-10 share {name}: {metrics[f'{name}.fraud.top10_share']:.4f}")
+    print(f"fraud share among report candidates: {metrics['candidates.fraud_share']:.4f}")
     verdict = f"registered {config.ranker_name} v{version}" if passed else "not registered"
-    print(f"gate: winner {winner} {'PASSED' if passed else 'FAILED'} — {verdict}")
+    print(
+        f"gate: winner {winner} {'PASSED' if passed else 'FAILED'} against {baseline} "
+        f"({baseline_ndcg:.3f}) — {verdict}"
+    )
     return 0
 
 
 def _evaluate(args) -> int:
     config = SearchConfig()
-    champion = load_champion(config.ranker_uri)
+    champion, ranker_version = load_pinned(config.ranker_uri)
     if champion is None:
         raise RuntimeError("no champion registered — run python -m search train first")
     conn = DbSettings.from_env().connect()
@@ -277,7 +293,7 @@ def _evaluate(args) -> int:
             evaluation.metrics,
             {
                 "ranker_uri": config.ranker_uri,
-                "ranker_version": resolve_price_model_version(config.ranker_uri) or "unknown",
+                "ranker_version": ranker_version,
                 "ranker_kind": champion.kind,
                 "corpus_run_id": corpus_run_id,
             },
@@ -291,7 +307,10 @@ def _query(args) -> int:
     embedder, _ = _embedder(args)
     conn = DbSettings.from_env().connect()
     try:
-        result = SearchEngine(conn, embedder).search(args.text, args.k)
+        step = time.perf_counter()
+        engine = SearchEngine(conn, embedder)
+        ready_ms = (time.perf_counter() - step) * 1000
+        result = engine.search(args.text, args.k)
     finally:
         conn.close()
     understood = {k: v for k, v in result.parsed.to_dict().items() if v not in (None, [], "")}
@@ -307,6 +326,7 @@ def _query(args) -> int:
         )
         hidden = f" (+{hit.duplicates_hidden} duplicate)" if hit.duplicates_hidden else ""
         print(f"    {', '.join(hit.reasons)}{hidden}")
+    print(f"engine ready in {ready_ms:.0f} ms (data, ranker and embedder warm-up)")
     print(f"took {result.timings_ms['total']:.0f} ms")
     return 0
 

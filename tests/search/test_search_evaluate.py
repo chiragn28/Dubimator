@@ -13,6 +13,7 @@ from search.evaluate import (
     CONTENDERS,
     Evaluation,
     baseline_scores,
+    closest_note_rates,
     evaluate_contenders,
     evaluate_report,
     load_fraud_listing_ids,
@@ -73,10 +74,53 @@ class FixedRanker:
 
 def test_baselines_order_by_freshness_semantic_rank_and_fused_rank():
     scores = baseline_scores(_frame())
-    assert list(scores) == ["baseline_newest", "baseline_semantic", "baseline_fused"]
+    assert list(scores) == [
+        "baseline_newest", "baseline_semantic", "baseline_fused", "baseline_rules",
+    ]  # fmt: skip
     assert scores["baseline_newest"][1] > scores["baseline_newest"][0]
     assert scores["baseline_semantic"][0] < scores["baseline_semantic"][1]  # missing goes last
     assert list(scores["baseline_fused"]) == [-2.0, -1.0, -1.0]
+
+
+def _rules_frame() -> pl.DataFrame:
+    """One query asking for 2 bedrooms: an exact match, a near miss and a wrong area."""
+    base = {name: float("nan") for name in FEATURES}
+    common = {**base, "query_id": 1, "kind": "specified", "beds_stated": 1.0,
+              "amenity_hits": 0.0, "amenity_asked": 0.0, "area_match": 1.0}  # fmt: skip
+    rows = [
+        {**common, "listing_id": 1, "grade": 1, "fused_pos": 1, "rrf_score": 0.030,
+         "beds_diff": 0.0, "area_match": 0.0},
+        {**common, "listing_id": 2, "grade": 2, "fused_pos": 2, "rrf_score": 0.020,
+         "beds_diff": 1.0},
+        {**common, "listing_id": 3, "grade": 3, "fused_pos": 3, "rrf_score": 0.010,
+         "beds_diff": 0.0},
+    ]  # fmt: skip
+    return pl.DataFrame(rows)
+
+
+def test_the_rules_baseline_orders_by_parsed_slot_matches_then_fusion():
+    frame = _rules_frame()
+    rules = baseline_scores(frame)["baseline_rules"]
+    np.testing.assert_allclose(rules, [1.030, 2.020, 3.010])
+    metrics, _ = evaluate_contenders(frame, {"baseline_rules": rules}, CONFIG)
+    assert metrics["baseline_rules.ndcg_at_10"] == pytest.approx(1.0)
+
+
+def test_closest_note_rates_split_no_match_from_the_rest():
+    frame = pl.concat(
+        [
+            _rules_frame(),
+            _rules_frame().with_columns(
+                pl.lit(2, dtype=pl.Int64).alias("query_id"),
+                pl.lit("no_match").alias("kind"),
+                pl.lit(2.0).alias("beds_diff"),
+            ),
+        ]
+    )
+    rates = closest_note_rates(frame, np.arange(6, dtype=float), k=10)
+    assert rates == {"note.closest.rate.no_match": 1.0, "note.closest.rate.other": 0.0}
+    top_one_wrong = closest_note_rates(_rules_frame(), np.array([3.0, 2.0, 1.0]), k=2)
+    assert top_one_wrong["note.closest.rate.other"] == 1.0  # the exact match is third
 
 
 def test_evaluate_contenders_names_every_metric():
@@ -173,6 +217,13 @@ def test_the_database_evaluation_end_to_end(search_db, fake_embedder, tmp_path):
     assert {"dup.top10_removed", "fraud.top10_share", "ablation.no_trust.ndcg_at_10"} <= set(
         metrics
     )
+    for contender in [*CONTENDERS, "ablation.no_trust"]:
+        assert 0.0 <= metrics[f"{contender}.fraud.top10_share"] <= 1.0
+        assert metrics[f"{contender}.dup.top10_removed"] >= 0.0
+    assert metrics["fraud.top10_share"] == metrics[f"{result.winner}.fraud.top10_share"]
+    assert 0.0 < metrics["candidates.fraud_share"] < 1.0
+    assert 0.0 <= metrics["note.closest.rate.no_match"] <= 1.0
+    assert metrics["note.closest.rate.no_match"] >= metrics["note.closest.rate.other"]
     assert metrics["report.queries"] == queries.filter(pl.col("split") == "report").height
 
     importance = result.rankers[result.winner].importance()

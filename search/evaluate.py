@@ -19,29 +19,40 @@ import polars as pl
 from ingestion.normalize import match_key
 from models.price.registry import configure, log_metrics
 from search.config import SLOTS, SearchConfig
+from search.features import meets_every_slot, rule_grade
 from search.lexicon import Lexicon
 from search.metrics import bootstrap_ci, per_query_metrics, summarize
 from search.parse import ParsedQuery, parse
-from search.store import read_queries
+from search.store import read_queries, read_query_labels
 
-CONTENDERS = ("xgboost", "lightgbm", "baseline_newest", "baseline_semantic", "baseline_fused")
+CONTENDERS = (
+    "xgboost", "lightgbm", "baseline_newest", "baseline_semantic", "baseline_fused",
+    "baseline_rules",
+)  # fmt: skip
 MISSING_POSITION = 1e9
 MAX_PARSE_ERRORS = 200
 MONEY_TOLERANCE = 0.01
 
 
-def baseline_scores(frame: pl.DataFrame) -> dict[str, np.ndarray]:
+def baseline_scores(frame: pl.DataFrame, near_margin: float = 0.10) -> dict[str, np.ndarray]:
+    """Label-free orderings. `baseline_rules` scores 3 / 2 / 1 from the PARSED slots with the
+    grading rules' shape (see features.rule_grade) and breaks ties on the fusion score, which
+    is always below 1."""
     semantic = frame["semantic_pos"].fill_nan(None).fill_null(MISSING_POSITION).to_numpy()
+    rules = frame.select(rule_grade(near_margin) + pl.col("rrf_score")).to_series()
     return {
         "baseline_newest": -frame["days_since_posted"].to_numpy().astype(np.float64),
         "baseline_semantic": -semantic.astype(np.float64),
         "baseline_fused": -frame["fused_pos"].to_numpy().astype(np.float64),
+        "baseline_rules": rules.to_numpy().astype(np.float64),
     }
 
 
-def contender_scores(frame: pl.DataFrame, rankers: dict) -> dict[str, np.ndarray]:
+def contender_scores(
+    frame: pl.DataFrame, rankers: dict, near_margin: float = 0.10
+) -> dict[str, np.ndarray]:
     scores = {name: np.asarray(ranker.score(frame)) for name, ranker in rankers.items()}
-    return {**scores, **baseline_scores(frame)}
+    return {**scores, **baseline_scores(frame, near_margin)}
 
 
 def _scored(frame: pl.DataFrame, values: np.ndarray) -> pl.DataFrame:
@@ -78,6 +89,27 @@ def top_k_effects(frame, scores, fraud_ids: set[int], k: int, prefix: str = "") 
     return {
         f"{prefix}dup.top10_removed": float(np.mean(hidden)) if hidden else math.nan,
         f"{prefix}fraud.top10_share": flagged / slots if slots else math.nan,
+    }
+
+
+def closest_note_rates(frame, scores, k: int, near_margin: float = 0.10) -> dict[str, float]:
+    """How often the engine would say "nothing meets every requirement": no top-k candidate
+    meets every parsed slot exactly. Split by `no_match` versus answerable queries."""
+    table = _scored(frame, scores).with_columns(
+        meets_every_slot(near_margin).alias("meets"),
+        pl.col("score").fill_nan(float("-inf")).alias("rank_score"),
+    )
+    top = (
+        table.sort(["query_id", "rank_score", "fused_pos"], descending=[False, True, False])
+        .group_by("query_id", maintain_order=True)
+        .agg(pl.col("kind").first(), pl.col("meets").head(k).any().alias("any_meets"))
+        .with_columns((~pl.col("any_meets")).alias("noted"))
+    )
+    no_match = top.filter(pl.col("kind") == "no_match")["noted"]
+    others = top.filter(pl.col("kind") != "no_match")["noted"]
+    return {
+        "note.closest.rate.no_match": float(no_match.mean()) if no_match.len() else math.nan,
+        "note.closest.rate.other": float(others.mean()) if others.len() else math.nan,
     }
 
 
@@ -172,6 +204,7 @@ def parser_accuracy(queries: pl.DataFrame, slots: dict[int, dict], lexicon: Lexi
 
 
 def retrieval_recall(queries: pl.DataFrame, report_rows: pl.DataFrame) -> float:
+    """queries: query_id and n_grade3 (from store.read_query_labels)."""
     found = report_rows.group_by("query_id").agg((pl.col("grade") == 3).sum().alias("found"))
     answerable = (
         queries.filter(pl.col("n_grade3") > 0)
@@ -201,11 +234,17 @@ def evaluate_report(
     ablation=None,
 ) -> Evaluation:
     report = table.filter(pl.col("split") == "report").sort("query_id", "fused_pos")
-    scores = contender_scores(report, rankers)
+    scores = contender_scores(report, rankers, config.near_margin)
     metrics, per_query = evaluate_contenders(report, scores, config)
     fraud_ids = load_fraud_listing_ids(conn)
+    for name, values in scores.items():
+        metrics |= top_k_effects(report, values, fraud_ids, config.ndcg_k, f"{name}.")
+    metrics["candidates.fraud_share"] = (
+        float(report["listing_id"].is_in(list(fraud_ids)).mean()) if report.height else math.nan
+    )
     if champion is not None:
         metrics |= top_k_effects(report, scores[champion], fraud_ids, config.ndcg_k)
+        metrics |= closest_note_rates(report, scores[champion], config.ndcg_k, config.near_margin)
     if ablation is not None:
         ablation_scores = ablation.score(report)
         extra, _ = evaluate_contenders(report, {"ablation.no_trust": ablation_scores}, config)
@@ -216,7 +255,9 @@ def evaluate_report(
     queries = read_queries(conn, splits=("report",))
     accuracy, errors = parser_accuracy(queries, load_true_slots(conn), lexicon)
     metrics |= accuracy
-    metrics["retrieval.recall_at_200"] = retrieval_recall(queries, report)
+    metrics["retrieval.recall_at_200"] = retrieval_recall(
+        read_query_labels(conn, splits=("report",)), report
+    )
     metrics["report.queries"] = float(queries.height)
     parsed = [json.dumps(parse(text, lexicon).to_dict()) for text in queries["text"].to_list()]
     report_queries = queries.select("query_id", "text", "kind").with_columns(
