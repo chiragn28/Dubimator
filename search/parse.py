@@ -166,7 +166,13 @@ def _budget(text: str) -> tuple[str, float | None, float | None]:
     low = high = None
     for match in _RANGE.finditer(text):
         second = _amount(match, "2")
-        first = _amount(match, "1", inherit=(match["s2"], bool(match["aed2"] or match["post2"])))
+        # A comma-grouped first number (e.g. "970,000") is already a complete AED amount;
+        # only an ambiguous bare number (e.g. the "1" in "1-1.5M") should inherit the second
+        # number's scale.
+        inherit = None
+        if "," not in match["n1"]:
+            inherit = (match["s2"], bool(match["aed2"] or match["post2"]))
+        first = _amount(match, "1", inherit=inherit)
         if first is not None and second is not None:
             low, high = first, second
             text = _blank(text, *match.span())

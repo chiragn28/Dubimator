@@ -33,6 +33,10 @@ CASES = [
     ("900k-1.2M", {"budget_min": 900_000.0, "budget_max": 1_200_000.0}),
     ("budget 900k—2M", {"budget_min": 900_000.0, "budget_max": 2_000_000.0}),
     ("1-1.5M", {"budget_min": 1_000_000.0, "budget_max": 1_500_000.0}),
+    (
+        "970,000-1.5M",
+        {"budget_min": 970_000.0, "budget_max": 1_500_000.0},
+    ),  # a comma-grouped first number is a complete amount; it must not inherit the "M"
     ("between 1M and 2M", {"budget_min": 1_000_000.0, "budget_max": 2_000_000.0}),
     ("from 800k to 1.1m", {"budget_min": 800_000.0, "budget_max": 1_100_000.0}),
     ("from 2M", {"budget_min": 2_000_000.0, "budget_max": None}),
