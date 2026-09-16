@@ -162,17 +162,31 @@ def _amount(match, index: str, inherit: tuple[str | None, bool] | None = None) -
     return value if (suffix or has_aed or value >= MIN_BARE_AMOUNT) else None
 
 
+def _range_first(match, second: float | None) -> float | None:
+    """The low bound of an "X-Y" range.
+
+    A first number that already stands as a complete amount (its own suffix, an AED marker, or
+    a value large enough on its own, e.g. "970,000") is used as is. Otherwise it is ambiguous
+    (e.g. the "1" in "1-1.5M" or the "900" in "900-1.2M") and inherits the second bound's scale
+    -- unless that reading would exceed the second bound, in which case a x1,000 reading is
+    used instead when that fits under the second bound (so "900-1.2M" reads as 900k-1.2M).
+    """
+    bare = _amount(match, "1")
+    if bare is not None:
+        return bare
+    inherited = _amount(match, "1", inherit=(match["s2"], bool(match["aed2"] or match["post2"])))
+    if inherited is not None and second is not None and inherited > second:
+        thousands = float(match["n1"].replace(",", "")) * 1_000.0
+        if thousands <= second:
+            return thousands
+    return inherited
+
+
 def _budget(text: str) -> tuple[str, float | None, float | None]:
     low = high = None
     for match in _RANGE.finditer(text):
         second = _amount(match, "2")
-        # A comma-grouped first number (e.g. "970,000") is already a complete AED amount;
-        # only an ambiguous bare number (e.g. the "1" in "1-1.5M") should inherit the second
-        # number's scale.
-        inherit = None
-        if "," not in match["n1"]:
-            inherit = (match["s2"], bool(match["aed2"] or match["post2"]))
-        first = _amount(match, "1", inherit=inherit)
+        first = _range_first(match, second)
         if first is not None and second is not None:
             low, high = first, second
             text = _blank(text, *match.span())

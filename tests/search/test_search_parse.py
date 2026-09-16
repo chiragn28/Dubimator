@@ -37,6 +37,22 @@ CASES = [
         "970,000-1.5M",
         {"budget_min": 970_000.0, "budget_max": 1_500_000.0},
     ),  # a comma-grouped first number is a complete amount; it must not inherit the "M"
+    (
+        "1,500-2,000k",
+        {"budget_min": 1_500_000.0, "budget_max": 2_000_000.0},
+    ),  # a four-digit grouped number is still ambiguous; it inherits the "k"
+    (
+        "AED 950,000 - 1.2M",
+        {"budget_min": 950_000.0, "budget_max": 1_200_000.0},
+    ),  # an AED marker also makes the first number a complete amount
+    (
+        "900-1.2M",
+        {"budget_min": 900_000.0, "budget_max": 1_200_000.0},
+    ),  # inheriting "M" would exceed the max; a x1,000 reading (900k) fits instead
+    (
+        "1.5-2M",
+        {"budget_min": 1_500_000.0, "budget_max": 2_000_000.0},
+    ),
     ("between 1M and 2M", {"budget_min": 1_000_000.0, "budget_max": 2_000_000.0}),
     ("from 800k to 1.1m", {"budget_min": 800_000.0, "budget_max": 1_100_000.0}),
     ("from 2M", {"budget_min": 2_000_000.0, "budget_max": None}),
