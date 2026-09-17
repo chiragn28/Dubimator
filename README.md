@@ -4,10 +4,10 @@ Portfolio-grade ML platform for Dubai real estate: property price
 estimation, duplicate/fraud listing detection, and search ranking, built
 on real Dubai Land Department (DLD) transaction data.
 
-> **Status:** Phase 6 (multi-horizon price forecasting) complete — the 3-month
-> horizon is deployed; 1-year and 3-year did not clear their gates (see
-> "Price forecasting" below). See `docs/superpowers/specs/` for the full
-> build plan (11 phases).
+> **Status:** Phases 1–10 complete: data, price model, duplicate/fraud detection, search,
+> 3-month price forecasting, the FastAPI service, the Streamlit demo, CI/CD, and the
+> Docker + Cloudflare Tunnel deployment with monitoring. Phase 11 (final documentation)
+> is in progress. See `docs/superpowers/specs/` for every phase's design.
 
 ## Architecture (current)
 
@@ -44,10 +44,16 @@ graph LR
     INFRA --> FCLI
     ML -.->|"zestimator-price@champion"| FCLI
     FCLI -->|"price-forecast runs + zestimator-forecast-3m@champion"| ML
+    API["FastAPI service<br/>python -m api serve"]
+    ML -.->|"champions: price, forecast-3m,<br/>search-ranker, duplicate-pair"| API
+    PG -->|"listings, vectors, flags, area stats"| API
+    DEMO["Streamlit demo<br/>python -m demo"]
+    DEMO -->|"HTTP + API key (server-side)"| API
+    PROM[Prometheus + Grafana]
+    PROM -->|"scrapes /metrics"| API
+    TUN[Cloudflare Tunnel]
+    TUN -->|"public link (demo only)"| DEMO
 ```
-
-More components (ingestion pipeline, models, FastAPI service, Streamlit
-UI) are added in later phases — this diagram grows with them.
 
 ## Local development
 
@@ -1022,6 +1028,123 @@ Alstom/Emaar/Nakheel press releases, each with a `source_accessed` date);
 planned_completion_date`, area ids exist in `dld.areas`, and types are
 known.
 
+## API
+
+`api/` serves every model behind one versioned FastAPI service. Design:
+`docs/superpowers/specs/2026-09-17-phase7-api-design.md`.
+
+**Setup.** Put the keys in `.env`, and never commit it:
+
+```bash
+python -c "import secrets; print(secrets.token_urlsafe(32))"   # one per client
+# .env
+API_KEYS=<demo key>,<admin key>,<prometheus key>
+API_ADMIN_KEYS=<admin key>          # must also be in API_KEYS; blank disables reload
+API_RATE_LIMIT_PER_MINUTE=60
+```
+
+`python -m api serve [--host 127.0.0.1] [--port 8000]` starts uvicorn with one worker.
+- The components load at startup: price, forecast, search, listings and areas.
+- One component failing to load doesn't stop the service: its routes return 503, and `/v1/ready` shows why.
+
+| Method and path | Returns |
+|---|---|
+| `GET /health` | `{"status": "ok"}`. Public; liveness only. |
+| `GET /v1/ready` | Each component's `up`, `version` and redacted `error`. A lost database connection shows as down. |
+| `POST /v1/price` | The Phase 3 estimate: `estimate_aed`, 80% and 95% ranges, confidence, market label |
+| `POST /v1/forecast` | The Phase 6 forecast JSON: 3m with range and confidence; 1y and 3y `not_deployed`, with the gate's reason |
+| `GET /v1/search?q=...&k=10` | Phase 5 ranked results, with reasons, notes and `duplicates_hidden` |
+| `GET /v1/listings/{id}/flags` | Stored duplicate pairs and fraud flags from the latest detection run on the current corpus |
+| `POST /v1/listings/check` | A **new** listing scored on the fly: duplicates with their 12 signals, plus `bait_price`, `photo_reuse` and `inconsistent_relist` flags |
+| `GET /v1/areas`, `GET /v1/areas/{id}/history` | 12-month area medians and changes, and monthly history per property kind (used by the demo) |
+| `POST /v1/admin/reload` | Rebuilds every component and swaps it in. Admin keys only; returns 409 while a reload is already running. |
+| `GET /metrics` | Prometheus text: request count and latency per route, `api_component_up`, `api_model_info` |
+
+**Auth and errors.**
+- **Keys:** send the key as `X-API-Key: <key>` or `Authorization: Bearer <key>`. Every `/v1` route and `/metrics` require one.
+- **Rate limits:** each key has its own token bucket. An empty bucket returns 429 with a `Retry-After` header.
+- **Error format:** every error has the same shape: `{"error": {"code", "message", "field"}, "request_id"}`.
+  - Codes: `unauthorized`, `forbidden`, `not_found`, `method_not_allowed`, `conflict`, `invalid_input`, `rate_limited`, `unavailable` and `internal`.
+  - Tracebacks never reach a response.
+
+```bash
+KEY=<one of API_KEYS>
+curl -s -H "X-API-Key: $KEY" localhost:8000/v1/ready
+curl -s -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+  -d '{"area":"Dubai Marina","property_kind":"apartment","status":"ready","size_sqm":85,"bedrooms":1}' \
+  localhost:8000/v1/forecast
+curl -s -H "X-API-Key: $KEY" "localhost:8000/v1/search?q=2%20bed%20in%20dubai%20marina%20under%202m&k=5"
+curl -s -H "X-API-Key: $KEY" localhost:8000/v1/listings/1/flags
+```
+
+**Observability.**
+- **Logs:** one JSON line per request, with `request_id`, method, path, status, duration and `key_id`.
+  - `key_id` is the first 8 hex characters of the key's SHA-256.
+  - Keys and request bodies are never logged.
+- **Request IDs:** `X-Request-ID` is echoed back, or generated if absent.
+
+**Concurrency and recovery.**
+- **Locks:** the search engine and the listing checker each hold one Postgres connection and are used under a lock.
+- **Reload:** it closes an old component only once that component's lock is free, so requests in flight finish first.
+- **Lost connections:** a dropped database connection turns into a 503 ("reconnecting") and triggers a background rebuild of just that component.
+
+**Real smoke run.** `python -m api smoke` runs every endpoint in-process against the real stack. Results from 17 Sep 2026:
+- Startup took 334 s, mostly downloading model artifacts and loading MiniLM on a heavily loaded machine.
+- `serve` came up in 50 s on a second start.
+
+| Endpoint | Status | First call (ms) | Warm (ms) |
+|---|---|---|---|
+| `GET /v1/ready` | 200 | 15.6 | 5.7 |
+| `POST /v1/price` | 200 | 140.6 | 18.0 |
+| `POST /v1/forecast` | 200 | 42.1 | 34.9 |
+| `GET /v1/search` | 200 | 532.8 | 59.8 |
+| `GET /v1/listings/1/flags` | 200 | 160.1 | 6.7 |
+| `POST /v1/listings/check` | 200 | 3,292.7 | 60.5 |
+| `GET /v1/areas` | 200 | 8.8 | 3.5 |
+| `GET /v1/areas/526/history` | 200 | 8.0 | 5.2 |
+| `GET /metrics` | 200 | 13.3 | 9.8 |
+
+**Duplicate pair model.** `python -m listings detect` now registers the Phase 4 pair model as `zestimator-duplicate-pair@champion`, which the listing check needs. The real run (detection run 4, 814 s):
+- scored 598,533 candidate pairs;
+- flagged 754 at threshold 0.9995, plus 965 price-blind;
+- registered v1.
+
+**Limits.**
+- **Photos:** `POST /v1/listings/check` only compares photos already in the corpus (`photo_ids`). It never embeds uploaded images.
+- **Relists:** its relist check uses the new listing's direct neighbours, not Phase 4's transitive clusters.
+- **Forecasts:** only the 3-month champion serves forecasts, and it behaves like an average-growth rule (see "Price forecasting").
+
+## Demo
+
+`demo/` is a Streamlit app that talks only to the API, over HTTP, with its key held server-side. It never touches the database or MLflow. Design: `docs/superpowers/specs/2026-09-17-phase8-demo-design.md`.
+
+```bash
+# .env: DEMO_API_URL=http://127.0.0.1:8000 and DEMO_API_KEY=<one of API_KEYS>
+uv run python -m api serve --port 8000
+uv run python -m demo --port 8501        # binds 127.0.0.1; --host 0.0.0.0 to expose it
+```
+
+| Page | What it does |
+|---|---|
+| Price & forecast | Choose area, kind, status, size and bedrooms to get the estimate with its 80% range and the 3-month forecast. Undeployed horizons show the gate's reason. Also shows key drivers and the exclusions applied. |
+| Search | Plain-English search, with the parsed query, notes, reasons per result and hidden-duplicate counts |
+| Listing check | Enter an existing listing id to see its stored flags, or a new listing to score it on the fly |
+| Area explorer | A sortable table of 12-month medians and changes, plus monthly price and sales charts per property kind |
+| About | Data source and limits, how each model is gated, and live deployment status |
+
+Every page shows "Data as of 2023-03-17", and the listing pages say the listings are synthetic. There is **no map**: DLD has no coordinates, and geocoding was declined.
+
+**Live check.** On 17 Sep 2026, every page ran through `streamlit.testing.v1.AppTest` against the running API with no exceptions or error messages. The `http://127.0.0.1:8501/_stcore/health` check returned `ok`.
+
+| Page | Time | Result |
+|---|---|---|
+| Home | 3.9 s | Loaded |
+| Price & forecast | 3.0 s | An AED 2,117,511 estimate for the default 120 m² Marsa Dubai flat |
+| Search | 1.9 s | 10 results |
+| Listing check | 1.4 s | Loaded |
+| Area explorer | 1.1 s | Loaded |
+| About | 0.3 s | Loaded |
+
 ## Cost breakdown (current)
 
 | Component | Cost |
@@ -1031,6 +1154,8 @@ known.
 | Photo dataset + embedding models (one-off download) | $0 — about 0.8 GB on disk |
 | Search queries, embeddings and ranker tuning (local RTX 3060) | $0 — GPU time on your machine |
 | Price forecast training (local RTX 3060, CUDA) | $0 — GPU time on your machine |
+| API + demo containers, Prometheus, Grafana | $0 — local Docker |
+| Public link (Cloudflare quick tunnel) | $0 — no account needed |
 
 Hosting stays at $0: Phase 10 (deploy and monitor) shares the local Docker stack
 through a free Cloudflare Tunnel instead of a cloud service.
@@ -1140,7 +1265,7 @@ bound to `127.0.0.1`. Nothing is public unless you start a tunnel.
   listed in `API_KEYS`. Use a separate key from `DEMO_API_KEY`: rate limits are per key, so a
   shared key would put the scrapes in the demo's rate-limit bucket. If it is unset, Prometheus
   falls back to the first `API_KEYS` entry.
-- `API_ADMIN_KEYS`: optional, the keys allowed to call `POST /v1/admin/reload`.
+- `API_ADMIN_KEYS`: optional, the keys allowed to call `POST /v1/admin/reload`. Every admin key must also be listed in `API_KEYS`, or the API refuses to start.
 - `API_PORT` / `DEMO_PORT` (default 8000 / 8501). Optionally, `PROMETHEUS_PORT` / `GRAFANA_PORT` (default 9090 / 3000).
 
 **Build and start:**
@@ -1303,8 +1428,8 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
 - `listings/` — synthetic listings corpus, duplicate detection, fraud flags (`python -m listings`)
 - `search/` — query parser, two-channel retrieval, learning-to-rank ranker, search engine (`python -m search`)
 - `models/forecast/` — 3-month / 1-year / 3-year price-growth forecasts: rows, targets, features, walk-forward folds, XGBoost per horizon, conformal ranges, predictor (`python -m models.forecast`)
-- `api/` — FastAPI service (Phase 7)
-- `demo/` — Streamlit app (Phase 8)
+- `api/` — FastAPI service: auth, rate limits, JSON logs, metrics, and the price/forecast/search/listings/areas routes (`python -m api serve|smoke`, Phase 7)
+- `demo/` — Streamlit demo over the API: price & forecast, search, listing check, and the area explorer (`python -m demo`, Phase 8)
 - `pipelines/` — scheduled retraining pipeline: ingest → price → listings → search → forecast, one gated stage at a time (`python -m pipelines retrain`, Phase 9)
 - `monitoring/` — drift report (`python -m monitoring drift`), Prometheus scrape config and Grafana provisioning + dashboard; `Dockerfile.api`, `Dockerfile.demo` and the compose profiles `monitoring` / `tunnel` / `tunnel-named` (Phase 10)
 - `.github/` — CI/CD: `workflows/ci.yml` (lint, test, docker), `workflows/release.yml` (GHCR on a `v*` tag), `dependabot.yml` (Phase 9)
