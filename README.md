@@ -120,8 +120,8 @@ Each phase went through the same steps: a design spec, then an implementation
 plan, then a build by subagents, then a review against the spec, with fixes
 before the next phase started. Specs and plans are in `docs/superpowers/`.
 
-- **Tests:** 1,000 tests run in CI (`uv run pytest --collect-only -q -m "not gpu
-  and not live"` collects 1,000 of 1,005; the other 5 need a GPU or the full live
+- **Tests:** 1,002 tests run in CI (`uv run pytest --collect-only -q -m "not gpu
+  and not live"` collects 1,002 of 1,007; the other 5 need a GPU or the full live
   stack).
 - **CI:** GitHub Actions runs lint, tests against a pgvector Postgres, and
   Docker builds. `scripts/ci.py` runs the same checks locally.
@@ -1570,6 +1570,19 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
 - **Port already in use**: change `API_PORT`, `DEMO_PORT`, `PROMETHEUS_PORT` or `GRAFANA_PORT` in `.env`.
 - **Disk**: the API image is the big one. `docker image ls zestimator-*` shows the sizes. Old
   build cache can be removed with `docker builder prune`, which never touches volumes.
+
+**Live deployment check (17 Sep 2026).** Run against the real stack on the host PC (RTX 3060, 16 GB RAM):
+
+- **Build.** `docker compose build api demo`. The API image is 3.41 GB (787 MB compressed) and the demo image 815 MB. The first API build took about 2 hours on a loaded machine; a code-only rebuild takes under a minute.
+- **Model-loading bug found and fixed.** Inside the container, the price, forecast, search and pair models first failed to load. They had been logged from Windows, so MLflow recorded their artifact paths with backslashes (`artifacts\model_dir`), and Linux read each path as one missing file name. `models.price.pyfunc.artifact_dir` now converts those paths; commit `0409470`.
+- **Components.** After the fix, `/v1/ready` in the container reported all five components up: price v2, forecast `3m:1`, search ranker v2, pair model `pair:1` and areas.
+- **Endpoints.** Every endpoint returned 200 from `localhost:8000`. Warm calls took 0.2–0.3 s, which includes about 0.2 s of Docker Desktop port-forwarding overhead. `/_stcore/health` on the demo returned `ok`, and the demo container reached `http://api:8000` over the compose network.
+- **Monitoring.**
+  - Prometheus reported both scrape targets (`prometheus`, `zestimator-api`) as `up`.
+  - `api_component_up` was 1 for all five components.
+  - Grafana was healthy and had provisioned the "Zestimator API" dashboard.
+- **Tunnel.** A quick tunnel issued a `trycloudflare.com` URL. Through it, `/_stcore/health` returned 200, and `/v1/ready` returned the Streamlit page, not the API: the tunnel can reach only the demo, which is the only container on the `public` network. The tunnel was stopped right after the check.
+- **Memory.** The API container used about 690 MB with every component loaded, and the demo about 53 MB.
 
 ## Cost breakdown
 

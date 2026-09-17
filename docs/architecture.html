@@ -354,11 +354,12 @@
     <p class="eyebrow">Dubai Land Department · machine learning platform</p>
     <h1>Zestimator</h1>
     <p class="lede">Price estimation, duplicate &amp; fraud detection, property search and price forecasting over 1,047,965 real Dubai
-      Land Department transactions. Eleven phases, built one at a time — each with its own spec, plan, tests and review.</p>
+      Land Department transactions, served through one API and a Streamlit demo. Eleven phases, each with its own spec,
+      plan, tests and review — all eleven shipped.</p>
     <div class="meta">
       <span>as of <b>17 Sep 2026</b></span>
-      <span><b>141</b> commits</span>
-      <span><b>747</b> tests</span>
+      <span><b>174</b> commits</span>
+      <span><b>1007</b> tests</span>
       <span>estimates as of <b>Q1 2023</b> (data ends 2023-03-17)</span>
       <span>runs on <b>Docker + one RTX 3060</b></span>
     </div>
@@ -367,15 +368,15 @@
   <section>
     <div class="section-head">
       <h2>Build status</h2>
-      <p>Six phases shipped. The unified API is being built.</p>
+      <p>All eleven phases shipped.</p>
     </div>
-    <div class="strip" role="img" aria-label="Phase progress: phases 1 to 6 complete, phase 7 in progress, phases 8 to 11 planned">
+    <div class="strip" role="img" aria-label="Phase progress: all eleven phases complete">
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
       <div class="seg" data-state="done"></div>
-      <div class="seg" data-state="done"></div><div class="seg" data-state="done"></div><div class="seg" data-state="active"></div><div class="seg"></div>
-      <div class="seg"></div><div class="seg"></div><div class="seg"></div>
+      <div class="seg" data-state="done"></div><div class="seg" data-state="done"></div><div class="seg" data-state="done"></div><div class="seg" data-state="done"></div>
+      <div class="seg" data-state="done"></div><div class="seg" data-state="done"></div><div class="seg" data-state="done"></div>
     </div>
     <div class="strip-key">
       <span><i class="dot" style="background: var(--done)"></i> shipped</span>
@@ -475,19 +476,19 @@
             <div class="detail">3m served · 1y / 3y not deployed · GPU · 5 min</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div class="station" data-state="active">
-            <div class="name">FastAPI</div>
-            <div class="detail">phase 7 · keys · rate limits · /metrics</div>
+          <div class="station">
+            <div class="name"><code>python -m api serve</code></div>
+            <div class="detail">keys · rate limits · /metrics · warm 3–60 ms</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div class="station" data-state="planned">
-            <div class="name">Streamlit demo</div>
-            <div class="detail">phase 8</div>
+          <div class="station">
+            <div class="name"><code>python -m demo</code></div>
+            <div class="detail">Streamlit · 5 pages · key held server-side</div>
           </div>
           <div class="arrow" aria-hidden="true">→</div>
-          <div class="station" data-state="planned">
-            <div class="name">Cloudflare Tunnel + Evidently</div>
-            <div class="detail">phases 9–10 · local Docker, public link</div>
+          <div class="station">
+            <div class="name">Cloudflare Tunnel · Prometheus · Grafana</div>
+            <div class="detail">demo only · API 3.41 GB CPU image · verified live</div>
           </div>
         </div>
       </div>
@@ -552,41 +553,45 @@
         <div class="pill" data-state="done">shipped</div>
       </article>
 
-      <article class="phase" data-state="active">
+      <article class="phase" data-state="done">
         <div class="num">07</div>
-        <div class="what"><b>API</b><span>in progress · 17 Sep 2026</span></div>
-        <div class="detail">One FastAPI service: price estimate, forecast, search, stored listing flags and on-the-fly
-          checks of new listings. API keys, per-key rate limits, JSON logs, request IDs and Prometheus metrics.</div>
-        <div class="pill" data-state="active">in progress</div>
+        <div class="what"><b>API</b><span>17 Sep 2026</span></div>
+        <div class="detail">One FastAPI service: price, forecast, search, stored listing flags, on-the-fly checks of new
+          listings and area statistics. API keys, per-key rate limits, JSON logs, request IDs, Prometheus metrics,
+          lock-safe reload and database reconnects.</div>
+        <div class="pill" data-state="done">shipped</div>
       </article>
 
-      <article class="phase" data-state="planned">
+      <article class="phase" data-state="done">
         <div class="num">08</div>
-        <div class="what"><b>Demo UI</b></div>
-        <div class="detail">Streamlit: area map, estimator and forecast form, search bar.</div>
-        <div class="pill">planned</div>
+        <div class="what"><b>Demo UI</b><span>17 Sep 2026</span></div>
+        <div class="detail">Streamlit, talking only to the API: price &amp; forecast, plain-English search, listing checks
+          and an area explorer. No map — DLD has no coordinates.</div>
+        <div class="pill" data-state="done">shipped</div>
       </article>
 
-      <article class="phase" data-state="planned">
+      <article class="phase" data-state="done">
         <div class="num">09</div>
-        <div class="what"><b>CI/CD</b></div>
-        <div class="detail">GitHub Actions for tests and lint, plus scheduled retraining.</div>
-        <div class="pill">planned</div>
+        <div class="what"><b>CI/CD</b><span>17 Sep 2026</span></div>
+        <div class="detail">GitHub Actions for lint, database tests and image builds (ready for the first push), a local
+          runner with the same steps, and <code>python -m pipelines retrain</code> for scheduled, gated retraining.</div>
+        <div class="pill" data-state="done">shipped</div>
       </article>
 
-      <article class="phase" data-state="planned">
+      <article class="phase" data-state="done">
         <div class="num">10</div>
-        <div class="what"><b>Deploy &amp; monitor</b></div>
-        <div class="detail">The Docker Compose stack shared through a free Cloudflare Tunnel (live while the host PC is
-          on), with Evidently watching for drift. The container stays Cloud Run-compatible.</div>
-        <div class="pill">planned</div>
+        <div class="what"><b>Deploy &amp; monitor</b><span>17 Sep 2026</span></div>
+        <div class="detail">CPU-only API and demo images, a public link through a free Cloudflare Tunnel (demo only, on
+          an isolated network), Prometheus + Grafana, and a PSI/KS drift report.</div>
+        <div class="pill" data-state="done">shipped</div>
       </article>
 
-      <article class="phase" data-state="planned">
+      <article class="phase" data-state="done">
         <div class="num">11</div>
-        <div class="what"><b>Documentation</b></div>
-        <div class="detail">Final README, this diagram, and the cost breakdown.</div>
-        <div class="pill">planned</div>
+        <div class="what"><b>Documentation</b><span>17 Sep 2026</span></div>
+        <div class="detail">README front page with results at a glance, quickstart and honest limitations; this page;
+          and the design-decisions casebook.</div>
+        <div class="pill" data-state="done">shipped</div>
       </article>
 
     </div>
@@ -694,6 +699,33 @@
       </div>
 
       <div class="panel wide">
+        <h3>API smoke run <em>phase 07</em></h3>
+        <div class="scroll">
+          <table>
+            <thead>
+              <tr><th>Endpoint</th><th class="n">Status</th><th class="n">First call</th><th class="n">Warm</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>POST /v1/price</td><td class="n">200</td><td class="n">141 ms</td><td class="n">18 ms</td></tr>
+              <tr><td>POST /v1/forecast</td><td class="n">200</td><td class="n">42 ms</td><td class="n">35 ms</td></tr>
+              <tr><td>GET /v1/search</td><td class="n">200</td><td class="n">533 ms</td><td class="n">60 ms</td></tr>
+              <tr><td>GET /v1/listings/{id}/flags</td><td class="n">200</td><td class="n">160 ms</td><td class="n">7 ms</td></tr>
+              <tr><td>POST /v1/listings/check</td><td class="n">200</td><td class="n">3.3 s</td><td class="n">61 ms</td></tr>
+              <tr><td>GET /v1/areas · history</td><td class="n">200</td><td class="n">9 ms</td><td class="n">4–5 ms</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="facts">
+          <div class="fact"><span>Components loaded</span><b>price · forecast-3m · search · listings · areas</b></div>
+          <div class="fact"><span>Duplicate pair model</span><b>registered v1 · threshold 0.9995</b></div>
+          <div class="fact"><span>Demo pages, live against the API</span><b>6 of 6 · no errors</b></div>
+          <div class="fact"><span>Deployment check</span><b>containers healthy · all endpoints 200 · tunnel reached</b></div>
+        </div>
+        <p class="note">Measured in-process on 17 Sep 2026 with every champion loaded. The first listing check pays for
+          loading the text model; after that each check takes about 60 ms.</p>
+      </div>
+
+      <div class="panel wide">
         <h3>Price forecasting results <em>phase 06</em></h3>
         <div class="scroll">
           <table>
@@ -734,9 +766,12 @@
       <b>models/forecast/</b><span>rows, exact-window targets, as-of features, infrastructure table, walk-forward folds, gates, the Forecaster, <code>python -m models.forecast</code></span>
       <b>search/</b><span>query parser, synthetic graded queries, retrieval, features, rankers, evaluation, the search engine, <code>python -m search</code></span>
       <b>dags/</b><span>Airflow: the ingestion pipeline, triggered by hand</span>
-      <b>api/</b><span>FastAPI service — phase 7, being built</span>
-      <b>demo/</b><span data-state="planned">Streamlit app — phase 8</span>
-      <b>tests/</b><span>747 tests, including one per non-negotiable edge case</span>
+      <b>api/</b><span>FastAPI service: auth, rate limits, logs, metrics, every model's routes, <code>python -m api</code></span>
+      <b>demo/</b><span>Streamlit demo over the API, <code>python -m demo</code></span>
+      <b>pipelines/</b><span>gated retraining, stage by stage, <code>python -m pipelines retrain</code></span>
+      <b>monitoring/</b><span>drift report, Prometheus and Grafana config</span>
+      <b>.github/</b><span>CI (lint, tests, image builds), release and Dependabot</span>
+      <b>tests/</b><span>1007 tests, including one per non-negotiable edge case</span>
       <b>docs/</b><span>a spec and an implementation plan for every phase, plus this page</span>
     </div>
   </section>
@@ -759,6 +794,10 @@
           <tr><td>XGBoost / LightGBM</td><td>3.2 · 4.7</td><td>price model, search rankers</td><td class="n">$0</td></tr>
           <tr><td>PyTorch + sentence-transformers</td><td>2.9.1+cu128</td><td>CLIP and text embeddings on the GPU</td><td class="n">$0</td></tr>
           <tr><td>Polars</td><td>1.44</td><td>all data wrangling</td><td class="n">$0</td></tr>
+          <tr><td>FastAPI + uvicorn</td><td>0.141</td><td>the unified API</td><td class="n">$0</td></tr>
+          <tr><td>Streamlit</td><td>1.64</td><td>the demo</td><td class="n">$0</td></tr>
+          <tr><td>Prometheus + Grafana</td><td>—</td><td>metrics and dashboards</td><td class="n">$0</td></tr>
+          <tr><td>Cloudflare Tunnel</td><td>quick tunnel</td><td>public link while the PC is on</td><td class="n">$0</td></tr>
         </tbody>
       </table>
     </div>
@@ -767,6 +806,14 @@
   <section>
     <div class="section-head"><h2>Build log</h2></div>
     <div class="log">
+      <div class="entry">
+        <time>17 Sep 2026</time>
+        <p><b>Phases 7–11 shipped overnight.</b> Built in parallel, with one review per phase. The API review found
+          connections that a reload could close mid-request and no recovery after a database restart; both are fixed.
+          The demo review caught two forms that sent invalid requests, which the tests missed because the fake client
+          ignored request bodies. Postgres restarted twice under the combined load of image builds and database tests,
+          so heavy work now runs one job at a time. The containerised API first failed to load any model, because models saved on Windows record their file paths with backslashes; a one-line path fix repaired it. After that, every endpoint returned 200 from the containers, Prometheus scraped all five components, and a quick Cloudflare tunnel served the demo publicly before being stopped again.</p>
+      </div>
       <div class="entry">
         <time>17 Sep 2026</time>
         <p><b>Phase 6 shipped.</b> Three forecasting horizons trained in about five minutes on the GPU. The whole-phase
