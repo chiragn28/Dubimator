@@ -46,5 +46,22 @@ jobs:
             ghcr.io/${{ github.repository }}/airflow:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}/airflow:latest
 
-      # Phase 10 adds Dockerfiles for the FastAPI service and the Streamlit demo; this
-      # workflow builds and pushes those images too once they exist.
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/api:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}/api:latest
+
+      - name: Build and push demo image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.demo
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}/demo:${{ github.ref_name }}
+            ghcr.io/${{ github.repository }}/demo:latest

@@ -104,5 +104,8 @@ jobs:
       - name: Build Airflow image
         run: docker build -f Dockerfile.airflow -t zestimator-airflow:ci .
 
-      # Phase 10 adds Dockerfiles for the API and the Streamlit demo; this job builds them
-      # here too once they exist.
+      - name: Build API image
+        run: docker build -f Dockerfile.api -t zestimator-api:ci .
+
+      - name: Build demo image
+        run: docker build -f Dockerfile.demo -t zestimator-demo:ci .
