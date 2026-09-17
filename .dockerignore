@@ -1,0 +1,16 @@
+.venv
+.git
+.github
+data
+mlruns
+.superpowers
+graphify-out
+tests
+docs
+**/__pycache__
+**/*.pyc
+.pytest_cache
+.ruff_cache
+.env
+.env.*
+!.env.example

@@ -1,0 +1,56 @@
+# syntax=docker/dockerfile:1
+# Zestimator API (Phase 7) — CPU-only serving image.
+# uv sync installs the locked dependencies except torch and the CUDA wheels torch/xgboost pull
+# in on Linux; torch then comes from the PyTorch CPU index (same 2.9.1 release as uv.lock).
+
+FROM ghcr.io/astral-sh/uv:0.8.4 AS uv
+
+FROM python:3.11-slim AS builder
+COPY --from=uv /uv /bin/uv
+ENV UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=1 \
+    UV_LINK_MODE=copy \
+    UV_PYTHON_DOWNLOADS=never \
+    UV_PROJECT_ENVIRONMENT=/opt/venv
+WORKDIR /build
+COPY pyproject.toml uv.lock ./
+# Every nvidia-* / triton package in uv.lock is skipped (scripted, not hand-listed), then the
+# build fails if any nvidia-* package still made it into the environment.
+RUN set -eu; \
+    excludes="$(python -c "import tomllib; names = sorted({p['name'] for p in tomllib.load(open('uv.lock', 'rb'))['package']}); print(' '.join('--no-install-package ' + n for n in names if n in ('torch', 'triton') or n.startswith('nvidia-')))")"; \
+    echo "uv sync exclusions: $excludes"; \
+    uv sync --frozen --no-dev --no-install-project $excludes; \
+    uv pip install --python /opt/venv/bin/python --index-url https://download.pytorch.org/whl/cpu "torch==2.9.1"; \
+    if uv pip list --python /opt/venv/bin/python | grep -iE '^nvidia-'; then \
+        echo "CUDA packages found in the API image" >&2; exit 1; \
+    fi; \
+    /opt/venv/bin/python -c "import torch, xgboost, lightgbm; assert not torch.version.cuda, torch.version.cuda; print('torch', torch.__version__, 'xgboost', xgboost.__version__)"
+
+FROM python:3.11-slim
+# libgomp1: OpenMP runtime for xgboost and lightgbm (not in the slim base).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --system app \
+    && useradd --system --gid app --create-home --home-dir /home/app app
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH=/opt/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    HF_HOME=/home/app/.cache/huggingface
+WORKDIR /app
+# Models are MLflow pyfuncs logged without code_paths, so the repository code must be importable.
+COPY api ./api
+COPY models ./models
+COPY listings ./listings
+COPY search ./search
+COPY ingestion ./ingestion
+COPY monitoring ./monitoring
+COPY pipelines ./pipelines
+# Pre-create the cache dir so the hf_cache named volume inherits app ownership.
+RUN mkdir -p /home/app/.cache/huggingface && chown -R app:app /home/app
+USER app
+EXPOSE 8000
+HEALTHCHECK --interval=15s --timeout=5s --start-period=180s --retries=5 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=4)"]
+CMD ["python", "-m", "api", "serve", "--host", "0.0.0.0", "--port", "8000"]
