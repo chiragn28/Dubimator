@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import json
 import logging
 
@@ -6,7 +7,7 @@ import pytest
 
 from api.errors import ApiError
 from api.logging import JsonFormatter, new_request_id, request_id_var
-from api.security import RateLimiter, check_key, extract_key, key_id
+from api.security import RateLimiter, check_admin, check_key, extract_key, key_id
 from api.settings import COMPONENTS, ApiSettings
 
 
@@ -50,6 +51,36 @@ def test_key_helpers():
     assert check_key(None, settings) is None
 
 
+def test_admin_keys_from_env():
+    settings = ApiSettings.from_env({"API_KEYS": "a1,b2", "API_ADMIN_KEYS": " b2 ,"})
+    assert settings.admin_keys == ("b2",)
+    assert ApiSettings.from_env({"API_KEYS": "a1"}).admin_keys == ()
+    with pytest.raises(RuntimeError, match="API_ADMIN_KEYS"):
+        ApiSettings.from_env({"API_KEYS": "a1", "API_ADMIN_KEYS": "zz"})
+
+
+def test_check_admin():
+    settings = ApiSettings.from_env({"API_KEYS": "a1,b2", "API_ADMIN_KEYS": "b2"})
+    assert check_admin("b2", settings)
+    assert not check_admin("a1", settings)
+    assert not check_admin(None, settings)
+
+
+def test_check_key_compares_every_key_by_digest(monkeypatch):
+    compared = []
+    real = hmac.compare_digest
+
+    def spy(a, b):
+        compared.append((a, b))
+        return real(a, b)
+
+    monkeypatch.setattr(hmac, "compare_digest", spy)
+    settings = ApiSettings.from_env({"API_KEYS": "k1,k2,k3"})
+    assert check_key("k1", settings) == "k1"
+    assert len(compared) == 3  # no early return on the first match
+    assert all(len(a) == len(b) == 32 for a, b in compared)  # SHA-256 digests, not keys
+
+
 def test_rate_limiter_refills_over_time():
     now = [0.0]
     limiter = RateLimiter(per_minute=2, clock=lambda: now[0])
@@ -69,6 +100,7 @@ def test_request_ids():
     assert len(generated) == 32 and generated.isalnum()
     assert new_request_id("x" * 65) != "x" * 65
     assert len(new_request_id(None)) == 32
+    assert new_request_id("abc\n") != "abc\n"  # a bare "$" would accept a trailing newline
 
 
 def test_json_formatter_includes_request_id_and_extras():

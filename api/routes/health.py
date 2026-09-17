@@ -18,4 +18,4 @@ def ready(
     state: AppState = Depends(current_state),  # noqa: B008 — FastAPI's own dependency idiom
     _key: str = Depends(require_key),
 ) -> dict:
-    return {"components": state.status()}
+    return {"components": state.status(live=True)}

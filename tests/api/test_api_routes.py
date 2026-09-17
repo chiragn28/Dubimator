@@ -4,9 +4,15 @@ Every route needs the key; api_fixtures' fakes give predictable, fast responses 
 tests never load a real model or touch a database.
 """
 
+import json
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
-from api_fixtures import KEY, client, fake_loaders, settings
+import psycopg2
+import pytest
+from api_fixtures import KEY, FakeChecker, FakeEngine, client, fake_loaders, settings
+
+from api.state import LoadedComponent
 
 PRICE_BODY = {
     "area": "Dubai Marina",
@@ -89,7 +95,12 @@ def test_search_k_too_large_is_a_422():
 
 
 def test_search_serializes_concurrent_calls():
-    with client(settings(), fake_loaders()) as c:
+    engine = FakeEngine(delay=0.05)
+
+    def load(settings, context):
+        return LoadedComponent(value=engine, version="v")
+
+    with client(settings(), fake_loaders(search=load)) as c:
 
         def call(i):
             return c.get("/v1/search", params={"q": f"flat {i}"}, headers=_headers())
@@ -97,6 +108,8 @@ def test_search_serializes_concurrent_calls():
         with ThreadPoolExecutor(max_workers=5) as pool:
             responses = list(pool.map(call, range(5)))
     assert all(response.status_code == 200 for response in responses)
+    assert engine.calls == 5
+    assert engine.max_active == 1
 
 
 # --- listings --------------------------------------------------------------------------
@@ -126,6 +139,145 @@ def test_listing_check_unknown_photo_id_is_a_422():
         )
     assert response.status_code == 422
     assert response.json()["error"]["field"] == "photo_ids"
+
+
+def test_listing_check_rejects_an_infinite_number_sent_as_json():
+    raw = json.dumps(CHECK_BODY).replace('"size_sqm": 80.0', '"size_sqm": 1e309')
+    assert "1e309" in raw
+    with client(settings(), fake_loaders()) as c:
+        response = c.post(
+            "/v1/listings/check",
+            content=raw,
+            headers={**_headers(), "Content-Type": "application/json"},
+        )
+    assert response.status_code == 422
+    assert response.json()["error"]["field"] == "size_sqm"
+
+
+def test_forecast_rejects_an_infinite_number_sent_as_json():
+    raw = json.dumps(PRICE_BODY).replace('"size_sqm": 80.0', '"size_sqm": 1e309')
+    with client(settings(), fake_loaders()) as c:
+        response = c.post(
+            "/v1/forecast",
+            content=raw,
+            headers={**_headers(), "Content-Type": "application/json"},
+        )
+    assert response.status_code == 422
+
+
+def test_listing_check_rejects_unknown_fields():
+    with client(settings(), fake_loaders()) as c:
+        response = c.post(
+            "/v1/listings/check", json={**CHECK_BODY, "area": "Dubai Marina"}, headers=_headers()
+        )
+    assert response.status_code == 422
+    assert response.json()["error"]["field"] == "area"
+
+
+# --- lost database connections ----------------------------------------------------------
+
+
+class _DroppedEngine:
+    def search(self, text, k):
+        raise psycopg2.OperationalError("server closed the connection unexpectedly")
+
+
+class _DroppedChecker:
+    def check(self, request):
+        raise psycopg2.InterfaceError("connection already closed")
+
+    def stored(self, listing_id):
+        raise psycopg2.OperationalError("SSL SYSCALL error: EOF detected")
+
+
+def _flaky(broken_factory, healthy_factory):
+    """A loader whose first load gives a component with a dead connection."""
+    calls = []
+
+    def load(settings, context):
+        calls.append(1)
+        value = broken_factory() if len(calls) == 1 else healthy_factory()
+        return LoadedComponent(value=value, version=f"v{len(calls)}")
+
+    load.calls = calls
+    return load
+
+
+def _join_rebuilds(c):
+    for thread in threading.enumerate():
+        if thread.name.startswith("rebuild-"):
+            thread.join(5)
+
+
+def _assert_reconnecting(response, name):
+    assert response.status_code == 503
+    error = response.json()["error"]
+    assert error["code"] == "unavailable"
+    assert error["message"] == (
+        f"{name} lost its database connection; it is reconnecting — retry shortly"
+    )
+
+
+def test_search_lost_connection_is_a_503_and_triggers_a_rebuild():
+    search = _flaky(_DroppedEngine, FakeEngine)
+    with client(settings(), fake_loaders(search=search)) as c:
+        lost = c.get("/v1/search", params={"q": "flat"}, headers=_headers())
+        _assert_reconnecting(lost, "search")
+        _join_rebuilds(c)
+        assert len(search.calls) == 2
+        again = c.get("/v1/search", params={"q": "flat"}, headers=_headers())
+        ready = c.get("/v1/ready", headers=_headers()).json()["components"]["search"]
+    assert again.status_code == 200
+    assert ready["version"] == "v2"
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "kwargs"),
+    [
+        ("post", "/v1/listings/check", {"json": CHECK_BODY}),
+        ("get", "/v1/listings/1/flags", {}),
+    ],
+)
+def test_listings_lost_connection_is_a_503_and_triggers_a_rebuild(method, path, kwargs):
+    listings = _flaky(_DroppedChecker, FakeChecker)
+    with client(settings(), fake_loaders(listings=listings)) as c:
+        lost = getattr(c, method)(path, headers=_headers(), **kwargs)
+        _assert_reconnecting(lost, "listings")
+        _join_rebuilds(c)
+        assert len(listings.calls) == 2
+        again = getattr(c, method)(path, headers=_headers(), **kwargs)
+    assert again.status_code == 200
+
+
+def test_ready_reports_a_component_whose_probe_fails_as_down():
+    def search(settings, context):
+        return LoadedComponent(value=FakeEngine(), version="v", check=lambda: False)
+
+    with client(settings(), fake_loaders(search=search)) as c:
+        components = c.get("/v1/ready", headers=_headers()).json()["components"]
+        metrics = c.get("/metrics", headers=_headers()).text
+    assert components["search"]["up"] is False
+    assert components["search"]["error"] == "database connection lost"
+    assert components["price"]["up"] is True
+    assert 'api_component_up{component="search"} 0.0' in metrics
+
+
+def test_a_503_never_shows_connection_details():
+    def leaky(settings, context):
+        raise psycopg2.OperationalError(
+            'connection to server at "db.internal" (10.1.2.3), port 5432 failed: '
+            'FATAL: password authentication failed for user "zest"'
+        )
+
+    with client(settings(), fake_loaders(search=leaky)) as c:
+        response = c.get("/v1/search", params={"q": "flat"}, headers=_headers())
+        ready = c.get("/v1/ready", headers=_headers()).text
+    assert response.status_code == 503
+    for text in (response.text, ready):
+        assert "db.internal" not in text
+        assert "10.1.2.3" not in text
+        assert '"zest"' not in text
+    assert "OperationalError: " in response.json()["error"]["message"]
 
 
 # --- partial availability ---------------------------------------------------------------

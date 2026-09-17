@@ -18,6 +18,8 @@ class ApiSettings:
     components: tuple[str, ...] = COMPONENTS
     embed_device: str = "auto"
     auth_enabled: bool = True
+    # Keys allowed to call POST /v1/admin/reload; empty disables reload.
+    admin_keys: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls, environ=None) -> "ApiSettings":
@@ -36,6 +38,9 @@ class ApiSettings:
         unknown = sorted(set(components) - set(COMPONENTS))
         if unknown:
             raise RuntimeError(f"API_COMPONENTS has unknown names: {unknown}")
+        admin_keys = _csv(env.get("API_ADMIN_KEYS"))
+        if set(admin_keys) - set(keys):
+            raise RuntimeError("every API_ADMIN_KEYS key must also be listed in API_KEYS")
         return cls(
             api_keys=keys,
             rate_limit_per_minute=limit,
@@ -43,4 +48,5 @@ class ApiSettings:
             components=components,
             embed_device=env.get("API_EMBED_DEVICE", "auto"),
             auth_enabled=bool(keys),
+            admin_keys=admin_keys,
         )

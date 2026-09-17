@@ -1,6 +1,7 @@
 """Shared fakes for API tests (Task 6 builds its route tests on these same fakes)."""
 
 import threading
+import time
 import warnings
 from contextlib import contextmanager
 from datetime import date
@@ -31,8 +32,15 @@ from models.price.predictor import PriceInputError
 KEY = "test-key"
 
 
+ADMIN_KEY = "admin-key"
+
+
 def settings(**env):
     return ApiSettings.from_env({"API_KEYS": KEY, "API_RATE_LIMIT_PER_MINUTE": "1000", **env})
+
+
+def admin_settings(**env):
+    return settings(API_KEYS=f"{KEY},{ADMIN_KEY}", API_ADMIN_KEYS=ADMIN_KEY, **env)
 
 
 @contextmanager
@@ -89,14 +97,26 @@ class _FakeSearchResult:
 
 
 class FakeEngine:
-    """Records the thread that called `search`, so tests can check the lock is used."""
+    """Counts how many `search` calls overlap, so tests can check the lock serializes them."""
 
-    def __init__(self):
-        self.threads = []
+    def __init__(self, delay=0.0):
+        self.delay = delay
+        self.active = 0
+        self.max_active = 0
+        self.calls = 0
+        self._counter = threading.Lock()
 
     def search(self, text, k):
-        self.threads.append(threading.current_thread())
-        return _FakeSearchResult(text, k)
+        with self._counter:
+            self.active += 1
+            self.calls += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(self.delay)
+            return _FakeSearchResult(text, k)
+        finally:
+            with self._counter:
+                self.active -= 1
 
 
 class FakeChecker:

@@ -21,13 +21,30 @@ def extract_key(headers) -> str | None:
     return value.strip() or None if scheme.lower() == "bearer" else None
 
 
-def check_key(presented: str | None, settings: ApiSettings) -> str | None:
+def _digest(value: str) -> bytes:
+    return hashlib.sha256(value.encode("utf-8")).digest()
+
+
+def _match(presented: str | None, keys: tuple[str, ...]) -> str | None:
+    """The configured key equal to `presented`, or None. Compares fixed-length SHA-256
+    digests against every key, with no early return, so timing reveals neither a key's
+    length nor its position in the list."""
     if presented is None:
         return None
-    for key in settings.api_keys:
-        if hmac.compare_digest(presented.encode("utf-8"), key.encode("utf-8")):
-            return key
-    return None
+    digest = _digest(presented)
+    matched = None
+    for key in keys:
+        if hmac.compare_digest(digest, _digest(key)) and matched is None:
+            matched = key
+    return matched
+
+
+def check_key(presented: str | None, settings: ApiSettings) -> str | None:
+    return _match(presented, settings.api_keys)
+
+
+def check_admin(presented: str | None, settings: ApiSettings) -> bool:
+    return _match(presented, settings.admin_keys) is not None
 
 
 class RateLimiter:

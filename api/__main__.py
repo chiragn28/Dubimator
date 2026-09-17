@@ -34,7 +34,7 @@ SEARCH_QUERY = "2 bed apartment in dubai marina under 2m"
 
 SAMPLE_LISTING_SQL = """
 SELECT listing_id, title, description, asking_price_aed, area_id, building_name,
-       project_name, property_type, property_sub_type, reg_type, size_sqm
+       project_name, property_type, property_sub_type, reg_type, size_sqm, bedrooms
 FROM listings.listings
 WHERE listing_id = (SELECT min(listing_id) FROM listings.listings)
 """
@@ -45,9 +45,10 @@ SAMPLE_PHOTOS_SQL = (
 
 def _sample_listing() -> dict | None:
     """The lowest-`listing_id` corpus row, shaped for `/v1/listings/{id}/flags` and
-    `/v1/listings/check`. None when the corpus is empty or the row can't be mapped
-    (for example an unrecognized `property_sub_type`); either way `smoke` just skips
-    the two listing calls and prints why.
+    `/v1/listings/check` (the kind, `size_basis` and `bedrooms` follow
+    `listings.fraud.price_request`). None when the corpus is empty or the row can't be
+    mapped (for example an unrecognized `property_sub_type`); either way `smoke` just
+    skips the two listing calls and prints why.
 
     Kept behind this one function so `tests/api/test_api_cli.py` can monkeypatch it
     instead of touching a real database.
@@ -68,7 +69,7 @@ def _sample_listing() -> dict | None:
                 return None
             (
                 listing_id, title, description, asking_price_aed, area_id, building_name,
-                project_name, property_type, property_sub_type, reg_type, size_sqm,
+                project_name, property_type, property_sub_type, reg_type, size_sqm, bedrooms,
             ) = row  # fmt: skip
             cur.execute(SAMPLE_PHOTOS_SQL, (listing_id,))
             photo_ids = [photo_id for (photo_id,) in cur.fetchall()]
@@ -86,6 +87,8 @@ def _sample_listing() -> dict | None:
             "property_kind": property_kind,
             "status": reg_type,
             "size_sqm": float(size_sqm),
+            "size_basis": "plot" if villa and property_sub_type is None else "built_up",
+            "bedrooms": None if bedrooms is None else int(bedrooms),
             "photo_ids": photo_ids,
         }
     except Exception as exc:  # noqa: BLE001 — reported as a skip, not a crash
@@ -98,7 +101,8 @@ def _sample_listing() -> dict | None:
 def _check_body(sample: dict) -> dict:
     keys = (
         "title", "description", "asking_price_aed", "area_id", "building_name",
-        "project_name", "property_kind", "status", "size_sqm", "photo_ids",
+        "project_name", "property_kind", "status", "size_sqm", "size_basis", "bedrooms",
+        "photo_ids",
     )  # fmt: skip
     return {key: sample[key] for key in keys}
 
@@ -121,32 +125,52 @@ def _test_client(app):
     return TestClient(app, raise_server_exceptions=False)
 
 
-def _timed_call(client, method: str, path: str, **kwargs) -> tuple[int, float]:
+def _timed_call(client, method: str, path: str, **kwargs):
     started = time.perf_counter()
     response = getattr(client, method)(path, **kwargs)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
-    return response.status_code, elapsed_ms
+    return response, elapsed_ms
+
+
+def _run_call(client, name: str, method: str, path: str, kwargs: dict) -> tuple[dict, object]:
+    """One endpoint called twice (first, then warm): (the table row, the warm response)."""
+    first, first_ms = _timed_call(client, method, path, **kwargs)
+    warm, warm_ms = _timed_call(client, method, path, **kwargs)
+    row = {
+        "endpoint": name,
+        "first_status": first.status_code,
+        "warm_status": warm.status_code,
+        "first_ms": round(first_ms, 1),
+        "warm_ms": round(warm_ms, 1),
+    }
+    return row, warm
+
+
+def _passed(row: dict) -> bool:
+    """Every endpoint must answer 200, on the first call and the warm one."""
+    return row["first_status"] == 200 and row["warm_status"] == 200
+
+
+TABLE_COLUMNS = ("endpoint", "first_status", "warm_status", "first_ms", "warm_ms")
 
 
 def _print_table(rows: list[dict]) -> None:
-    headers = ("endpoint", "status", "first_ms", "warm_ms")
     widths = [
-        max(len(headers[i]), *(len(str(row[headers[i]])) for row in rows)) if rows else len(headers[i])
-        for i in range(len(headers))
-    ]  # fmt: skip
-    line = "  ".join(h.ljust(widths[i]) for i, h in enumerate(headers))
-    print(line)
+        max(len(column), *(len(str(row[column])) for row in rows)) if rows else len(column)
+        for column in TABLE_COLUMNS
+    ]
+    print("  ".join(column.ljust(width) for column, width in zip(TABLE_COLUMNS, widths)))
     for row in rows:
-        print("  ".join(str(row[headers[i]]).ljust(widths[i]) for i in range(len(headers))))
+        print("  ".join(str(row[c]).ljust(w) for c, w in zip(TABLE_COLUMNS, widths)))
 
 
-def _smoke_calls(headers: dict) -> list[tuple[str, str, str, dict, bool, bool]]:
-    """Each call is (name, method, path, kwargs, allow_404, required)."""
+def _smoke_calls(headers: dict) -> list[tuple[str, str, str, dict]]:
+    """The fixed calls, each (name, method, path, kwargs); all must answer 200."""
     calls = [
-        ("GET /v1/ready", "get", "/v1/ready", {"headers": headers}, False, True),
-        ("POST /v1/price", "post", "/v1/price", {"headers": headers, "json": PRICE_FORECAST_BODY}, False, True),
-        ("POST /v1/forecast", "post", "/v1/forecast", {"headers": headers, "json": PRICE_FORECAST_BODY}, False, True),
-        ("GET /v1/search", "get", "/v1/search", {"headers": headers, "params": {"q": SEARCH_QUERY}}, False, True),
+        ("GET /v1/ready", "get", "/v1/ready", {"headers": headers}),
+        ("POST /v1/price", "post", "/v1/price", {"headers": headers, "json": PRICE_FORECAST_BODY}),
+        ("POST /v1/forecast", "post", "/v1/forecast", {"headers": headers, "json": PRICE_FORECAST_BODY}),
+        ("GET /v1/search", "get", "/v1/search", {"headers": headers, "params": {"q": SEARCH_QUERY}}),
     ]  # fmt: skip
     sample = _sample_listing()
     if sample is None:
@@ -155,14 +179,28 @@ def _smoke_calls(headers: dict) -> list[tuple[str, str, str, dict, bool, bool]]:
         listing_id = sample["listing_id"]
         calls.append((
             f"GET /v1/listings/{listing_id}/flags", "get", f"/v1/listings/{listing_id}/flags",
-            {"headers": headers}, True, True,
+            {"headers": headers},
         ))  # fmt: skip
         calls.append((
             "POST /v1/listings/check", "post", "/v1/listings/check",
-            {"headers": headers, "json": _check_body(sample)}, False, True,
+            {"headers": headers, "json": _check_body(sample)},
         ))  # fmt: skip
-    calls.append(("GET /metrics", "get", "/metrics", {"headers": headers}, False, True))
     return calls
+
+
+def _area_rows(client, headers: dict) -> tuple[list[dict], bool]:
+    """GET /v1/areas, then the history of its first summary area: (rows, all passed)."""
+    row, response = _run_call(client, "GET /v1/areas", "get", "/v1/areas", {"headers": headers})
+    rows, ok = [row], _passed(row)
+    areas = response.json().get("areas") if response.status_code == 200 else None
+    if not areas:
+        print("no area in GET /v1/areas: cannot call /v1/areas/{id}/history")
+        return rows, False
+    area_id = areas[0]["area_id"]
+    path = f"/v1/areas/{area_id}/history"
+    history, _ = _run_call(client, f"GET {path}", "get", path, {"headers": headers})
+    rows.append(history)
+    return rows, ok and _passed(history)
 
 
 def _smoke(args: argparse.Namespace) -> int:
@@ -176,38 +214,30 @@ def _smoke(args: argparse.Namespace) -> int:
     app = create_app(settings, default_loaders())
     with _test_client(app) as client:
         startup_seconds = time.perf_counter() - started
-        calls = _smoke_calls(headers)
-        # Phase 8 may add an `areas` component while this task is in flight; include it
-        # in the table when present, but don't let it affect the exit code — its request
-        # shape belongs to that phase, not this one.
-        if "areas" in settings.components and any(
-            getattr(route, "path", None) == "/v1/areas" for route in app.routes
-        ):
-            calls.append(("GET /v1/areas", "get", "/v1/areas", {"headers": headers}, False, False))
-
         rows: list[dict] = []
-        all_ok = True
-        for name, method, path, kwargs, allow_404, required in calls:
-            first_status, first_ms = _timed_call(client, method, path, **kwargs)
-            warm_status, warm_ms = _timed_call(client, method, path, **kwargs)
-
-            expected = {200, 404} if allow_404 else {200}
-            passed = first_status in expected and warm_status in expected
-            if required and not passed:
-                all_ok = False
-            rows.append({
-                "endpoint": name, "status": warm_status,
-                "first_ms": round(first_ms, 1), "warm_ms": round(warm_ms, 1),
-            })  # fmt: skip
+        for name, method, path, kwargs in _smoke_calls(headers):
+            rows.append(_run_call(client, name, method, path, kwargs)[0])
+        all_ok = all(_passed(row) for row in rows)
+        if "areas" in settings.components:
+            area_rows, areas_ok = _area_rows(client, headers)
+            rows += area_rows
+            all_ok = all_ok and areas_ok
+        metrics, _ = _run_call(client, "GET /metrics", "get", "/metrics", {"headers": headers})
+        rows.append(metrics)
+        all_ok = all_ok and _passed(metrics)
 
     print(f"startup: {startup_seconds:.2f}s")
     _print_table(rows)
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    (DATA_DIR / "smoke.json").write_text(
+    out = DATA_DIR / "smoke.json"
+    out.write_text(
         json.dumps({"startup_seconds": round(startup_seconds, 2), "results": rows}, indent=2),
         encoding="utf-8",
     )
+    print(f"wrote {out}")
+    if not all_ok:
+        print("smoke FAILED: every endpoint must answer 200 (first and warm call)")
     return 0 if all_ok else 1
 
 

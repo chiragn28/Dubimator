@@ -57,6 +57,7 @@ def require_key(request: Request) -> str:
         identity = key_id(matched)
     else:
         identity = "open"
+    request.state.key_id = identity  # set first, so a 429 is attributed too
     wait = limiter.acquire(identity)
     if wait is not None:
         raise ApiError(
@@ -65,7 +66,6 @@ def require_key(request: Request) -> str:
             "rate limit exceeded",
             headers={"Retry-After": str(max(1, math.ceil(wait)))},
         )
-    request.state.key_id = identity
     return identity
 
 
@@ -106,7 +106,8 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         except Exception:
             duration = time.monotonic() - start
             metrics.observe(_route_template(request), request.method, 500, duration)
-            ACCESS_LOGGER.exception("request failed", extra=_access_extra(request, 500, duration))
+            # No traceback here: the Exception handler below logs it, once.
+            ACCESS_LOGGER.error("request failed", extra=_access_extra(request, 500, duration))
             raise
         duration = time.monotonic() - start
         metrics.observe(_route_template(request), request.method, response.status_code, duration)
@@ -160,7 +161,7 @@ def _register_exception_handlers(app: FastAPI) -> None:
             )
         if exc.status_code == 405:
             return JSONResponse(
-                _envelope(request, "invalid_input", exc.detail or "method not allowed"),
+                _envelope(request, "method_not_allowed", exc.detail or "method not allowed"),
                 status_code=405,
                 headers=headers,
             )
@@ -201,7 +202,12 @@ def create_app(settings: ApiSettings, loaders: dict) -> FastAPI:
         finally:
             app.state.holder.current.close()
 
-    app = FastAPI(lifespan=lifespan)
+    if not settings.auth_enabled:
+        LOGGER.warning(
+            "API authentication is disabled (API_ALLOW_NO_KEYS=1): every endpoint is open"
+        )
+
+    app = FastAPI(lifespan=lifespan, redoc_url=None)
     app.state.settings = settings
     app.state.metrics = Metrics()
     app.state.limiter = RateLimiter(per_minute=settings.rate_limit_per_minute)

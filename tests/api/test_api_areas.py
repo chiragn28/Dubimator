@@ -3,6 +3,7 @@
 Spec: docs/superpowers/specs/2026-09-17-phase8-demo-design.md ("Area statistics").
 """
 
+import itertools
 from datetime import date
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from api.areas import HISTORY_MIN_SALES, HISTORY_MONTHS, SUMMARY_MIN_SALES, Area
 from models.price.features import month_from_number, month_number
 
 SCHEMA = {
+    "transaction_id": pl.Utf8,
     "area_id": pl.Int64,
     "instance_date": pl.Date,
     "sub_kind": pl.Utf8,
@@ -21,7 +23,10 @@ SCHEMA = {
     "area_sqm": pl.Float64,
     "price_aed": pl.Float64,
     "is_clean": pl.Boolean,
+    "building_name": pl.Utf8,
+    "reg_type": pl.Utf8,
 }
+_IDS = itertools.count(1)
 
 AREAS = pl.DataFrame(
     {"area_id": [1, 2], "name_en": ["Area One", "Area Two"]},
@@ -36,16 +41,18 @@ def _rows(*records) -> pl.DataFrame:
 
 
 def _bucket(
-    area_id: int,
+    area_id: int | None,
     month: date,
     ppsms: list[float],
     sub_kind: str = "flat",
     size_basis: str = "built_up",
     is_clean: bool = True,
 ) -> list[dict]:
-    """One row per ppsm value, dated within `month` (area_sqm fixed at 100 m2)."""
+    """One row per ppsm value, dated within `month` (area_sqm fixed at 100 m2), each with
+    its own transaction id and no building (so none is a repeat sale)."""
     return [
         {
+            "transaction_id": f"t-{next(_IDS)}",
             "area_id": area_id,
             "instance_date": date(month.year, month.month, 1 + i % 28),
             "sub_kind": sub_kind,
@@ -53,6 +60,8 @@ def _bucket(
             "area_sqm": 100.0,
             "price_aed": ppsm * 100.0,
             "is_clean": is_clean,
+            "building_name": None,
+            "reg_type": "ready",
         }
         for i, ppsm in enumerate(ppsms)
     ]
@@ -173,6 +182,44 @@ def test_dirty_rows_are_excluded():
     )
     stats = AreaStats.from_homes(rows, AREAS, DATA_END)
     assert stats.summary_records() == []
+
+
+def test_rows_are_validated_like_the_forecast_rows():
+    month = _months_before(DATA_END, 1)
+    good = _bucket(1, month, [10000.0] * SUMMARY_MIN_SALES)
+    duplicate = [{**row, "price_aed": 1.0} for row in good[:5]]  # same transaction ids
+    zero_price = [{**row, "price_aed": 0.0} for row in _bucket(1, month, [1.0] * 5)]
+    no_area = _bucket(None, month, [5000.0] * SUMMARY_MIN_SALES)
+    stats = AreaStats.from_homes(_rows(*good, *duplicate, *zero_price, *no_area), AREAS, DATA_END)
+    records = stats.summary_records()
+    assert [r["area_id"] for r in records] == [1]
+    assert records[0]["sales_12m"] == SUMMARY_MIN_SALES
+    assert records[0]["median_ppsm_12m"] == pytest.approx(10000.0)
+    assert stats.history["area_id"].null_count() == 0
+
+
+def test_repeat_sales_count_once():
+    month = _months_before(DATA_END, 1)
+    rows = _bucket(1, month, [10000.0] * SUMMARY_MIN_SALES)
+    repeat = {**rows[0], "building_name": "Tower A"}
+    again = {**repeat, "transaction_id": "t-repeat"}
+    stats = AreaStats.from_homes(_rows(*rows[1:], repeat, again), AREAS, DATA_END)
+    assert stats.summary_records()[0]["sales_12m"] == SUMMARY_MIN_SALES
+
+
+def test_load_uses_shared_homes_when_given(monkeypatch):
+    from types import SimpleNamespace
+
+    from api import areas as areas_module
+
+    def fail(*args, **kwargs):
+        raise AssertionError("load_homes must not run when homes are given")
+
+    monkeypatch.setattr(areas_module, "load_homes", fail)
+    rows = _rows(*_bucket(1, _months_before(DATA_END, 1), [10000.0] * SUMMARY_MIN_SALES))
+    homes = SimpleNamespace(rows=rows, areas=AREAS, data_end=DATA_END)
+    stats = AreaStats.load(settings=None, homes=homes)
+    assert stats.summary_records()[0]["area_id"] == 1
 
 
 # --- routes (FakeAreas) -------------------------------------------------------------------

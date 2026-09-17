@@ -24,7 +24,7 @@ class Metrics:
 
     def set_components(self, state) -> None:
         self.model_info.clear()
-        for name, info in state.status().items():
+        for name, info in state.status(live=True).items():
             self.component_up.labels(component=name).set(1.0 if info["up"] else 0.0)
             if info["up"]:
                 self.model_info.labels(component=name, version=info["version"]).set(1.0)

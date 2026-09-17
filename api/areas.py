@@ -3,8 +3,9 @@
 
 Spec: docs/superpowers/specs/2026-09-17-phase8-demo-design.md ("Area statistics").
 
-Scope matches `models.price.data.HOMES_SQL` (via `load_homes`, which already applies it),
-restricted to clean rows, with no outlier screening — a median is robust to the odd bad
+Scope matches `models.price.data.HOMES_SQL` (via `load_homes`, which already applies it).
+Rows then go through Phase 6's `validate_rows` (clean, positive price and size, a date and
+an area, no duplicate transaction ids or repeat sales), with no outlier screening — a median is robust to the odd bad
 price, so Phase 6's `screen_outliers` step is skipped here.
 """
 
@@ -14,7 +15,7 @@ from datetime import date
 import polars as pl
 
 from ingestion.config import DbSettings
-from models.forecast.rows import market_kind
+from models.forecast.rows import market_kind, validate_rows
 from models.price.config import TrainConfig
 from models.price.data import load_homes
 from models.price.features import month_number
@@ -36,7 +37,8 @@ class AreaStats:
     def from_homes(cls, rows: pl.DataFrame, areas: pl.DataFrame, data_end: date) -> "AreaStats":
         """Pure: `rows` are `derive_segments`-shaped home rows (as `load_homes` returns)."""
         end_num = month_number(data_end)
-        clean = rows.filter(pl.col("is_clean")).with_columns(
+        valid = validate_rows(rows)[0].filter(pl.col("area_id").is_not_null())
+        clean = valid.with_columns(
             (pl.col("price_aed") / pl.col("area_sqm")).alias("ppsm"),
             market_kind().alias("market_kind"),
             pl.col("instance_date").dt.truncate("1mo").alias("month"),
@@ -86,8 +88,10 @@ class AreaStats:
         return cls(summary=summary, history=history, names=names, data_end=data_end)
 
     @classmethod
-    def load(cls, settings: DbSettings) -> "AreaStats":
-        homes = load_homes(settings, TrainConfig())
+    def load(cls, settings: DbSettings, homes=None) -> "AreaStats":
+        """`homes`: an already-loaded `load_homes` result to reuse (else it is read here)."""
+        if homes is None:
+            homes = load_homes(settings, TrainConfig())
         return cls.from_homes(homes.rows, homes.areas, homes.data_end)
 
     def summary_records(self) -> list[dict]:
