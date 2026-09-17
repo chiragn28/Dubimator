@@ -14,3 +14,5 @@ mlruns/
 .ruff_cache/
 graphify-out/
 data/monitoring/
+site/
+.vercel/

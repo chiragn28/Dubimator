@@ -41,7 +41,7 @@ corpus, never over a real seller's data.
   synthetic listings corpus once the `listings` component is up.
 
 ### Links
-- [Architecture](https://claude.ai/artifact/6keTdjksn2nWLnkVmNbMRw)
+- [Architecture](https://zestimator-architecture.vercel.app)
 """
 )
 

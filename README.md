@@ -134,8 +134,9 @@ before the next phase started. Specs and plans are in `docs/superpowers/`.
 - **Design specs**, one per phase: [`docs/superpowers/specs/`](docs/superpowers/specs/)
 - **Implementation plans** (Phases 1–8): [`docs/superpowers/plans/`](docs/superpowers/plans/)
 - **Architecture page** (build status, data flow, the eleven phases, stack and
-  cost): https://claude.ai/artifact/6keTdjksn2nWLnkVmNbMRw. The source is
-  [`docs/architecture.html`](docs/architecture.html).
+  cost): https://zestimator-architecture.vercel.app. The source is
+  [`docs/architecture.html`](docs/architecture.html). To redeploy it after editing,
+  run `uv run python scripts/build_site.py`, then `vercel deploy site --prod`.
 - **Design-decisions casebook:** https://claude.ai/artifact/2CxCqLdMGgEw3Xwj6QDnXE
 - **Data source:** [`data/README.md`](data/README.md)
 
