@@ -1,0 +1,28 @@
+@import "tailwindcss";
+
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+  html { scroll-behavior: smooth; }
+  body {
+    font-family: 'Inter', sans-serif;
+    background: #000;
+    color: #fff;
+    overflow-x: hidden;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  #root { width: 100%; min-height: 100svh; }
+  a:focus-visible { outline: 2px solid #10b981; outline-offset: 3px; }
+}
+
+/* Phone width: the nav links don't fit beside the logo and the pill. */
+@media (max-width: 760px) {
+  .nav-links { display: none !important; }
+  .nav-bar { padding: 20px 20px !important; }
+  .hero-content { padding-left: 24px !important; }
+  .hero-footer { left: 24px !important; }
+}

@@ -16,3 +16,7 @@ graphify-out/
 data/monitoring/
 site/
 .vercel/
+landing/node_modules/
+landing/dist/
+landing/public/hero.mp4
+landing/*.tsbuildinfo

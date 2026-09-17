@@ -1616,5 +1616,6 @@ through a free Cloudflare Tunnel instead of a cloud service.
 - `.github/` — CI/CD: `workflows/ci.yml` (lint, test, docker), `workflows/release.yml` (GHCR on a `v*` tag), `dependabot.yml` (Phase 9)
 - `docker/` — `postgres-init.sql` (enables pgvector); the Dockerfiles and `docker-compose.yml` sit at the repository root
 - `tests/` — the pytest suite, one folder per package, plus the `live` infrastructure smoke tests
+- `landing/` — the marketing landing page: Vite, React 19, Tailwind v4 and framer-motion. Run `npm install`, `npm run video` (fetches the 14 MB background video, which is gitignored), then `npm run dev`. Every outbound link lives in `landing/src/site.ts`; set `VITE_DEMO_URL` at build time to point "Try the Demo" at a public demo instead of `localhost:8501`.
 - `docs/` — phase specs and plans (`docs/superpowers/`) and the architecture page (`docs/architecture.html`)
 - `data/raw/` — drop DLD CSVs here (gitignored)
