@@ -1108,6 +1108,150 @@ above:
    cache absorbs that cost on every run after.
 4. `release.yml` stays dormant until a `v*` tag is pushed to that remote.
 
+## Deploy and monitor
+
+Phase 10 runs the whole product from `docker-compose.yml`: the API (`Dockerfile.api`) and the
+Streamlit demo (`Dockerfile.demo`) sit next to Postgres, MLflow and Airflow. Every host port is
+bound to `127.0.0.1`. Nothing is public unless you start a tunnel.
+
+**Before the first start**, fill these in `.env` (see `.env.example`):
+
+- `API_KEYS`: at least one key. The API refuses to start without one.
+- `DEMO_API_KEY`: one of those keys. The demo keeps it server-side.
+- `GRAFANA_ADMIN_PASSWORD`: needed only for the monitoring profile.
+- `API_PORT` / `DEMO_PORT` (default 8000 / 8501). Optionally, `PROMETHEUS_PORT` / `GRAFANA_PORT` (default 9090 / 3000).
+
+**Build and start:**
+
+```bash
+docker compose build api demo                 # CPU-only API image + slim demo image
+docker compose up -d --wait api demo          # also starts postgres + mlflow (healthy first)
+curl -s localhost:8000/health                 # {"status":"ok"}
+curl -s localhost:8501/_stcore/health         # ok
+docker compose logs -f api                    # JSON log lines
+docker compose stop api demo                  # stop just these two (never `down -v`)
+```
+
+The API image installs the locked dependencies with `uv sync --frozen --no-dev`, but skips torch
+and every `nvidia-*` / `triton` wheel listed in `uv.lock`. It then installs the CPU build of torch 2.9.1 from the
+PyTorch CPU index, and the build fails if any `nvidia-*` package is still present. Serving never
+uses the GPU (`API_EMBED_DEVICE=cpu`), and predictors already force XGBoost onto the CPU. The
+repository packages (`api`, `models`, `listings`, `search`, `ingestion`, `monitoring`,
+`pipelines`) are copied in, because the MLflow pyfuncs are logged without `code_paths`. MiniLM is
+downloaded once into the `hf_cache` volume. Both images run as the non-root user `app` and have a
+`HEALTHCHECK`.
+
+Measured sizes from `docker image ls` on 2026-09-17. The first API build took about 2 hours on this machine, mostly because installing 118 packages into the image is slow.
+
+| Image | Size |
+|---|---|
+| `zestimator-api:local` | 3.41 GB on disk (787 MB compressed) |
+| `zestimator-demo:local` | 815 MB on disk (187 MB compressed) |
+
+**Profiles:**
+
+| Profile | Services | Start |
+|---|---|---|
+| (default) | postgres, mlflow, airflow, api, demo | `docker compose up -d` |
+| `monitoring` | prometheus-init, prometheus, grafana | `docker compose --profile monitoring up -d` |
+| `tunnel` | cloudflared-quick | `docker compose --profile tunnel up -d cloudflared-quick` |
+| `tunnel-named` | cloudflared-named | `docker compose --profile tunnel-named up -d cloudflared-named` |
+
+**Public link (Cloudflare Tunnel).**
+
+> **Warning:** anything behind a tunnel is on the public internet for as long as it runs. Only the
+> demo is ever exposed. The API, Postgres, MLflow, Airflow, Prometheus and Grafana stay on
+> localhost and the compose network. The demo holds the API key server-side, but every visitor
+> can still spend your API's rate limit. Stop the tunnel when you're not showing the demo.
+
+The `cloudflare/cloudflared` image has no shell, so the two modes are two services, not one
+service that switches on an env var:
+
+- **Quick tunnel** (no account needed): `docker compose --profile tunnel up -d cloudflared-quick`.
+  Then run `uv run python scripts/tunnel_url.py` to print the random `https://*.trycloudflare.com`
+  URL from the logs. The URL changes on every restart.
+- **Named tunnel** (stable hostname): create a tunnel in the Cloudflare Zero Trust dashboard and
+  point its public hostname at `http://demo:8501`. Put the token in `CLOUDFLARE_TUNNEL_TOKEN` in
+  `.env`, then run `docker compose --profile tunnel-named up -d cloudflared-named`. The token
+  reaches cloudflared as the `TUNNEL_TOKEN` env var, never on the command line.
+- Stop either one with `docker compose stop cloudflared-quick` (or `cloudflared-named`).
+
+**Metrics and dashboards.** `docker compose --profile monitoring up -d` starts three services:
+
+- `prometheus-init`: a busybox one-shot that writes the first key from `API_KEYS` to
+  `/etc/prometheus-secrets/api_key` in the `prometheus_secrets` volume. The file is mode 0600 and
+  owned by Prometheus's user; it is never printed or committed.
+- `prometheus`: scrapes `api:8000/metrics` every 15 s with that bearer key file
+  (`monitoring/prometheus.yml`).
+- `grafana`: provisioned from `monitoring/grafana/`. It allows anonymous read-only viewing and
+  refuses to start without `GRAFANA_ADMIN_PASSWORD`.
+
+The URLs are:
+
+- Prometheus at <http://127.0.0.1:9090>. The `zestimator-api` target is under Status → Targets.
+- Grafana at <http://127.0.0.1:3000>. The home dashboard is "Zestimator API". To edit, log in as
+  `admin` with the password from `.env`.
+
+The dashboard (`monitoring/grafana/dashboards/api.json`) shows:
+
+- scrape and component up/down;
+- request rate by route;
+- 5xx and 4xx rates;
+- p50/p95 latency by route (`histogram_quantile` over `api_request_seconds`);
+- a table of loaded model versions (`api_model_info`).
+
+**Drift reports.** Run `uv run python -m monitoring drift [--months 3] [--log-file PATH]`. It is
+read-only against Postgres and MLflow. It writes `data/monitoring/drift_<date>.json` and a
+self-contained `.html` table (gitignored) with three sections:
+
+- **Price-model inputs:** PSI (10 quantile bins from the reference, empty bins floored at 1e-4)
+  and the KS statistic for `area_sqm`, `bedrooms` and price per m². Categorical PSI covers
+  `reg_type`, `sub_kind` and `area_id` (top 30 areas, the rest pooled). The reference is the price
+  model's training window (`TrainConfig.train_start` to `val_start`); the current window is the
+  last N months up to the data end. PSI above 0.2 is flagged.
+- **Forecast residuals:** the `zestimator-forecast-3m` champion's MAPE on rows after its
+  `test_end` whose 3-month target window has fully happened, next to its gate MAPE. The DLD data
+  currently ends in 2023, so this section reads `no newer resolved targets` until newer sales
+  are ingested.
+- **Search traffic** (with `--log-file`): search requests and the 5xx rate from `api.access`
+  lines, plus query length from `api.search` lines. Query lines are logged at DEBUG only. The
+  zero-result rate appears only if the log lines carry a `results` count.
+
+To capture API logs for the search section, run
+`docker compose logs --no-color --no-log-prefix api > api.log`.
+
+There is no Airflow DAG for drift: the Airflow image has no ML dependencies. Schedule the report
+next to `pipelines retrain` instead. With Windows Task Scheduler, weekly on Monday at 03:30:
+
+```bat
+schtasks /Create /SC WEEKLY /D MON /ST 03:30 /TN "Zestimator drift" ^
+  /TR "cmd /c cd /d C:\path\to\zestimator && uv run python -m monitoring drift >> data\monitoring\drift.log 2>&1"
+```
+
+With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring drift >> data/monitoring/drift.log 2>&1`.
+
+**Troubleshooting:**
+
+- **`api` exits at start with "API_KEYS is empty"**: set `API_KEYS` in `.env`, then
+  `docker compose up -d api`.
+- **`api` stays `starting`**: the first start downloads MiniLM into `hf_cache` and loads every
+  champion from MLflow, and the healthcheck allows 180 s for this. Check
+  `docker compose logs api`, and `curl -H "Authorization: Bearer <key>" localhost:8000/v1/ready`
+  to see which component is down. `API_COMPONENTS=price,forecast` limits what loads.
+- **The demo says the API is unreachable or the key is wrong**: `DEMO_API_KEY` must be one of
+  `API_KEYS`. Inside compose the demo uses `http://api:8000`.
+- **A Prometheus target shows 401**: `prometheus-init` wrote an old key. After changing
+  `API_KEYS`, run `docker compose --profile monitoring up -d --force-recreate prometheus-init prometheus`.
+- **`prometheus-init` exits 1**: `API_KEYS` is empty.
+- **Grafana exits with "set GRAFANA_ADMIN_PASSWORD"**: set it in `.env`. Changing it later needs
+  `grafana cli admin reset-admin-password`, because Grafana stores the password in the
+  `grafana_data` volume.
+- **No trycloudflare URL**: the quick tunnel needs outbound HTTPS to Cloudflare. Check
+  `docker compose logs cloudflared-quick`, and wait a few seconds after start.
+- **Port already in use**: change `API_PORT`, `DEMO_PORT`, `PROMETHEUS_PORT` or `GRAFANA_PORT` in `.env`.
+- **Disk**: the API image is the big one. `docker image ls zestimator-*` shows the sizes. Old
+  build cache can be removed with `docker builder prune`, which never touches volumes.
+
 ## Module layout
 
 - `ingestion/` — DLD CSV validation, cleaning, and Postgres load (`python -m ingestion`)
@@ -1120,5 +1264,6 @@ above:
 - `api/` — FastAPI service (Phase 7)
 - `demo/` — Streamlit app (Phase 8)
 - `pipelines/` — scheduled retraining pipeline: ingest → price → listings → search → forecast, one gated stage at a time (`python -m pipelines retrain`, Phase 9)
+- `monitoring/` — drift report (`python -m monitoring drift`), Prometheus scrape config and Grafana provisioning + dashboard; `Dockerfile.api`, `Dockerfile.demo` and the compose profiles `monitoring` / `tunnel` / `tunnel-named` (Phase 10)
 - `.github/` — CI/CD: `workflows/ci.yml` (lint, test, docker), `workflows/release.yml` (GHCR on a `v*` tag), `dependabot.yml` (Phase 9)
 - `data/raw/` — drop DLD CSVs here (gitignored)
