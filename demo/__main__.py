@@ -11,6 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 APP = Path(__file__).resolve().parent / "app.py"
+REPO_ROOT = APP.parents[1]  # pages import `demo.*`, so run from the repo root
 
 
 DEFAULT_HOST = "127.0.0.1"
@@ -32,7 +33,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     load_dotenv()  # DEMO_API_URL / DEMO_API_KEY come from .env
-    return subprocess.run(build_command(args.port, args.host), check=False).returncode
+    return subprocess.run(
+        build_command(args.port, args.host), check=False, cwd=REPO_ROOT
+    ).returncode
 
 
 if __name__ == "__main__":

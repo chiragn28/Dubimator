@@ -10,7 +10,7 @@ def _capture_run(monkeypatch):
     monkeypatch.setattr(
         launcher.subprocess,
         "run",
-        lambda command, check: seen.append(command) or SimpleNamespace(returncode=0),
+        lambda command, check, cwd: seen.append(command) or SimpleNamespace(returncode=0),
     )
     return seen
 
@@ -23,9 +23,10 @@ def test_launcher_runs_streamlit_on_the_requested_port(monkeypatch):
     calls = {}
     monkeypatch.setattr(launcher, "load_dotenv", lambda: calls.setdefault("dotenv", True))
 
-    def fake_run(command, check):
+    def fake_run(command, check, cwd):
         calls["command"] = command
         calls["check"] = check
+        calls["cwd"] = cwd
         return SimpleNamespace(returncode=3)
 
     monkeypatch.setattr(launcher.subprocess, "run", fake_run)
@@ -36,6 +37,7 @@ def test_launcher_runs_streamlit_on_the_requested_port(monkeypatch):
     assert _option(command, "--server.port") == "9000"
     assert _option(command, "--server.headless") == "true"
     assert calls["check"] is False
+    assert (calls["cwd"] / "demo" / "app.py").is_file()
     assert calls["dotenv"] is True
 
 
