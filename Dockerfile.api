@@ -47,8 +47,10 @@ COPY search ./search
 COPY ingestion ./ingestion
 COPY monitoring ./monitoring
 COPY pipelines ./pipelines
-# Pre-create the cache dir so the hf_cache named volume inherits app ownership.
-RUN mkdir -p /home/app/.cache/huggingface && chown -R app:app /home/app
+# Pre-create the cache dir so the hf_cache named volume inherits app ownership, and a writable
+# /app/data for anything the serving code writes under data/.
+RUN mkdir -p /home/app/.cache/huggingface /app/data \
+    && chown -R app:app /home/app /app/data
 USER app
 EXPOSE 8000
 HEALTHCHECK --interval=15s --timeout=5s --start-period=180s --retries=5 \

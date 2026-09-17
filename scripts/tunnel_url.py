@@ -9,12 +9,20 @@ import re
 import subprocess
 import sys
 
-URL_PATTERN = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com(?![\w.-])")
+URL_PATTERN = re.compile(r"https://([a-z0-9-]+)\.trycloudflare\.com(?![\w.-])")
+# cloudflared's own control-plane host (it shows up in request errors), never a tunnel URL.
+EXCLUDED_SUBDOMAINS = frozenset({"api"})
 
 
 def extract_url(text: str) -> str | None:
-    match = URL_PATTERN.search(text)
-    return match.group(0) if match else None
+    """The LAST quick-tunnel URL in `text`: after a restart the logs keep every URL the
+    container ever printed, and only the newest one is live."""
+    urls = [
+        match.group(0)
+        for match in URL_PATTERN.finditer(text)
+        if match.group(1) not in EXCLUDED_SUBDOMAINS
+    ]
+    return urls[-1] if urls else None
 
 
 def main(argv=None) -> int:

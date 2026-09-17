@@ -7,6 +7,7 @@ import numpy as np
 import polars as pl
 import pytest
 
+from monitoring import drift
 from monitoring.drift import feature_drift, ks_stat, psi, psi_categorical, search_log_stats
 
 
@@ -51,6 +52,20 @@ def test_psi_with_heavy_ties_uses_unique_edges():
     shifted = np.array([1.0] * 90 + [2.0] * 10)
     expected = (0.9 - 0.5) * math.log(0.9 / 0.5) + (0.1 - 0.5) * math.log(0.1 / 0.5)
     assert psi(reference, shifted, bins=10) == pytest.approx(expected, rel=1e-9)
+
+
+def test_psi_constant_reference_detects_a_moved_value():
+    assert psi([5] * 100, [100] * 100) > 0.2
+    assert psi([5] * 100, [1] * 100) > 0.2
+
+
+def test_psi_constant_reference_uses_below_equal_above_bins():
+    assert psi([5.0] * 100, [5.0] * 40) == pytest.approx(0.0, abs=1e-12)
+    # 50% below, 50% equal vs the reference's 100% equal (below/above floored at EPSILON).
+    current = [1.0] * 50 + [5.0] * 50
+    eps = drift.EPSILON
+    expected = (0.5 - eps) * math.log(0.5 / eps) + (0.5 - 1.0) * math.log(0.5 / 1.0)
+    assert psi([5.0] * 100, current) == pytest.approx(expected, rel=1e-9)
 
 
 def test_psi_categorical_hand_computed():
@@ -107,6 +122,27 @@ def test_feature_drift_columns_and_flags():
     assert by_feature["kind"]["kind"] == "categorical"
     assert by_feature["kind"]["ks"] is None
     assert by_feature["kind"]["flagged"] is False
+
+
+def test_feature_drift_flags_a_constant_feature_that_moved():
+    reference = pl.DataFrame({"beds": [2.0] * 100})
+    current = pl.DataFrame({"beds": [3.0] * 100})
+    row = feature_drift(reference, current, ["beds"], []).to_dicts()[0]
+    assert row["flagged"] is True
+
+
+def test_feature_drift_flags_on_ks_alone():
+    assert drift.KS_THRESHOLD == 0.3
+    reference = pl.DataFrame({"x": np.arange(1000, dtype=float)})
+    shifted = pl.DataFrame({"x": np.arange(1000, dtype=float) + 400})  # KS = 0.4
+    nudged = pl.DataFrame({"x": np.arange(1000, dtype=float) + 200})  # KS = 0.2
+    # A PSI threshold nothing can reach isolates the KS rule.
+    flagged = feature_drift(reference, shifted, ["x"], [], threshold=1e9).to_dicts()[0]
+    assert flagged["ks"] == pytest.approx(0.4)
+    assert flagged["flagged"] is True
+    calm = feature_drift(reference, nudged, ["x"], [], threshold=1e9).to_dicts()[0]
+    assert calm["ks"] == pytest.approx(0.2)
+    assert calm["flagged"] is False
 
 
 def test_feature_drift_top_categories_applies_per_feature():

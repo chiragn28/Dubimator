@@ -53,3 +53,30 @@ def test_grafana_provisioning_points_at_the_mounted_paths():
         (MONITORING / "grafana" / "provisioning" / "dashboards" / "dashboards.yml").read_text()
     )
     assert providers["providers"][0]["options"]["path"] == "/var/lib/grafana/dashboards"
+
+
+def _compose() -> dict:
+    return yaml.safe_load((ROOT / "docker-compose.yml").read_text("utf-8"))
+
+
+def test_tunnels_share_only_the_public_network_with_the_demo():
+    services = _compose()["services"]
+    assert set(services["demo"]["networks"]) == {"default", "public"}
+    for name in ("cloudflared-quick", "cloudflared-named"):
+        assert services[name]["networks"] == ["public"]
+    for name, service in services.items():
+        if name != "demo" and not name.startswith("cloudflared"):
+            assert "public" not in service.get("networks", []), name
+
+
+def test_demo_waits_for_a_healthy_api():
+    demo = _compose()["services"]["demo"]
+    assert demo["depends_on"]["api"]["condition"] == "service_healthy"
+
+
+def test_prometheus_prefers_its_own_scrape_key():
+    init = _compose()["services"]["prometheus-init"]
+    assert set(init["environment"]) == {"PROMETHEUS_API_KEY", "API_KEYS"}
+    script = init["command"][-1]
+    # PROMETHEUS_API_KEY is read first; the first API_KEYS entry is only the fallback.
+    assert script.index('"$$PROMETHEUS_API_KEY"') < script.index('"$$API_KEYS"')

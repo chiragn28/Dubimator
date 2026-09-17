@@ -20,8 +20,19 @@ cloudflared-1  | 2026-09-17T02:00:00Z INF |  https://second-one.trycloudflare.co
 """
 
 
-def test_extract_url_takes_the_first_match():
-    assert tunnel_url.extract_url(LOGS) == "https://calm-river-7f3a.trycloudflare.com"
+def test_extract_url_takes_the_last_match():
+    # After a restart the logs hold every URL the container ever printed; the newest is live.
+    assert tunnel_url.extract_url(LOGS) == "https://second-one.trycloudflare.com"
+
+
+def test_extract_url_ignores_the_api_host():
+    logs = LOGS + (
+        "cloudflared-1  | ERR failed to request quick Tunnel: "
+        "Post https://api.trycloudflare.com/tunnel: EOF\n"
+    )
+    assert tunnel_url.extract_url(logs) == "https://second-one.trycloudflare.com"
+    assert tunnel_url.extract_url("see https://api.trycloudflare.com/tunnel\n") is None
+    assert tunnel_url.extract_url("https://API.trycloudflare.com\n") is None
 
 
 def test_extract_url_none_when_absent():
@@ -42,7 +53,7 @@ def test_main_prints_url(monkeypatch, capsys):
     seen = []
     monkeypatch.setattr(tunnel_url.subprocess, "run", _fake_run(LOGS, seen=seen))
     assert tunnel_url.main([]) == 0
-    assert capsys.readouterr().out.strip() == "https://calm-river-7f3a.trycloudflare.com"
+    assert capsys.readouterr().out.strip() == "https://second-one.trycloudflare.com"
     assert seen == [["docker", "compose", "logs", "--no-color", "cloudflared-quick"]]
 
 

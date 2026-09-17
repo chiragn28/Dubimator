@@ -87,6 +87,7 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       API_KEYS: ${API_KEYS:-}
+      API_ADMIN_KEYS: ${API_ADMIN_KEYS:-}
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-60}
       API_CORS_ORIGINS: ${API_CORS_ORIGINS:-}
       API_COMPONENTS: ${API_COMPONENTS:-}
@@ -105,12 +106,16 @@ services:
     container_name: zestimator-demo
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
     environment:
       DEMO_API_URL: http://api:8000
       DEMO_API_KEY: ${DEMO_API_KEY:-}
     ports:
       - "127.0.0.1:${DEMO_PORT:-8501}:8501"
+    # `default` reaches the API; `public` is the only network the tunnels share with it.
+    networks:
+      - default
+      - public
     restart: unless-stopped
 
   # --- Phase 10: monitoring (docker compose --profile monitoring up -d) ----------------------
@@ -118,14 +123,17 @@ services:
     image: busybox:1.37.0
     profiles: ["monitoring"]
     environment:
+      PROMETHEUS_API_KEY: ${PROMETHEUS_API_KEY:-}
       API_KEYS: ${API_KEYS:-}
-    # Writes the first API key to a volume-only file Prometheus reads; the key is never printed.
+    # Writes the scrape key (PROMETHEUS_API_KEY, else the first API_KEYS entry) to a volume-only
+    # file Prometheus reads; the key is never printed.
     command:
       - sh
       - -c
       - >-
-        key="$$(printf '%s' "$$API_KEYS" | cut -d, -f1 | tr -d ' \t\r\n')";
-        [ -n "$$key" ] || { echo 'API_KEYS is empty in .env' >&2; exit 1; };
+        key="$$(printf '%s' "$$PROMETHEUS_API_KEY" | tr -d ' \t\r\n')";
+        [ -n "$$key" ] || key="$$(printf '%s' "$$API_KEYS" | cut -d, -f1 | tr -d ' \t\r\n')";
+        [ -n "$$key" ] || { echo 'set PROMETHEUS_API_KEY or API_KEYS in .env' >&2; exit 1; };
         umask 077; printf '%s' "$$key" > /etc/prometheus-secrets/api_key;
         chown 65534:65534 /etc/prometheus-secrets/api_key
     volumes:
@@ -196,6 +204,8 @@ services:
     depends_on:
       - demo
     command: ["tunnel", "--no-autoupdate", "--url", "http://demo:8501"]
+    networks:
+      - public  # only the demo is reachable from here, never the API or the databases
     restart: unless-stopped
 
   cloudflared-named:
@@ -207,7 +217,14 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN:-}  # read by cloudflared; never on the command line
     command: ["tunnel", "--no-autoupdate", "run"]
+    networks:
+      - public  # only the demo is reachable from here, never the API or the databases
     restart: unless-stopped
+
+networks:
+  default:
+  # Shared only by the demo and the cloudflared services.
+  public:
 
 volumes:
   postgres_data:

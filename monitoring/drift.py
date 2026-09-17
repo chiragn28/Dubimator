@@ -25,6 +25,9 @@ from models.price.data import HomesData, load_homes
 OUT_DIR = Path("data/monitoring")
 EPSILON = 1e-4
 PSI_THRESHOLD = 0.2
+# KS above this also flags a numeric feature: PSI on quantile bins can miss a large shift
+# that stays inside few bins, and the max ECDF gap catches it.
+KS_THRESHOLD = 0.3
 OTHER = "__other__"
 NUMERIC_FEATURES = ("area_sqm", "bedrooms", "price_per_sqm")
 CATEGORICAL_FEATURES = ("reg_type", "sub_kind", "area_id")
@@ -51,15 +54,25 @@ def _psi_from_counts(reference: np.ndarray, current: np.ndarray) -> float:
     return float(np.sum((actual - expected) * np.log(actual / expected)))
 
 
+def _three_way_counts(values: np.ndarray, pivot: float) -> np.ndarray:
+    return np.array(
+        [np.sum(values < pivot), np.sum(values == pivot), np.sum(values > pivot)], dtype=float
+    )
+
+
 def psi(reference, current, bins: int = 10) -> float:
     """Population stability index with quantile bins taken from the reference.
 
     Non-finite values are ignored; empty bins are floored at EPSILON so the index stays finite.
-    Returns NaN when either side has no finite values.
+    Returns NaN when either side has no finite values. A constant reference has no quantile
+    edges to split on, so it uses three bins instead: below, equal to and above its one value.
     """
     ref, cur = _finite(reference), _finite(current)
     if ref.size == 0 or cur.size == 0:
         return math.nan
+    if np.unique(ref).size == 1:
+        value = ref[0]
+        return _psi_from_counts(_three_way_counts(ref, value), _three_way_counts(cur, value))
     edges = np.unique(np.quantile(ref, np.linspace(0.0, 1.0, bins + 1)))
     inner = edges[1:-1]
     slots = inner.size + 1
@@ -110,13 +123,17 @@ def feature_drift(
     threshold: float = PSI_THRESHOLD,
     top_categories: dict[str, int] | None = None,
 ) -> pl.DataFrame:
-    """One row per feature: feature, kind, psi, ks (numeric only), flagged (psi > threshold)."""
+    """One row per feature: feature, kind, psi, ks (numeric only) and flagged.
+
+    A feature is flagged when psi > threshold or, for numeric features, ks > KS_THRESHOLD.
+    """
     top_categories = top_categories or {}
     rows = []
     for name in numeric:
         ref, cur = reference_frame[name].to_numpy(), current_frame[name].to_numpy()
-        value = psi(ref, cur)
-        rows.append((name, "numeric", value, ks_stat(ref, cur), bool(value > threshold)))
+        value, ks = psi(ref, cur), ks_stat(ref, cur)
+        flagged = bool(value > threshold or ks > KS_THRESHOLD)
+        rows.append((name, "numeric", value, ks, flagged))
     for name in categorical:
         value = psi_categorical(
             reference_frame[name].to_list(),
@@ -278,8 +295,8 @@ def render_html(payload: dict) -> str:
         f"<style>{STYLE}</style></head><body>",
         f"<h1>Zestimator drift report — {html.escape(payload['generated'])}</h1>",
         (
-            f'<p class="muted">PSI above {PSI_THRESHOLD} is flagged. Data ends '
-            f"{html.escape(payload['data_end'])}.</p>"
+            f'<p class="muted">PSI above {PSI_THRESHOLD} (or KS above {KS_THRESHOLD}) is '
+            f"flagged. Data ends {html.escape(payload['data_end'])}.</p>"
         ),
         "<h2>Windows</h2>",
         _table(
@@ -335,6 +352,7 @@ def report(
         "data_end": homes.data_end.isoformat(),
         "lineage": homes.lineage,
         "psi_threshold": PSI_THRESHOLD,
+        "ks_threshold": KS_THRESHOLD,
         "windows": {
             "reference": {
                 "start": config.train_start.isoformat(),

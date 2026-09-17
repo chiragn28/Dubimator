@@ -1136,6 +1136,11 @@ bound to `127.0.0.1`. Nothing is public unless you start a tunnel.
 - `API_KEYS`: at least one key. The API refuses to start without one.
 - `DEMO_API_KEY`: one of those keys. The demo keeps it server-side.
 - `GRAFANA_ADMIN_PASSWORD`: needed only for the monitoring profile.
+- `PROMETHEUS_API_KEY`: optional, the key Prometheus scrapes `/metrics` with. It must also be
+  listed in `API_KEYS`. Use a separate key from `DEMO_API_KEY`: rate limits are per key, so a
+  shared key would put the scrapes in the demo's rate-limit bucket. If it is unset, Prometheus
+  falls back to the first `API_KEYS` entry.
+- `API_ADMIN_KEYS`: optional, the keys allowed to call `POST /v1/admin/reload`.
 - `API_PORT` / `DEMO_PORT` (default 8000 / 8501). Optionally, `PROMETHEUS_PORT` / `GRAFANA_PORT` (default 9090 / 3000).
 
 **Build and start:**
@@ -1154,9 +1159,13 @@ and every `nvidia-*` / `triton` wheel listed in `uv.lock`. It then installs the 
 PyTorch CPU index, and the build fails if any `nvidia-*` package is still present. Serving never
 uses the GPU (`API_EMBED_DEVICE=cpu`), and predictors already force XGBoost onto the CPU. The
 repository packages (`api`, `models`, `listings`, `search`, `ingestion`, `monitoring`,
-`pipelines`) are copied in, because the MLflow pyfuncs are logged without `code_paths`. MiniLM is
-downloaded once into the `hf_cache` volume. Both images run as the non-root user `app` and have a
-`HEALTHCHECK`.
+`pipelines`) are copied in, because the MLflow pyfuncs are logged without `code_paths`. The
+Hugging Face models are downloaded on first use into the `hf_cache` volume: MiniLM
+(`all-MiniLM-L6-v2`) for text, plus CLIP (`sentence-transformers/clip-ViT-B-32`, several hundred
+MB) when the listings component checks photos. Both images run as the non-root user `app` and have a
+`HEALTHCHECK`; the API image also has an `app`-owned `/app/data`. The demo image turns off
+Streamlit's error details (`STREAMLIT_CLIENT_SHOW_ERROR_DETAILS=false`), so a crash never shows a
+traceback to visitors, and compose starts the demo only once the API is healthy.
 
 Measured sizes from `docker image ls` on 2026-09-17. The first API build took about 2 hours on this machine, mostly because installing 118 packages into the image is slow.
 
@@ -1181,12 +1190,16 @@ Measured sizes from `docker image ls` on 2026-09-17. The first API build took ab
 > localhost and the compose network. The demo holds the API key server-side, but every visitor
 > can still spend your API's rate limit. Stop the tunnel when you're not showing the demo.
 
+The cloudflared services sit on their own `public` compose network, which only the demo also
+joins. From inside a tunnel container the API, Postgres, MLflow, Airflow and the monitoring
+services are unreachable.
+
 The `cloudflare/cloudflared` image has no shell, so the two modes are two services, not one
 service that switches on an env var:
 
 - **Quick tunnel** (no account needed): `docker compose --profile tunnel up -d cloudflared-quick`.
   Then run `uv run python scripts/tunnel_url.py` to print the random `https://*.trycloudflare.com`
-  URL from the logs. The URL changes on every restart.
+  URL from the logs. The URL changes on every restart; the script prints the newest one.
 - **Named tunnel** (stable hostname): create a tunnel in the Cloudflare Zero Trust dashboard and
   point its public hostname at `http://demo:8501`. Put the token in `CLOUDFLARE_TUNNEL_TOKEN` in
   `.env`, then run `docker compose --profile tunnel-named up -d cloudflared-named`. The token
@@ -1195,9 +1208,10 @@ service that switches on an env var:
 
 **Metrics and dashboards.** `docker compose --profile monitoring up -d` starts three services:
 
-- `prometheus-init`: a busybox one-shot that writes the first key from `API_KEYS` to
-  `/etc/prometheus-secrets/api_key` in the `prometheus_secrets` volume. The file is mode 0600 and
-  owned by Prometheus's user; it is never printed or committed.
+- `prometheus-init`: a busybox one-shot that writes the scrape key to
+  `/etc/prometheus-secrets/api_key` in the `prometheus_secrets` volume. The key is
+  `PROMETHEUS_API_KEY` if it is set, otherwise the first entry in `API_KEYS`. The file is mode
+  0600 and owned by Prometheus's user; it is never printed or committed.
 - `prometheus`: scrapes `api:8000/metrics` every 15 s with that bearer key file
   (`monitoring/prometheus.yml`).
 - `grafana`: provisioned from `monitoring/grafana/`. It allows anonymous read-only viewing and
@@ -1225,7 +1239,9 @@ self-contained `.html` table (gitignored) with three sections:
   and the KS statistic for `area_sqm`, `bedrooms` and price per m². Categorical PSI covers
   `reg_type`, `sub_kind` and `area_id` (top 30 areas, the rest pooled). The reference is the price
   model's training window (`TrainConfig.train_start` to `val_start`); the current window is the
-  last N months up to the data end. PSI above 0.2 is flagged.
+  last N months up to the data end. A feature is flagged when PSI is above 0.2, or when a
+  numeric feature's KS statistic is above 0.3. A numeric feature that is constant in the
+  reference is binned as below / equal to / above that value.
 - **Forecast residuals:** the `zestimator-forecast-3m` champion's MAPE on rows after its
   `test_end` whose 3-month target window has fully happened, next to its gate MAPE. The DLD data
   currently ends in 2023, so this section reads `no newer resolved targets` until newer sales
@@ -1257,9 +1273,18 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
   to see which component is down. `API_COMPONENTS=price,forecast` limits what loads.
 - **The demo says the API is unreachable or the key is wrong**: `DEMO_API_KEY` must be one of
   `API_KEYS`. Inside compose the demo uses `http://api:8000`.
-- **A Prometheus target shows 401**: `prometheus-init` wrote an old key. After changing
-  `API_KEYS`, run `docker compose --profile monitoring up -d --force-recreate prometheus-init prometheus`.
-- **`prometheus-init` exits 1**: `API_KEYS` is empty.
+- **A Prometheus target shows 401**: `prometheus-init` wrote an old key, or `PROMETHEUS_API_KEY`
+  isn't listed in `API_KEYS`. After changing either, run
+  `docker compose --profile monitoring up -d --force-recreate prometheus-init prometheus`.
+- **A Prometheus target shows 429**: the scrape key shares a rate-limit bucket with other
+  traffic. Give Prometheus its own `PROMETHEUS_API_KEY`.
+- **`prometheus-init` exits 1**: both `PROMETHEUS_API_KEY` and `API_KEYS` are empty.
+- **`api` fails with a permission error under `/home/app/.cache/huggingface`**: the `hf_cache`
+  named volume takes its ownership from the image the first time it is created. A volume created
+  by an older image, or by another container running as root, stays root-owned. Fix it with
+  `docker compose run --rm --user root --entrypoint chown api -R app:app /home/app/.cache/huggingface`,
+  or remove just that volume (`docker volume rm zestimator_hf_cache`, with the API stopped) so the
+  models download again.
 - **Grafana exits with "set GRAFANA_ADMIN_PASSWORD"**: set it in `.env`. Changing it later needs
   `grafana cli admin reset-admin-password`, because Grafana stores the password in the
   `grafana_data` volume.
