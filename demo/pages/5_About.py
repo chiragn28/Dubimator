@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import streamlit as st
 
-from demo.client import ApiProblem, get_client
-from demo.ui import DATA_NOTE, SYNTHETIC_NOTE, render_component_status, show_problem
+from demo.client import ApiProblem
+from demo.ui import (
+    DATA_NOTE,
+    SYNTHETIC_NOTE,
+    cached_ready,
+    render_component_status,
+    show_problem,
+)
 
 st.set_page_config(page_title="About — Zestimator", layout="wide")
 st.title("About")
@@ -35,14 +41,13 @@ corpus, never over a real seller's data.
   synthetic listings corpus once the `listings` component is up.
 
 ### Links
-- [README (Demo section)](../README.md#demo)
 - [Architecture](https://claude.ai/artifact/6keTdjksn2nWLnkVmNbMRw)
 """
 )
 
 st.subheader("Current deployment status")
 try:
-    ready = get_client().ready()
+    ready = cached_ready()
 except ApiProblem as problem:
     show_problem(problem)
 else:

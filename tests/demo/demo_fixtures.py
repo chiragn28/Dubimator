@@ -2,19 +2,29 @@
 
 Mirrors the Phase 7 API response shapes from the Phase 8 design (see
 `docs/superpowers/specs/2026-09-17-phase8-demo-design.md`) closely enough for
-the pages under test, without importing anything from `api/*`.
+the pages under test. Request bodies, though, are validated with the API's real
+request models (`PriceRequest`, `ForecastRequest`, `ListingCheckRequest`), so a page that
+builds a body the API would reject fails its test. Only the test side imports `api`/`models`;
+the demo package itself never does.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
+
+from api.schemas import ForecastRequest, ListingCheckRequest
 from demo.client import ApiProblem
+from models.price.predictor import PriceRequest
 
 READY_PAYLOAD = {
-    "price": {"up": True, "version": "price-v3", "error": None},
-    "forecast": {"up": True, "version": "forecast-v1", "error": None},
-    "search": {"up": True, "version": "search-v2", "error": None},
-    "listings": {"up": True, "version": "listings-v1", "error": None},
-    "areas": {"up": True, "version": "areas-v1", "error": None},
+    "status": "ok",
+    "components": {
+        "price": {"up": True, "version": "price-v3", "error": None},
+        "forecast": {"up": True, "version": "forecast-v1", "error": None},
+        "search": {"up": True, "version": "search-v2", "error": None},
+        "listings": {"up": True, "version": "listings-v1", "error": None},
+        "areas": {"up": True, "version": "areas-v1", "error": None},
+    },
 }
 
 PRICE_PAYLOAD = {
@@ -186,25 +196,41 @@ class FakeClient:
 
     `fail` maps a method name (e.g. `"forecast"`) to the `ApiProblem` it
     should raise instead of returning its usual payload, so a test can make
-    any single call fail without touching the others.
+    any single call fail without touching the others. `areas_payload`
+    replaces the `/v1/areas` response.
+
+    Every call is recorded in `calls[name]` (the body for POSTs, the argument
+    otherwise). POST bodies are validated against the API's request models
+    first, so an invalid body raises `pydantic.ValidationError`.
     """
 
-    def __init__(self, fail: dict[str, ApiProblem] | None = None) -> None:
+    def __init__(
+        self,
+        fail: dict[str, ApiProblem] | None = None,
+        areas_payload: dict | None = None,
+    ) -> None:
         self._fail = fail or {}
+        self._areas_payload = areas_payload if areas_payload is not None else AREAS_PAYLOAD
+        self.calls: dict[str, list] = defaultdict(list)
 
     def _maybe_fail(self, name: str) -> None:
         if name in self._fail:
             raise self._fail[name]
 
     def ready(self) -> dict:
+        self.calls["ready"].append(None)
         self._maybe_fail("ready")
         return READY_PAYLOAD
 
     def price(self, body: dict) -> dict:
+        PriceRequest.model_validate(body)
+        self.calls["price"].append(body)
         self._maybe_fail("price")
         return PRICE_PAYLOAD
 
     def forecast(self, body: dict) -> dict:
+        ForecastRequest.model_validate(body)
+        self.calls["forecast"].append(body)
         self._maybe_fail("forecast")
         return FORECAST_PAYLOAD
 
@@ -221,14 +247,18 @@ class FakeClient:
         return payload
 
     def check_listing(self, body: dict) -> dict:
+        ListingCheckRequest.model_validate(body)
+        self.calls["check_listing"].append(body)
         self._maybe_fail("check_listing")
         return CHECK_LISTING_PAYLOAD
 
     def areas(self) -> dict:
+        self.calls["areas"].append(None)
         self._maybe_fail("areas")
-        return AREAS_PAYLOAD
+        return self._areas_payload
 
     def area_history(self, area_id) -> dict:
+        self.calls["area_history"].append(area_id)
         self._maybe_fail("area_history")
         key = int(area_id)
         return AREA_HISTORY_PAYLOADS.get(key, AREA_HISTORY_PAYLOADS[1])

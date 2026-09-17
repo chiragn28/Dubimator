@@ -5,8 +5,8 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
-from demo.client import ApiProblem, get_client
-from demo.ui import DATA_NOTE, cached_areas, pct, show_problem
+from demo.client import ApiProblem
+from demo.ui import DATA_NOTE, cached_area_history, cached_areas, show_problem
 
 st.set_page_config(page_title="Area explorer — Zestimator", layout="wide")
 st.title("Area explorer")
@@ -21,23 +21,37 @@ else:
     if not areas:
         st.info("No areas met the minimum sales threshold.")
     else:
-        summary_records = [
+        # Keep the columns numeric so they sort properly; formatting happens in column_config.
+        # change_12m can be None (too few sales a year earlier) and shows as an empty cell.
+        summary = pd.DataFrame(
             {
-                "Area": area["name"],
-                "Median AED/m² (12m)": area["median_ppsm_12m"],
-                "Change (12m)": pct(area["change_12m"]),
-                "Sales (12m)": area["sales_12m"],
+                "Area": [area["name"] for area in areas],
+                "Median AED/m² (12m)": pd.Series(
+                    [area["median_ppsm_12m"] for area in areas], dtype="float64"
+                ),
+                "Change (12m)": pd.Series(
+                    [area.get("change_12m") for area in areas], dtype="float64"
+                ),
+                "Sales (12m)": pd.Series([area["sales_12m"] for area in areas], dtype="int64"),
             }
-            for area in areas
-        ]
-        st.dataframe(pd.DataFrame(summary_records), use_container_width=True)
+        )
+        st.dataframe(
+            summary,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Median AED/m² (12m)": st.column_config.NumberColumn(format="%,.0f"),
+                "Change (12m)": st.column_config.NumberColumn(format="percent"),
+                "Sales (12m)": st.column_config.NumberColumn(format="%,d"),
+            },
+        )
 
         area_by_name = {area["name"]: area["area_id"] for area in areas}
         selected_name = st.selectbox("Area", sorted(area_by_name))
         selected_area_id = area_by_name[selected_name]
 
         try:
-            history = get_client().area_history(selected_area_id)
+            history = cached_area_history(selected_area_id)
         except ApiProblem as problem:
             show_problem(problem)
         else:

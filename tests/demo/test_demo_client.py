@@ -242,6 +242,71 @@ def test_timeout_exception_gives_unreachable():
     assert BASE_URL in problem.message
 
 
+@pytest.mark.parametrize(
+    "error",
+    [httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError],
+    ids=lambda e: e.__name__,
+)
+def test_other_transport_errors_give_unreachable(error):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise error("connection dropped", request=request)
+
+    client = ApiClient(BASE_URL, key="secret", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ApiProblem) as exc_info:
+        client.ready()
+
+    assert exc_info.value.code == "unreachable"
+    assert exc_info.value.status == 0
+
+
+def test_non_json_success_gives_bad_response():
+    def factory(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text="<html>proxy page</html>", headers={"X-Request-ID": "r9"})
+
+    transport, _ = recording_transport(factory)
+    client = ApiClient(BASE_URL, key="secret", transport=transport)
+
+    with pytest.raises(ApiProblem) as exc_info:
+        client.ready()
+
+    problem = exc_info.value
+    assert problem.status == 200
+    assert problem.code == "bad_response"
+    assert problem.request_id == "r9"
+
+
+def test_non_object_success_gives_bad_response():
+    transport, _ = recording_transport(json_response(200, [1, 2, 3]))
+    client = ApiClient(BASE_URL, key="secret", transport=transport)
+
+    with pytest.raises(ApiProblem) as exc_info:
+        client.areas()
+
+    assert exc_info.value.code == "bad_response"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [["not", "a", "dict"], "just a string", {"error": "plain string"}, {"detail": "Not Found"}],
+    ids=["list", "string", "error-string", "fastapi-detail"],
+)
+def test_error_bodies_that_are_not_envelopes_give_http_error(payload):
+    transport, _ = recording_transport(
+        json_response(404, payload, headers={"X-Request-ID": "hdr-2"})
+    )
+    client = ApiClient(BASE_URL, key="secret", transport=transport)
+
+    with pytest.raises(ApiProblem) as exc_info:
+        client.ready()
+
+    problem = exc_info.value
+    assert problem.status == 404
+    assert problem.code == "http_error"
+    assert problem.message == "HTTP 404"
+    assert problem.request_id == "hdr-2"
+
+
 def test_no_key_raises_without_sending_request():
     transport, calls = recording_transport(json_response(200, {}))
     client = ApiClient(BASE_URL, key=None, transport=transport)

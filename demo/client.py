@@ -58,34 +58,40 @@ class ApiClient:
         headers = {"X-API-Key": self._key}
         try:
             response = self._client.request(method, path, params=params, json=json, headers=headers)
-        except (httpx.ConnectError, httpx.TimeoutException):
+        except httpx.TransportError:
+            # Connect/read/write errors, timeouts and protocol errors all mean the same thing
+            # to a visitor: the API isn't answering properly at the configured URL.
             raise ApiProblem(
                 0, "unreachable", f"cannot reach the API at {self._base_url}"
             ) from None
 
-        if response.status_code // 100 != 2:
-            request_id_header = response.headers.get("X-Request-ID")
-            try:
-                body = response.json()
-            except ValueError:
-                raise ApiProblem(
-                    response.status_code,
-                    "http_error",
-                    f"HTTP {response.status_code}",
-                    request_id=request_id_header,
-                ) from None
+        request_id_header = response.headers.get("X-Request-ID")
+        try:
+            body = response.json()
+        except ValueError:
+            body = None  # not JSON (e.g. a proxy's HTML error page)
 
-            error = body.get("error") or {}
-            request_id = body.get("request_id") or request_id_header
+        if response.status_code // 100 != 2:
+            envelope = body if isinstance(body, dict) else {}
+            error = envelope.get("error")
+            if not isinstance(error, dict):
+                error = {}
             raise ApiProblem(
                 response.status_code,
-                error.get("code", "http_error"),
-                error.get("message", f"HTTP {response.status_code}"),
+                error.get("code") or "http_error",
+                error.get("message") or f"HTTP {response.status_code}",
                 field=error.get("field"),
-                request_id=request_id,
+                request_id=envelope.get("request_id") or request_id_header,
             )
 
-        return response.json()
+        if not isinstance(body, dict):
+            raise ApiProblem(
+                response.status_code,
+                "bad_response",
+                f"the API at {self._base_url} sent an unexpected response",
+                request_id=request_id_header,
+            )
+        return body
 
     def ready(self) -> dict:
         return self._request("GET", "/v1/ready")

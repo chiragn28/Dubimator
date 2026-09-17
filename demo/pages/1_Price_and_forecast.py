@@ -11,8 +11,21 @@ st.set_page_config(page_title="Price & forecast — Zestimator", layout="wide")
 st.title("Price & forecast")
 st.caption(DATA_NOTE)
 
-PROPERTY_KINDS = ["apartment", "villa", "townhouse"]
-STATUSES = ["ready", "offplan"]
+PROPERTY_KINDS = ["apartment", "hotel_apartment", "townhouse", "villa"]
+STATUSES = ["ready", "off_plan"]
+SIZE_BASES = ["built_up", "plot"]
+BEDROOM_CHOICES = [None, *range(9)]  # the API accepts 0-8; None leaves it unspecified
+
+
+def _label(value: str) -> str:
+    return value.replace("_", " ")
+
+
+def _bedrooms_label(value: int | None) -> str:
+    if value is None:
+        return "not specified"
+    return "studio" if value == 0 else str(value)
+
 
 area_names: dict[str, int] = {}
 areas_available = True
@@ -22,35 +35,53 @@ try:
 except ApiProblem:
     areas_available = False
 
+# Outside the form so choosing "villa" immediately offers the size basis below.
+kind = st.selectbox("Property type", PROPERTY_KINDS, format_func=_label, key="price_kind")
+
 with st.form("price_form"):
+    area_id: int | None = None
+    area_text: str | None = None
     if areas_available and area_names:
-        area_choice = st.selectbox("Area", sorted(area_names))
+        area_choice = st.selectbox("Area", sorted(area_names), key="price_area")
         area_id = area_names[area_choice]
     else:
-        area_choice = st.text_input("Area (name)")
-        area_id = None
+        area_text = st.text_input("Area (name)", key="price_area_name").strip() or None
         st.caption("Couldn't load the areas list — type the area name instead.")
 
-    kind = st.selectbox("Property type", PROPERTY_KINDS)
-    status = st.selectbox("Status", STATUSES)
-    size_sqm = st.number_input("Size (sqm)", min_value=20.0, max_value=2000.0, value=120.0)
-    bedrooms = st.number_input("Bedrooms", min_value=0, max_value=10, value=2, step=1)
-    building = st.text_input("Building (optional)")
-    project = st.text_input("Project (optional)")
+    status = st.selectbox("Status", STATUSES, format_func=_label, key="price_status")
+    size_sqm = st.number_input(
+        "Size (sqm)", min_value=20.0, max_value=2000.0, value=120.0, key="price_size"
+    )
+    if kind == "villa":
+        size_basis = st.selectbox(
+            "Size measured as",
+            SIZE_BASES,
+            format_func=lambda basis: "built-up area" if basis == "built_up" else "plot area",
+            key="price_size_basis",
+        )
+    else:
+        size_basis = "built_up"
+    bedrooms = st.selectbox(
+        "Bedrooms", BEDROOM_CHOICES, index=3, format_func=_bedrooms_label, key="price_bedrooms"
+    )
+    building = st.text_input("Building (optional)", key="price_building").strip()
+    project = st.text_input("Project (optional)", key="price_project").strip()
 
     submitted = st.form_submit_button("Estimate")
 
 if submitted:
     body = {
         "area_id": area_id,
-        "area_name": area_choice,
-        "kind": kind,
+        "area": area_text,
+        "property_kind": kind,
         "status": status,
-        "size_sqm": size_sqm,
-        "bedrooms": int(bedrooms),
+        "size_sqm": float(size_sqm),
+        "size_basis": size_basis,
+        "bedrooms": bedrooms,
         "building": building or None,
         "project": project or None,
     }
+    body = {key: value for key, value in body.items() if value is not None}
 
     try:
         price = get_client().price(body)

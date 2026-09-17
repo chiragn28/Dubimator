@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import streamlit as st
 
-from demo.client import ApiProblem, get_client
+from demo import client as api_client
+from demo.client import ApiProblem
 
 DATA_NOTE = "Data as of 2023-03-17 (Dubai Land Department)."
 SYNTHETIC_NOTE = "Listings are synthetic, generated over real DLD sales, and labelled."
 
+_SETUP_CODES = frozenset({"no_key", "unreachable", "unauthorized"})
 _SETUP_HINT = (
     "Set DEMO_API_URL and DEMO_API_KEY (in a .env file or your shell) and reload the page."
 )
@@ -23,24 +25,19 @@ _SETUP_HINT = (
 def show_problem(problem: ApiProblem) -> None:
     """Render an `ApiProblem` as a friendly error, with its request id.
 
-    `no_key` and `unreachable` are the two problems a visitor can fix
-    themselves (a missing or wrong `DEMO_API_URL`/`DEMO_API_KEY`), so those
-    get an extra setup hint.
+    `no_key`, `unreachable` and `unauthorized` are the problems whoever runs
+    the demo can fix themselves (a missing or wrong `DEMO_API_URL` /
+    `DEMO_API_KEY`), so those get an extra setup hint.
     """
     st.error(problem.message)
     st.caption(f"request id: {problem.request_id or 'n/a'}")
-    if problem.code in ("no_key", "unreachable"):
+    if problem.code in _SETUP_CODES:
         st.info(_SETUP_HINT)
 
 
 def money(aed: float) -> str:
     """Format an AED amount, e.g. `money(1455490)` -> `"AED 1,455,490"`."""
     return f"AED {aed:,.0f}"
-
-
-def pct(x: float) -> str:
-    """Format a ratio as a signed percentage, e.g. `pct(0.032)` -> `"+3.2%"`."""
-    return f"{x * 100:+.1f}%"
 
 
 def forecast_rows(forecast: dict) -> list[dict]:
@@ -80,10 +77,9 @@ def forecast_rows(forecast: dict) -> list[dict]:
 def render_component_status(ready: dict) -> None:
     """Render each API component's up/down state and version.
 
-    Defensive about shape: the real `/v1/ready` may nest components under
-    `"components"`; a fake or older payload may put them at the top level.
+    `/v1/ready` nests them under `"components"`.
     """
-    components = ready.get("components", ready)
+    components = ready.get("components")
     if not isinstance(components, dict):
         return
     for name, info in components.items():
@@ -103,4 +99,16 @@ def render_component_status(ready: dict) -> None:
 @st.cache_data(ttl=600)
 def cached_areas() -> dict:
     """`GET /v1/areas`, cached for 10 minutes (the spec's caching decision)."""
-    return get_client().areas()
+    return api_client.get_client().areas()
+
+
+@st.cache_data(ttl=600)
+def cached_area_history(area_id: int) -> dict:
+    """`GET /v1/areas/{id}/history`, cached for 10 minutes."""
+    return api_client.get_client().area_history(area_id)
+
+
+@st.cache_data(ttl=600)
+def cached_ready() -> dict:
+    """`GET /v1/ready`, cached for 10 minutes."""
+    return api_client.get_client().ready()

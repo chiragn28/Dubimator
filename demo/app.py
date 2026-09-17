@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-from demo.client import ApiProblem, get_client
-from demo.ui import DATA_NOTE, render_component_status, show_problem
+from demo.client import ApiProblem
+from demo.ui import DATA_NOTE, cached_ready, render_component_status, show_problem
 
 st.set_page_config(page_title="Zestimator", layout="wide")
 
@@ -24,7 +24,7 @@ st.write(
 with st.sidebar:
     st.subheader("API status")
     try:
-        ready = get_client().ready()
+        ready = cached_ready()
     except ApiProblem as problem:
         show_problem(problem)
     else:
