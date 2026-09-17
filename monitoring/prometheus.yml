@@ -6,7 +6,7 @@ global:
   evaluation_interval: 15s
 
 scrape_configs:
-  - job_name: zestimator-api
+  - job_name: dubimator-api
     metrics_path: /metrics
     scheme: http
     authorization:

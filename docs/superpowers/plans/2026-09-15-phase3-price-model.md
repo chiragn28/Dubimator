@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Train, evaluate and register a home price model on `dld.market_sales`. It uses location priors, a market index and XGBoost on the GPU, has calibrated price ranges, and is served through a self-contained MLflow pyfunc (`models:/zestimator-price@champion`).
+**Goal:** Train, evaluate and register a home price model on `dld.market_sales`. It uses location priors, a market index and XGBoost on the GPU, has calibrated price ranges, and is served through a self-contained MLflow pyfunc (`models:/dubimator-price@champion`).
 
 **Architecture:** The package `models/price/` holds small modules:
 - pure Polars feature code: segments, market index, location priors
@@ -37,7 +37,7 @@
 - `tests/conftest.py` loads `.env`, which points MLflow at the real server. Every test that touches MLflow MUST use the `temp_mlflow` fixture (Task 10), so tests never write to the real server or to `./mlruns`.
 - Work directly on `master`. Stage specific files only; never `git add -A` or `git add .`. Never commit `.env`, `data/raw/*` or `mlruns/`.
 - Commit message trailer: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
-- Run commands from the repo root `C:\Users\cnaya\OneDrive\Desktop\zestimator` in Git Bash, always through `uv run`.
+- Run commands from the repo root `C:\Users\cnaya\OneDrive\Desktop\dubimator` in Git Bash, always through `uv run`.
 - At the end of every task, run `uv run ruff format .`, then `uv run ruff check . && uv run ruff format --check .` must be clean. The plan's code is correct but not always formatter-wrapped; formatting it is expected.
 - Test layout follows Phase 2:
   - no `__init__.py` anywhere under `tests/` (a `tests/models` package would shadow the real `models` package)
@@ -169,7 +169,7 @@ def test_default_tunables_match_spec():
     assert (config.shrink_k, config.min_level_n, config.half_life_days) == (10.0, 3.0, 730.5)
     assert (config.n_trials, config.max_rounds, config.early_stopping_rounds) == (60, 4_000, 100)
     assert config.gate_ratio == 0.90
-    assert (config.experiment, config.model_name) == ("price-model", "zestimator-price")
+    assert (config.experiment, config.model_name) == ("price-model", "dubimator-price")
 ```
 
 - [ ] **Step 4: Run the test to verify it fails**
@@ -245,7 +245,7 @@ class TrainConfig:
     seed: int = 42
     gate_ratio: float | None = 0.90  # None disables the acceptance gate (tests only)
     experiment: str = "price-model"
-    model_name: str = "zestimator-price"
+    model_name: str = "dubimator-price"
 ```
 
 - [ ] **Step 6: Run the tests to verify they pass**
@@ -656,7 +656,7 @@ def load_homes(settings: DbSettings, config: TrainConfig) -> HomesData:
 - [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/models/price/test_price_segments.py tests/models/price/test_price_data.py -v`
-Expected: PASS. The DB test needs the stack up; it creates and drops `zestimator_test`.
+Expected: PASS. The DB test needs the stack up; it creates and drops `dubimator_test`.
 
 - [ ] **Step 7: Lint and commit**
 
@@ -3212,9 +3212,9 @@ def test_log_register_load_and_predict(temp_mlflow, tiny_bundle, tmp_path):
     with mlflow.start_run(run_name="xgb-production"):
         log_metrics({"test_clean.all.mdape": 0.12, "not_finite": float("nan")})
         model_uri = log_price_model(tmp_path / "model_dir")
-    assert register_champion(model_uri, "zestimator-price-test") == "1"
+    assert register_champion(model_uri, "dubimator-price-test") == "1"
 
-    model = mlflow.pyfunc.load_model("models:/zestimator-price-test@champion")
+    model = mlflow.pyfunc.load_model("models:/dubimator-price-test@champion")
     out = model.predict(REQUESTS)
     assert len(out) == 2
     assert (out["estimate_aed"] > 0).all()
@@ -3231,8 +3231,8 @@ def test_registering_again_moves_the_champion_alias(temp_mlflow, tiny_bundle, tm
     for expected in ("1", "2"):
         with mlflow.start_run():
             uri = log_price_model(tmp_path / "model_dir")
-        assert register_champion(uri, "zestimator-price-test") == expected
-    alias = mlflow.MlflowClient().get_model_version_by_alias("zestimator-price-test", "champion")
+        assert register_champion(uri, "dubimator-price-test") == expected
+    alias = mlflow.MlflowClient().get_model_version_by_alias("dubimator-price-test", "champion")
     assert alias.version == "2"
 
 
@@ -3275,7 +3275,7 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'models.price.pyfunc'`
 - [ ] **Step 4: Implement `pyfunc.py`**
 
 ```python
-"""MLflow pyfunc wrapper so serving loads one artifact: models:/zestimator-price@champion."""
+"""MLflow pyfunc wrapper so serving loads one artifact: models:/dubimator-price@champion."""
 
 import importlib.metadata
 import math
@@ -3606,7 +3606,7 @@ SMALL = dataclasses.replace(
     early_stopping_rounds=20,
     gate_ratio=None,
     experiment="price-integration",
-    model_name="zestimator-price-it",
+    model_name="dubimator-price-it",
 )
 
 
@@ -3640,7 +3640,7 @@ def test_end_to_end_training_registers_a_working_champion(pg_test_db, temp_mlflo
     assert {"b0-comps", "b1-lightgbm", "xgb-tune", "trial-000", "trial-001",
             "xgb-champion-eval", "xgb-production"} <= run_names  # fmt: skip
 
-    model = mlflow.pyfunc.load_model("models:/zestimator-price-it@champion")
+    model = mlflow.pyfunc.load_model("models:/dubimator-price-it@champion")
     predictor = model.unwrap_python_model().predictor
     areas = predictor.bundle.priors.stats["area"].filter(pl.col("property_type") == "unit")
     busiest_area = int(areas.sort("sum_w", descending=True)["area_id"][0])
@@ -4218,14 +4218,14 @@ EOF
 The Docker stack must be up (`docker compose up -d --wait`), and `dld` must hold the full ingestion (run 6: 707,655 market sales). This takes roughly 15–45 minutes, so start it in the background and wait for it to exit:
 
 ```bash
-uv run python -m models.price train 2>&1 | tee /tmp/zestimator-price-train.log
+uv run python -m models.price train 2>&1 | tee /tmp/dubimator-price-train.log
 ```
 
 Expected:
 - the first log line reports `device cuda`
 - 60 trial lines
 - a metric table
-- `Registered zestimator-price version N as @champion`
+- `Registered dubimator-price version N as @champion`
 - exit code 0
 
 What to do with each exit code:
@@ -4246,7 +4246,7 @@ Each must print JSON with `estimate_aed > 0`, `as_of` equal to `2023-03-17`, and
 - [ ] **Step 6: Measure CPU speed for the README comparison**
 
 ```bash
-uv run python -m models.price train --trials 3 --device cpu --no-register 2>&1 | tee /tmp/zestimator-price-cpu.log
+uv run python -m models.price train --trials 3 --device cpu --no-register 2>&1 | tee /tmp/dubimator-price-cpu.log
 ```
 
 The CPU seconds per trial are `xgb-tune` seconds ÷ 3 from this log. The GPU figure is `xgb-tune` seconds ÷ 60 from the GPU log. The gate may pass or fail here; only the timing matters, and nothing is registered.
@@ -4272,7 +4272,7 @@ for name in ("b0-comps", "b1-lightgbm", "xgb-champion-eval"):
 PY
 ```
 
-Save the output next to the training log (`/tmp/zestimator-price-metrics.txt`). Every number in the README comes from these two files. Round MdAPE to one decimal place of a percent.
+Save the output next to the training log (`/tmp/dubimator-price-metrics.txt`). Every number in the README comes from these two files. Round MdAPE to one decimal place of a percent.
 
 - [ ] **Step 8: Update the README**
 
@@ -4284,7 +4284,7 @@ Make these edits in `README.md`:
 ```
     TRAIN["python -m models.price train<br/>(XGBoost on the GPU)"]
     PG -->|"home sales"| TRAIN
-    TRAIN -->|"runs + zestimator-price@champion"| ML
+    TRAIN -->|"runs + dubimator-price@champion"| ML
 ```
 
 3. Insert this section immediately before `## Cost breakdown (current)`. Replace every `‹…›` with the real value from the logs; no `‹` may remain.
@@ -4322,7 +4322,7 @@ uv run python -m models.price predict --area "JVC" --kind apartment --status rea
 - **Model:** XGBoost on the GPU, tuned by Optuna. It is compared against an
   area-comps rule (B0) and LightGBM (B1), and it must beat B0's test MdAPE by
   10% to be registered.
-- **Serving:** one MLflow pyfunc, `models:/zestimator-price@champion`.
+- **Serving:** one MLflow pyfunc, `models:/dubimator-price@champion`.
   - input validation
   - unseen-location fallback
   - clipping of implausible predictions
@@ -4403,7 +4403,7 @@ Append to `docs/superpowers/specs/2026-09-15-phase3-price-model-design.md`:
 - **Real run (‹date›):**
   - ‹N› training rows
   - champion test MdAPE ‹›% against B0 ‹›%
-  - registered as `zestimator-price` v‹N›
+  - registered as `dubimator-price` v‹N›
 ```
 
 - [ ] **Step 10: Final verification and commit**

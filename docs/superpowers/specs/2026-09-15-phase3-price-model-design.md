@@ -11,7 +11,7 @@ Train a model that estimates the fair market price of a Dubai home from its
 location, type, size and status. Evaluate it honestly on a held-out future
 period against a comps baseline, attach calibrated price ranges so it can flag
 mis-priced listings, log everything to MLflow, and register the model as one
-self-contained artifact (`models:/zestimator-price@champion`) that the Phase 6
+self-contained artifact (`models:/dubimator-price@champion`) that the Phase 6
 API can load and call without a database.
 
 ## Decisions (user, 2026-09-15)
@@ -412,7 +412,7 @@ Guardrails (flags):
   - prints a metric table for every model and the registered version
   - exit codes: 0 success, 1 error, 2 acceptance gate failed
 - `python -m models.price predict --area "JVC" --kind apartment --status ready --size 75 [--bedrooms 1] [--asking 900000]`
-  - loads `models:/zestimator-price@champion` and prints the estimate as
+  - loads `models:/dubimator-price@champion` and prints the estimate as
     JSON, for manual checks and the README
 
 ## Testing
@@ -542,7 +542,7 @@ Integration:
   - champion test MdAPE 12.6% against B0 17.3% (B1 LightGBM 13.0%)
   - 80% range coverage on the clean test set is 73.9%, under the 80% target;
     95% coverage is 93.5%
-  - registered as `zestimator-price` v1
+  - registered as `dubimator-price` v1
 
 ### Final-review fixes (2026-09-16)
 
@@ -592,7 +592,7 @@ Integration:
   `POSTGRES_PORT` is unset, naming `.env` and `load_dotenv()`. The other
   defaults stay. The Airflow container sets `POSTGRES_PORT` in
   docker-compose.
-- **Rerun after these fixes (2026-09-16), `zestimator-price` v2:**
+- **Rerun after these fixes (2026-09-16), `dubimator-price` v2:**
   - Same rows and 60 GPU trials, 316 s end to end, now the `@champion`;
     v1 stays in the registry.
   - The evaluation metrics equal v1's to four decimals: champion test

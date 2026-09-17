@@ -13,7 +13,7 @@ from demo.ui import (
     show_problem,
 )
 
-st.set_page_config(page_title="About — Zestimator", layout="wide")
+st.set_page_config(page_title="About — Dubimator", layout="wide")
 st.title("About")
 
 st.markdown(
@@ -41,7 +41,7 @@ corpus, never over a real seller's data.
   synthetic listings corpus once the `listings` component is up.
 
 ### Links
-- [Architecture](https://zestimator-architecture.vercel.app)
+- [Architecture](https://dubimator-architecture.vercel.app)
 """
 )
 

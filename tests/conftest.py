@@ -13,7 +13,7 @@ load_dotenv()  # no override: shell env wins, matching docker compose's own prec
 
 from ingestion.config import DbSettings
 
-TEST_DB = "zestimator_test"
+TEST_DB = "dubimator_test"
 
 
 def _infra_unavailable(message: str) -> None:

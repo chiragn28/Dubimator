@@ -35,22 +35,22 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_USER: zestimator
+          POSTGRES_USER: dubimator
           POSTGRES_PASSWORD: changeme
-          POSTGRES_DB: zestimator
+          POSTGRES_DB: dubimator
         ports:
           - 5433:5432
         options: >-
-          --health-cmd "pg_isready -U zestimator -d zestimator"
+          --health-cmd "pg_isready -U dubimator -d dubimator"
           --health-interval 5s
           --health-timeout 5s
           --health-retries 10
     env:
       POSTGRES_HOST: 127.0.0.1
       POSTGRES_PORT: 5433
-      POSTGRES_USER: zestimator
+      POSTGRES_USER: dubimator
       POSTGRES_PASSWORD: changeme
-      POSTGRES_DB: zestimator
+      POSTGRES_DB: dubimator
       # CI really does bring Postgres up (above), so a missing/unreachable DB is a real
       # problem, not something to quietly skip — see tests/conftest.py::pg_test_db.
       REQUIRE_INFRA: "1"
@@ -107,13 +107,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Build MLflow image
-        run: docker build -f Dockerfile.mlflow -t zestimator-mlflow:ci .
+        run: docker build -f Dockerfile.mlflow -t dubimator-mlflow:ci .
 
       - name: Build Airflow image
-        run: docker build -f Dockerfile.airflow -t zestimator-airflow:ci .
+        run: docker build -f Dockerfile.airflow -t dubimator-airflow:ci .
 
       - name: Build API image
-        run: docker build -f Dockerfile.api -t zestimator-api:ci .
+        run: docker build -f Dockerfile.api -t dubimator-api:ci .
 
       - name: Build demo image
-        run: docker build -f Dockerfile.demo -t zestimator-demo:ci .
+        run: docker build -f Dockerfile.demo -t dubimator-demo:ci .

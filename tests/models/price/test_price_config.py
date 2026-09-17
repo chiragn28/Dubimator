@@ -51,4 +51,4 @@ def test_default_tunables_match_spec():
     assert (config.shrink_k, config.min_level_n, config.half_life_days) == (10.0, 3.0, 730.5)
     assert (config.n_trials, config.max_rounds, config.early_stopping_rounds) == (60, 4_000, 100)
     assert config.gate_ratio == 0.90
-    assert (config.experiment, config.model_name) == ("price-model", "zestimator-price")
+    assert (config.experiment, config.model_name) == ("price-model", "dubimator-price")

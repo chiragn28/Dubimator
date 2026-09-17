@@ -47,7 +47,7 @@
 - Tuning: Optuna, 40 trials per model, TPE seeded, early stopping after 50 rounds on the tune split.
 - The report split is never used to fit, tune or select a model.
 - Registration gate:
-  - The winner (higher tune NDCG@10) is registered as `zestimator-search-ranker` with alias `champion`.
+  - The winner (higher tune NDCG@10) is registered as `dubimator-search-ranker` with alias `champion`.
   - This happens only if its report NDCG@10 exceeds `baseline_fused`'s **and** its bootstrap 95% CI lower bound exceeds `baseline_fused`'s point estimate.
   - Otherwise `gate.passed = 0` and nothing is registered.
 
@@ -74,14 +74,14 @@
 **Tests**
 - Tests never download a model and never need a GPU. They inject `listings.embed.FakeEmbedder` and force `device="cpu"`.
 - Every MLflow-touching test uses the `temp_mlflow` fixture (copied into `tests/search/conftest.py`). Only the real Task 10 run writes to the server at 127.0.0.1:5000.
-- Tests run **sequentially** (one pytest process at a time; they share the `zestimator_test` database). Never background your own test run.
+- Tests run **sequentially** (one pytest process at a time; they share the `dubimator_test` database). Never background your own test run.
 - Test layout: no `__init__.py` under `tests/`. Files are `tests/search/test_search_<topic>.py`, and shared helpers are fixtures in `tests/search/conftest.py`.
 
 **Git and commands**
 - Work directly on `master`. Stage specific files only; never `git add -A`. Never commit `.env`, `data/`, `mlruns/`.
 - Add `data/search/` to `.gitignore` in Task 1.
 - Commit trailer: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
-- Run from the repo root `C:\Users\cnaya\OneDrive\Desktop\zestimator` in Git Bash, always through `uv run`.
+- Run from the repo root `C:\Users\cnaya\OneDrive\Desktop\dubimator` in Git Bash, always through `uv run`.
 - At the end of every task:
   1. Run `uv run ruff format .`.
   2. `uv run ruff check . && uv run ruff format --check .` must then be clean.
@@ -271,9 +271,9 @@ class SearchConfig:
     n_bootstrap: int = 1_000
     ndcg_k: int = 10
     device: str = "cuda"
-    ranker_name: str = "zestimator-search-ranker"
-    ranker_uri: str = "models:/zestimator-search-ranker@champion"
-    price_model_uri: str = "models:/zestimator-price@champion"
+    ranker_name: str = "dubimator-search-ranker"
+    ranker_uri: str = "models:/dubimator-search-ranker@champion"
+    price_model_uri: str = "models:/dubimator-price@champion"
     experiment: str = "search-ranking"
     seed: int = 7
 ```
@@ -5612,7 +5612,7 @@ def cli_env(search_db, temp_mlflow, monkeypatch, tmp_path):
         "POSTGRES_DB": settings.dbname,
     }.items():
         monkeypatch.setenv(name, value)
-    assert DbSettings.from_env().dbname == "zestimator_test"
+    assert DbSettings.from_env().dbname == "dubimator_test"
     # create the experiment up front so the CLI never falls back to ./mlruns for artifacts
     mlflow.create_experiment("search-ranking", artifact_location=temp_mlflow["artifact_location"])
     return tmp_path / "data"
@@ -6034,7 +6034,7 @@ uv run python -m search query "studio in JVC max 600k" 2>&1 | tee .superpowers/s
 ```
 
 **Gates.** Stop and report BLOCKED if any of these fail:
-- `queries.log` says it embedded on `cuda`, and it contains **no** "value features were SKIPPED" warning. The Phase 3 champion (`models:/zestimator-price@champion`, v2) is registered on the server.
+- `queries.log` says it embedded on `cuda`, and it contains **no** "value features were SKIPPED" warning. The Phase 3 champion (`models:/dubimator-price@champion`, v2) is registered on the server.
 - `train.log` ends with a gate line.
 - The MLflow run named `search-train` exists in experiment `search-ranking` at http://127.0.0.1:5000, with its artifacts.
 

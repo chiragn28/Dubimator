@@ -23,7 +23,7 @@ def cli_env(search_db, temp_mlflow, monkeypatch, tmp_path):
         "POSTGRES_DB": settings.dbname,
     }.items():
         monkeypatch.setenv(name, value)
-    assert DbSettings.from_env().dbname == "zestimator_test"
+    assert DbSettings.from_env().dbname == "dubimator_test"
     # create the experiment up front so the CLI never falls back to ./mlruns for artifacts
     mlflow.create_experiment("search-ranking", artifact_location=temp_mlflow["artifact_location"])
     return tmp_path / "data"

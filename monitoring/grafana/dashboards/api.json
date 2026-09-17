@@ -1,8 +1,8 @@
 {
-  "uid": "zestimator-api",
-  "title": "Zestimator API",
+  "uid": "dubimator-api",
+  "title": "Dubimator API",
   "tags": [
-    "zestimator",
+    "dubimator",
     "api"
   ],
   "timezone": "browser",
@@ -41,7 +41,7 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "up{job=\"zestimator-api\"}",
+          "expr": "up{job=\"dubimator-api\"}",
           "legendFormat": "api",
           "refId": "A",
           "instant": true

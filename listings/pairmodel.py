@@ -17,7 +17,7 @@ from listings.detect import PRICE_FEATURE
 from models.price.pyfunc import artifact_dir
 
 LOGGER = logging.getLogger(__name__)
-PAIR_MODEL_NAME = "zestimator-duplicate-pair"
+PAIR_MODEL_NAME = "dubimator-duplicate-pair"
 PIPELINE_FILE = "pipeline.pkl"
 META_FILE = "pair_model.json"
 

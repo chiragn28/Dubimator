@@ -23,7 +23,7 @@ SMALL = dataclasses.replace(
     early_stopping_rounds=20,
     gate_ratio=None,
     experiment="price-integration",
-    model_name="zestimator-price-it",
+    model_name="dubimator-price-it",
 )
 
 
@@ -79,7 +79,7 @@ def test_end_to_end_training_registers_a_working_champion(pg_test_db, temp_mlflo
     num_rounds = int(eval_run.data.metrics["best_iteration"]) + 1
     assert int(prod_run.data.params["num_boost_round"]) == num_rounds
 
-    model = mlflow.pyfunc.load_model("models:/zestimator-price-it@champion")
+    model = mlflow.pyfunc.load_model("models:/dubimator-price-it@champion")
     predictor = model.unwrap_python_model().predictor
     assert predictor.bundle.metadata["num_boost_round"] == num_rounds
     run_uri = f"runs:/{eval_run.info.run_id}"
@@ -127,5 +127,5 @@ def test_failed_gate_registers_nothing(pg_test_db, temp_mlflow):
         mlflow.search_runs(experiment_names=["price-integration"])["tags.mlflow.runName"]
     )
     assert "xgb-champion-eval" in run_names and "xgb-production" not in run_names
-    registered = mlflow.MlflowClient().search_registered_models("name='zestimator-price-it'")
+    registered = mlflow.MlflowClient().search_registered_models("name='dubimator-price-it'")
     assert registered == []

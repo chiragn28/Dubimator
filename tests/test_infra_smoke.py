@@ -68,9 +68,9 @@ def test_postgres_pgvector():
     conn = psycopg2.connect(
         host=HOST,
         port=port,
-        user=_env("POSTGRES_USER", "zestimator"),
+        user=_env("POSTGRES_USER", "dubimator"),
         password=_env("POSTGRES_PASSWORD", "changeme"),
-        dbname=_env("POSTGRES_DB", "zestimator"),
+        dbname=_env("POSTGRES_DB", "dubimator"),
         connect_timeout=CONNECT_TIMEOUT,
     )
     try:

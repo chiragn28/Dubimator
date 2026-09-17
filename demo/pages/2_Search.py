@@ -7,7 +7,7 @@ import streamlit as st
 from demo.client import ApiProblem, get_client
 from demo.ui import DATA_NOTE, SYNTHETIC_NOTE, money, show_problem
 
-st.set_page_config(page_title="Search — Zestimator", layout="wide")
+st.set_page_config(page_title="Search — Dubimator", layout="wide")
 st.title("Search")
 st.caption(DATA_NOTE)
 st.caption(SYNTHETIC_NOTE)

@@ -204,7 +204,7 @@ class StateHolder:
         return thread
 
 
-PRICE_MODEL_URI = "models:/zestimator-price@champion"
+PRICE_MODEL_URI = "models:/dubimator-price@champion"
 PROBE_SQL = "SELECT 1"
 
 

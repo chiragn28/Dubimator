@@ -8,7 +8,7 @@ import streamlit as st
 from demo.client import ApiProblem
 from demo.ui import DATA_NOTE, cached_area_history, cached_areas, show_problem
 
-st.set_page_config(page_title="Area explorer — Zestimator", layout="wide")
+st.set_page_config(page_title="Area explorer — Dubimator", layout="wide")
 st.title("Area explorer")
 st.caption(DATA_NOTE)
 

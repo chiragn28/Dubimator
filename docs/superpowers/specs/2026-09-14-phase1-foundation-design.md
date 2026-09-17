@@ -39,7 +39,7 @@ smoke test — with nothing else built on top yet.
 ## Repo layout
 
 ```
-zestimator/
+dubimator/
 ├── ingestion/       # (Phase 2+) DLD CSV cleaning pipeline — empty placeholder now
 ├── models/          # (Phase 3+) price/fraud/ranking model code — empty placeholder now
 ├── api/             # (Phase 6) FastAPI service — empty placeholder now
@@ -61,7 +61,7 @@ no logic is implemented in Phase 1.
 
 ## Docker Compose services
 
-- **postgres** — `pgvector/pgvector:pg16` image. App database `zestimator`.
+- **postgres** — `pgvector/pgvector:pg16` image. App database `dubimator`.
   Exposes `5432`. Credentials from `.env` (`POSTGRES_USER`,
   `POSTGRES_PASSWORD`, `POSTGRES_DB`). This is the one database used by
   ingestion/models/API in later phases — pgvector extension enabled at
@@ -112,9 +112,9 @@ each phase actually needs them — no speculative pre-declaration.
 `.env.example` at repo root with placeholder values:
 
 ```
-POSTGRES_USER=zestimator
+POSTGRES_USER=dubimator
 POSTGRES_PASSWORD=changeme
-POSTGRES_DB=zestimator
+POSTGRES_DB=dubimator
 POSTGRES_PORT=5432
 MLFLOW_TRACKING_URI=http://localhost:5000
 AIRFLOW_PORT=8080

@@ -55,4 +55,4 @@ class TrainConfig:
     seed: int = 42
     gate_ratio: float | None = 0.90  # None disables the acceptance gate (tests only)
     experiment: str = "price-model"
-    model_name: str = "zestimator-price"
+    model_name: str = "dubimator-price"

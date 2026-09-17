@@ -1,4 +1,4 @@
-"""MLflow pyfunc wrapper so serving loads one artifact: models:/zestimator-price@champion."""
+"""MLflow pyfunc wrapper so serving loads one artifact: models:/dubimator-price@champion."""
 
 import importlib.metadata
 import math

@@ -79,8 +79,8 @@ class SearchConfig:
     n_bootstrap: int = 1_000
     ndcg_k: int = 10
     device: str = "cuda"
-    ranker_name: str = "zestimator-search-ranker"
-    ranker_uri: str = "models:/zestimator-search-ranker@champion"
-    price_model_uri: str = "models:/zestimator-price@champion"
+    ranker_name: str = "dubimator-search-ranker"
+    ranker_uri: str = "models:/dubimator-search-ranker@champion"
+    price_model_uri: str = "models:/dubimator-price@champion"
     experiment: str = "search-ranking"
     seed: int = 7

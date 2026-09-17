@@ -82,5 +82,5 @@ class ForecastConfig:
     min_driver_contribution: float = 0.005
     device: str = "cuda"
     experiment: str = "price-forecast"
-    model_prefix: str = "zestimator-forecast"
-    price_model_uri: str = "models:/zestimator-price@champion"
+    model_prefix: str = "dubimator-forecast"
+    price_model_uri: str = "models:/dubimator-price@champion"

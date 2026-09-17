@@ -236,7 +236,7 @@ Rows excluded by rules 1–8 have `peer_tier` and `price_robust_z` null.
 `DbSettings(host, port, user, password, dbname)` from env with `load_dotenv()`
 (no override): `POSTGRES_HOST` (default `127.0.0.1`), `POSTGRES_PORT`
 (default `5432`), `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`
-(defaults `zestimator`, `changeme`, `zestimator`).
+(defaults `dubimator`, `changeme`, `dubimator`).
 
 ## CLI
 
@@ -253,12 +253,12 @@ reason counts; exit code 0 on success, 1 on failure with the error on stderr.
   `command: bash -c "rm -f /opt/airflow/*.pid && exec airflow standalone"`
   (clears stale PID files left in the `airflow_data` volume — Phase 1
   residual); `depends_on: postgres: condition: service_healthy`; volumes add
-  `./dags:/opt/airflow/dags`, `./ingestion:/opt/zestimator/ingestion:ro`,
-  `./data:/opt/zestimator/data:ro`; environment adds
-  `PYTHONPATH=/opt/zestimator`, `POSTGRES_HOST=postgres`, `POSTGRES_PORT=5432`
+  `./dags:/opt/airflow/dags`, `./ingestion:/opt/dubimator/ingestion:ro`,
+  `./data:/opt/dubimator/data:ro`; environment adds
+  `PYTHONPATH=/opt/dubimator`, `POSTGRES_HOST=postgres`, `POSTGRES_PORT=5432`
   (container-internal port, not the host-mapped one), `POSTGRES_USER`,
   `POSTGRES_PASSWORD`, `POSTGRES_DB` from `.env`,
-  `DLD_CSV_PATH=/opt/zestimator/data/raw/Transactions.csv`,
+  `DLD_CSV_PATH=/opt/dubimator/data/raw/Transactions.csv`,
   `AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION=false`.
 - `dags/dld_ingestion.py`: `dag_id="dld_ingestion"`, `schedule=None`,
   `catchup=False`, `start_date=2026-01-01`, one task `ingest` calling
@@ -269,7 +269,7 @@ reason counts; exit code 0 on success, 1 on failure with the error on stderr.
 
 - `tests/conftest.py`: `load_dotenv()` once for all tests (moved from
   `tests/test_infra_smoke.py`), plus a `pg_test_db` fixture that creates a fresh
-  database `zestimator_test` on the running Postgres, yields its `DbSettings`,
+  database `dubimator_test` on the running Postgres, yields its `DbSettings`,
   and drops it afterwards; skips (socket check, as in the smoke tests) when
   Postgres isn't reachable.
 - Unit tests (no database), each using malformed DLD-style inputs:

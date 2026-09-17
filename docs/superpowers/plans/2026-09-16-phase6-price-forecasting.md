@@ -97,7 +97,7 @@ A horizon passes only if all three hold:
 2. The model's `all` MAPE is below both baselines' `all` MAPE.
 3. The bootstrap 95% upper bound of the model's `all` MAPE (1,000 row resamples, seeded) is below the lower of the two baselines' `all` MAPE.
 
-A passing horizon is registered as `zestimator-forecast-<h>` with alias `champion`. A failing horizon is never registered.
+A passing horizon is registered as `dubimator-forecast-<h>` with alias `champion`. A failing horizon is never registered.
 
 ### Intervals and confidence
 - **Intervals:** split conformal on |log error| from the tuning-fold validation predictions, with quantile level `(1 − 0.20)(1 + 1/n)` (reuse `models.price.evaluate.conformal_quantile(errors, 0.20)`).
@@ -130,7 +130,7 @@ A passing horizon is registered as `zestimator-forecast-<h>` with alias `champio
   - Work on `master`. Stage specific files only; never `git add -A`. Never commit `.env`, `data/`, `mlruns/` or `.superpowers/`. Add `data/forecast/` to `.gitignore` in Task 1.
   - Commit trailer, verbatim: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
 - **Commands and task completion:**
-  - Run from the repo root `C:\Users\cnaya\OneDrive\Desktop\zestimator` in Git Bash, always through `uv run`.
+  - Run from the repo root `C:\Users\cnaya\OneDrive\Desktop\dubimator` in Git Bash, always through `uv run`.
   - Finish every task with: `uv run ruff format .`, then `uv run ruff check . && uv run ruff format --check .`, then `uv run pytest -q -W error tests/models/forecast`.
 
 ### User stop points
@@ -324,8 +324,8 @@ class ForecastConfig:
     min_driver_contribution: float = 0.005
     device: str = "cuda"
     experiment: str = "price-forecast"
-    model_prefix: str = "zestimator-forecast"
-    price_model_uri: str = "models:/zestimator-price@champion"
+    model_prefix: str = "dubimator-forecast"
+    price_model_uri: str = "models:/dubimator-price@champion"
 ```
 
 - [ ] **Step 3: Write the synthetic history and fixtures**
@@ -3824,10 +3824,10 @@ def test_run_training_registers_only_passing_horizons(dataset, temp_mlflow):
     )  # fmt: skip
     assert summary.versions == {"3m": "1"}
     assert summary.results["1y"].status == "failed"
-    model, version = load_champion("zestimator-forecast-3m")
+    model, version = load_champion("dubimator-forecast-3m")
     assert version == "1" and model is not None
     assert model.horizon == "3m"
-    assert load_champion("zestimator-forecast-1y") == (None, None)
+    assert load_champion("dubimator-forecast-1y") == (None, None)
     gates = latest_gates(FAST.experiment)
     assert gates["3m"] == {"status": "passed", "reason": "passed"}
     assert gates["1y"]["status"] == "failed"
@@ -5008,7 +5008,7 @@ def test_train_end_to_end_then_evaluate_and_predict(monkeypatch, tmp_path, capsy
     assert "3m: passed" in out
     assert "3y: insufficient_data" in out
     assert "segment" in out and "area_trend" in out
-    assert "Registered zestimator-forecast-3m version 1 as @champion" in out
+    assert "Registered dubimator-forecast-3m version 1 as @champion" in out
 
     assert cli.main(["evaluate"]) == 0
     out = capsys.readouterr().out

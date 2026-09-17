@@ -23,7 +23,7 @@
 - Tests connect to Postgres at `127.0.0.1:${POSTGRES_PORT}` (this machine: 5433). NEVER touch the native Windows Postgres on host port 5432.
 - Work directly on `master`. Never `git add -A`/`git add .`; never commit `.env`, `data/raw/*`, or `mlruns/`.
 - Commit message trailer: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
-- Run commands from the repo root `C:\Users\cnaya\OneDrive\Desktop\zestimator` using Git Bash.
+- Run commands from the repo root `C:\Users\cnaya\OneDrive\Desktop\dubimator` using Git Bash.
 
 ---
 
@@ -34,7 +34,7 @@
 - Create: `ingestion/config.py`, `tests/conftest.py`, `tests/ingestion/test_config.py`
 
 **Interfaces:**
-- Produces: `ingestion.config.DbSettings` (frozen dataclass: `host: str, port: int, user: str, password: str, dbname: str`; `DbSettings.from_env() -> DbSettings`; `.connect() -> psycopg2 connection`). Pytest fixture `pg_test_db` (yields `DbSettings` for a fresh database `zestimator_test`).
+- Produces: `ingestion.config.DbSettings` (frozen dataclass: `host: str, port: int, user: str, password: str, dbname: str`; `DbSettings.from_env() -> DbSettings`; `.connect() -> psycopg2 connection`). Pytest fixture `pg_test_db` (yields `DbSettings` for a fresh database `dubimator_test`).
 
 - [ ] **Step 1: Update dependencies**
 
@@ -67,7 +67,7 @@ def test_defaults_when_env_is_empty(monkeypatch):
     for name in ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     assert DbSettings.from_env() == DbSettings(
-        host="127.0.0.1", port=5432, user="zestimator", password="changeme", dbname="zestimator"
+        host="127.0.0.1", port=5432, user="dubimator", password="changeme", dbname="dubimator"
     )
 
 
@@ -113,9 +113,9 @@ class DbSettings:
         return cls(
             host=os.environ.get("POSTGRES_HOST", "127.0.0.1"),
             port=int(os.environ.get("POSTGRES_PORT", "5432")),
-            user=os.environ.get("POSTGRES_USER", "zestimator"),
+            user=os.environ.get("POSTGRES_USER", "dubimator"),
             password=os.environ.get("POSTGRES_PASSWORD", "changeme"),
-            dbname=os.environ.get("POSTGRES_DB", "zestimator"),
+            dbname=os.environ.get("POSTGRES_DB", "dubimator"),
         )
 
     def connect(self):
@@ -146,7 +146,7 @@ def test_pg_test_db_is_a_separate_database(pg_test_db):
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT current_database()")
-            assert cur.fetchone()[0] == "zestimator_test"
+            assert cur.fetchone()[0] == "dubimator_test"
     finally:
         conn.close()
 ```
@@ -168,7 +168,7 @@ load_dotenv()  # no override: shell env wins, matching docker compose's own prec
 
 from ingestion.config import DbSettings  # noqa: E402
 
-TEST_DB = "zestimator_test"
+TEST_DB = "dubimator_test"
 
 
 @pytest.fixture
@@ -1705,7 +1705,7 @@ def test_cli_failure_returns_1(tmp_path, capsys):
 - [ ] **Step 2: Run them to verify they fail**
 
 Run: `uv run pytest tests/ingestion/test_pipeline_integration.py -v`
-Expected: FAIL at collection — `ModuleNotFoundError: No module named 'ingestion.__main__'` (or `ingestion.pipeline`). The Postgres container must be running (`docker compose ps` shows `zestimator-postgres` healthy); otherwise these tests skip.
+Expected: FAIL at collection — `ModuleNotFoundError: No module named 'ingestion.__main__'` (or `ingestion.pipeline`). The Postgres container must be running (`docker compose ps` shows `dubimator-postgres` healthy); otherwise these tests skip.
 
 - [ ] **Step 3: Create `ingestion/sql/schema.sql`**
 
@@ -2105,7 +2105,7 @@ from airflow.decorators import dag, task
     schedule=None,
     start_date=datetime(2026, 1, 1),
     catchup=False,
-    tags=["zestimator"],
+    tags=["dubimator"],
 )
 def dld_ingestion():
     @task
@@ -2136,8 +2136,8 @@ Replace the whole `airflow:` service block (from `  airflow:` through its `healt
     build:
       context: .
       dockerfile: Dockerfile.airflow
-    image: zestimator-airflow:local
-    container_name: zestimator-airflow
+    image: dubimator-airflow:local
+    container_name: dubimator-airflow
     command: bash -c "rm -f /opt/airflow/*.pid && exec airflow standalone"
     depends_on:
       postgres:
@@ -2145,20 +2145,20 @@ Replace the whole `airflow:` service block (from `  airflow:` through its `healt
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
-      PYTHONPATH: /opt/zestimator
+      PYTHONPATH: /opt/dubimator
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
       POSTGRES_DB: ${POSTGRES_DB}
-      DLD_CSV_PATH: /opt/zestimator/data/raw/Transactions.csv
+      DLD_CSV_PATH: /opt/dubimator/data/raw/Transactions.csv
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
     volumes:
       - airflow_data:/opt/airflow
       - ./dags:/opt/airflow/dags
-      - ./ingestion:/opt/zestimator/ingestion:ro
-      - ./data:/opt/zestimator/data:ro
+      - ./ingestion:/opt/dubimator/ingestion:ro
+      - ./data:/opt/dubimator/data:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import json, urllib.request; h = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert h['metadatabase']['status'] == 'healthy' and h['scheduler']['status'] == 'healthy'"]
       interval: 10s
@@ -2191,7 +2191,7 @@ Expected: PASS (Airflow comes back healthy after a restart).
 
 Run: `docker compose exec -T airflow airflow dags test dld_ingestion`
 Expected: the task succeeds (log ends with the DagRun in state `success`); this loads all 1,047,965 rows into the compose Postgres. It can take several minutes. Record the elapsed time. Then confirm:
-`docker compose exec -T postgres psql -U zestimator -d zestimator -tAc "SELECT status, rows_read, rows_market_sale FROM dld.ingestion_runs ORDER BY run_id DESC LIMIT 1"`
+`docker compose exec -T postgres psql -U dubimator -d dubimator -tAc "SELECT status, rows_read, rows_market_sale FROM dld.ingestion_runs ORDER BY run_id DESC LIMIT 1"`
 Expected: `succeeded|1047965|<market sales>`.
 If the container runs out of memory, report the error (DONE_WITH_CONCERNS) rather than changing the pipeline.
 
@@ -2228,9 +2228,9 @@ Expected: exit 0; `read 1,047,965 rows, loaded 1,047,965`; a reason-count table;
 Run each and save the output:
 
 ```bash
-docker compose exec -T postgres psql -U zestimator -d zestimator -c "SELECT reg_type, property_type, count(*), round(percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_sqm_aed)::numeric) AS median_aed_per_sqm FROM dld.market_sales GROUP BY 1, 2 ORDER BY 1, 2"
-docker compose exec -T postgres psql -U zestimator -d zestimator -c "SELECT alias, area_id, source FROM dld.area_aliases WHERE source = 'curated' ORDER BY alias"
-docker compose exec -T postgres psql -U zestimator -d zestimator -c "SELECT min(instance_date), max(instance_date) FROM dld.market_sales"
+docker compose exec -T postgres psql -U dubimator -d dubimator -c "SELECT reg_type, property_type, count(*), round(percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_sqm_aed)::numeric) AS median_aed_per_sqm FROM dld.market_sales GROUP BY 1, 2 ORDER BY 1, 2"
+docker compose exec -T postgres psql -U dubimator -d dubimator -c "SELECT alias, area_id, source FROM dld.area_aliases WHERE source = 'curated' ORDER BY alias"
+docker compose exec -T postgres psql -U dubimator -d dubimator -c "SELECT min(instance_date), max(instance_date) FROM dld.market_sales"
 ```
 
 Expected: medians look plausible for Dubai (unit medians roughly AED 8,000–16,000/m²); 11 curated aliases, each mapped to an area; date range within 1995–2023-03-17.

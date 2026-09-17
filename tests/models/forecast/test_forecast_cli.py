@@ -219,7 +219,7 @@ def test_train_end_to_end_then_evaluate_and_predict(monkeypatch, tmp_path, capsy
     assert re.search(r"3m: passed \(22 folds: 17 score, 2 tune, 2 gap, 1 test; \d+s\)", out)
     assert "3y: insufficient_data" in out
     assert "segment" in out and "area_trend" in out
-    assert "Registered zestimator-forecast-3m version 1 as @champion" in out
+    assert "Registered dubimator-forecast-3m version 1 as @champion" in out
 
     assert cli.main(["evaluate"]) == 0
     out = capsys.readouterr().out

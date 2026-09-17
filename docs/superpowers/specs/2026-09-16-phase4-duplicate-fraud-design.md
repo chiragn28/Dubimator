@@ -220,7 +220,7 @@ Twelve features, computed from listing content and vectors only:
 
 ## Fraud flags (fraud.py)
 
-- `bait_price`: the Phase 3 champion model (`models:/zestimator-price@champion`)
+- `bait_price`: the Phase 3 champion model (`models:/dubimator-price@champion`)
   estimates the home; a listing is flagged when its asking price is more than
   10% below the 80% range's lower bound. If the model can't be loaded, the
   flag is skipped with a logged warning and the run continues — the detector
@@ -290,7 +290,7 @@ Unit tests, with a deterministic fake embedder and a small fixture corpus
 - **Metrics:** precision, recall, F1, PR-AUC and the control false-positive
   rate against hand-computed values.
 - **Integration:** build → embed (fake) → detect → evaluate end to end on the
-  fixture against the throwaway `zestimator_test` database, asserting rows in
+  fixture against the throwaway `dubimator_test` database, asserting rows in
   `duplicate_pairs` and metrics in the temporary MLflow store.
 
 ## Deliverables beyond code
@@ -399,7 +399,7 @@ run 1, MLflow run `2da1554409394a399d95c33ee2015d28` in experiment
   `stock_min_areas = 3` and its own larger photo-pool fixture so every fraud
   and control path is reachable at test scale; the task-3 generator rounds
   shifted prices after drawing the shift, so about 5% of seeds other than 42
-  would fail the price-shift band test; the tests' shared `zestimator_test`
+  would fail the price-shift band test; the tests' shared `dubimator_test`
   database means the suite must never be run concurrently; the leakage scan
   looks at most five lines past a `SELECT` in inline SQL literals.
 
@@ -474,7 +474,7 @@ supersede the "Real-run headline numbers" above, which described corpus run 1.
 - **Tests.**
   - The control tests now assert that the baseline does flag same-building and
     stock-photo controls, and that the model flags fewer.
-  - The CLI test asserts that it resolves `zestimator_test`.
+  - The CLI test asserts that it resolves `dubimator_test`.
   - The small-fixture `report.precision` floor dropped from 0.9 to 0.8. The
     spec-shaped controls are hard negatives that the fake embedder can't
     separate, and one false positive costs about 5 points at that scale.

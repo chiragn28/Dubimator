@@ -190,7 +190,7 @@ def test_cli_drives_the_whole_pipeline_end_to_end(
     # Guard: whatever load_dotenv() does inside main(), the CLI must resolve the test database.
     from ingestion.config import DbSettings
 
-    assert DbSettings.from_env().dbname == "zestimator_test"
+    assert DbSettings.from_env().dbname == "dubimator_test"
 
     # _build's --listings/--seed/--data-dir surface exposes no other CorpusConfig field, and
     # it reads CorpusConfig() and CorpusConfig.<field> as CLASS defaults — so the only way to

@@ -1,4 +1,4 @@
-"""Zestimator demo — Streamlit entry point.
+"""Dubimator demo — Streamlit entry point.
 
 Talks to the Phase 7 API over HTTP only (see `demo/client.py`); it never
 imports the database, MLflow or the model/search/listings packages
@@ -12,13 +12,13 @@ import streamlit as st
 from demo.client import ApiProblem
 from demo.ui import DATA_NOTE, cached_ready, render_component_status, show_problem
 
-st.set_page_config(page_title="Zestimator", layout="wide")
+st.set_page_config(page_title="Dubimator", layout="wide")
 
-st.title("Zestimator")
+st.title("Dubimator")
 st.write(
     "Price a Dubai home and see its forecast, search listings in plain English, "
     "check a listing for duplicates and fraud, and explore how an area's prices "
-    "have moved — all backed by the Zestimator API."
+    "have moved — all backed by the Dubimator API."
 )
 
 with st.sidebar:

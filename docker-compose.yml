@@ -1,7 +1,9 @@
+name: dubimator
+
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: zestimator-postgres
+    container_name: dubimator-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
@@ -21,7 +23,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.mlflow
-    container_name: zestimator-mlflow
+    container_name: dubimator-mlflow
     ports:
       - "127.0.0.1:${MLFLOW_PORT:-5000}:5000"
     volumes:
@@ -37,8 +39,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.airflow
-    image: zestimator-airflow:local
-    container_name: zestimator-airflow
+    image: dubimator-airflow:local
+    container_name: dubimator-airflow
     command: bash -c "rm -f /opt/airflow/*.pid && exec airflow standalone"
     depends_on:
       postgres:
@@ -46,20 +48,20 @@ services:
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
-      PYTHONPATH: /opt/zestimator
+      PYTHONPATH: /opt/dubimator
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?copy .env.example to .env}
       POSTGRES_DB: ${POSTGRES_DB}
-      DLD_CSV_PATH: /opt/zestimator/data/raw/Transactions.csv
+      DLD_CSV_PATH: /opt/dubimator/data/raw/Transactions.csv
     ports:
       - "127.0.0.1:${AIRFLOW_PORT:-8080}:8080"
     volumes:
       - airflow_data:/opt/airflow
       - ./dags:/opt/airflow/dags
-      - ./ingestion:/opt/zestimator/ingestion:ro
-      - ./data:/opt/zestimator/data:ro
+      - ./ingestion:/opt/dubimator/ingestion:ro
+      - ./data:/opt/dubimator/data:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import json, urllib.request; h = json.load(urllib.request.urlopen('http://127.0.0.1:8080/health')); assert h['metadatabase']['status'] == 'healthy' and h['scheduler']['status'] == 'healthy'"]
       interval: 10s
@@ -72,8 +74,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    image: zestimator-api:local
-    container_name: zestimator-api
+    image: dubimator-api:local
+    container_name: dubimator-api
     depends_on:
       postgres:
         condition: service_healthy
@@ -102,8 +104,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.demo
-    image: zestimator-demo:local
-    container_name: zestimator-demo
+    image: dubimator-demo:local
+    container_name: dubimator-demo
     depends_on:
       api:
         condition: service_healthy
@@ -141,7 +143,7 @@ services:
 
   prometheus:
     image: prom/prometheus:v3.14.0
-    container_name: zestimator-prometheus
+    container_name: dubimator-prometheus
     profiles: ["monitoring"]
     depends_on:
       prometheus-init:
@@ -160,7 +162,7 @@ services:
 
   grafana:
     image: grafana/grafana:13.2.2
-    container_name: zestimator-grafana
+    container_name: dubimator-grafana
     profiles: ["monitoring"]
     depends_on:
       - prometheus
@@ -199,7 +201,7 @@ services:
   #   docker compose --profile tunnel-named up -d cloudflared-named   CLOUDFLARE_TUNNEL_TOKEN
   cloudflared-quick:
     image: cloudflare/cloudflared:2026.9.1
-    container_name: zestimator-cloudflared-quick
+    container_name: dubimator-cloudflared-quick
     profiles: ["tunnel"]
     depends_on:
       - demo
@@ -210,7 +212,7 @@ services:
 
   cloudflared-named:
     image: cloudflare/cloudflared:2026.9.1
-    container_name: zestimator-cloudflared-named
+    container_name: dubimator-cloudflared-named
     profiles: ["tunnel-named"]
     depends_on:
       - demo

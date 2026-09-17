@@ -220,7 +220,7 @@ A horizon passes only if **all** of these hold:
 2. Its test MAPE is below both baselines' MAPE on the same rows.
 3. The upper bound of the bootstrap 95% CI of the model's MAPE (1,000 row-level resamples, seeded) is below the stronger baseline's MAPE.
 
-If it passes, the model is registered as `zestimator-forecast-<h>` with alias `champion`. If it fails, `gate.<h>.passed = 0`, nothing is registered, and the reason is logged.
+If it passes, the model is registered as `dubimator-forecast-<h>` with alias `champion`. If it fails, `gate.<h>.passed = 0`, nothing is registered, and the reason is logged.
 
 ### MLflow
 
@@ -292,7 +292,7 @@ All commands:
 
 ## Testing
 
-Tests run sequentially against `zestimator_test`, use the `temp_mlflow` pattern, and never need a GPU or the network.
+Tests run sequentially against `dubimator_test`, use the `temp_mlflow` pattern, and never need a GPU or the network.
 
 - **Rows:**
   - validation drops, with the report and its counts;

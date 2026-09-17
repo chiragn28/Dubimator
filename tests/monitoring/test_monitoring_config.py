@@ -13,7 +13,7 @@ API_METRICS = {"api_requests_total", "api_request_seconds", "api_component_up", 
 
 def test_prometheus_scrapes_api_with_a_key_file():
     config = yaml.safe_load((MONITORING / "prometheus.yml").read_text("utf-8"))
-    job = next(j for j in config["scrape_configs"] if j["job_name"] == "zestimator-api")
+    job = next(j for j in config["scrape_configs"] if j["job_name"] == "dubimator-api")
     assert job["static_configs"][0]["targets"] == ["api:8000"]
     assert job["metrics_path"] == "/metrics"
     assert job["authorization"] == {

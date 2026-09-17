@@ -56,7 +56,7 @@ These inputs are read-only in this phase:
 - The latest `listings.detect_runs` row, and for that run:
   `listings.duplicate_pairs` where `decision`, and `listings.fraud_flags`.
 - `dld.areas` and `dld.area_aliases`, from Phase 2.
-- `models:/zestimator-price@champion`, from Phase 3. It is used only for the
+- `models:/dubimator-price@champion`, from Phase 3. It is used only for the
   value features.
 - The ground-truth columns `fraud_label` and `dup_group_id` are used **only**
   by grading and evaluation, never by features, retrieval or the engine.
@@ -286,7 +286,7 @@ from `true_slots`.
   once, after the winner is fixed.
 - **Winner:** the model with the higher tune NDCG@10.
 - **Registration gate:** the winner is registered as
-  `zestimator-search-ranker` with alias `@champion` only if both hold:
+  `dubimator-search-ranker` with alias `@champion` only if both hold:
   1. its report NDCG@10 exceeds the fused-retrieval baseline's;
   2. the lower bound of its bootstrap 95% CI exceeds that baseline's point
      estimate.
@@ -348,7 +348,7 @@ All metrics are computed on the **report** split, unless prefixed `tune.`.
   "2 bedrooms ✓", "4% over budget", "area ✓", "sea view ✓", "priced 12%
   below estimate", "flagged: bait price".
 - **Ranker loading:** the ranker is loaded once, lazily, from
-  `models:/zestimator-search-ranker@champion`. If it is missing or fails to
+  `models:/dubimator-search-ranker@champion`. If it is missing or fails to
   load, the engine falls back to fused order, sets
   `ranker="fallback_fused"`, adds a note, and logs one warning naming the
   tracking URI.
@@ -389,7 +389,7 @@ Behaviour shared with Phases 2–4:
 
 ## Testing
 
-Tests run sequentially only, against `zestimator_test`.
+Tests run sequentially only, against `dubimator_test`.
 
 - **Parser:** a table of about 60 cases covering every slot form, alias
   matching, longest match, "studio", ranges, sq ft conversion, min > max
@@ -419,7 +419,7 @@ Tests run sequentially only, against `zestimator_test`.
   fallback when none is registered, reasons text, and notes for unrecognised
   places and errors.
 - **CLI:** an end-to-end run on the test DB. The test asserts
-  `DbSettings.from_env().dbname == "zestimator_test"` before running.
+  `DbSettings.from_env().dbname == "dubimator_test"` before running.
 - **Lint and warnings:** `ruff check`, `ruff format --check`, and
   `pytest -W error`.
 
@@ -575,7 +575,7 @@ Tests run sequentially only, against `zestimator_test`.
   forecasting became Phase 6. Where this spec says "Phase 6" for serving over
   HTTP, read Phase 7 (API).
 - **Ranker label.** The engine labels its ranker
-  `zestimator-search-ranker/v<version>`, or `fallback_fused`.
+  `dubimator-search-ranker/v<version>`, or `fallback_fused`.
 
 ### Real run and headline numbers (2026-09-16, RTX 3060)
 
@@ -601,7 +601,7 @@ Tests run sequentially only, against `zestimator_test`.
 
 - **Winner and gate.** Tune NDCG@10 was 0.9980 for LightGBM against 0.9977
   for XGBoost. The gate passed, and the winner was registered as
-  `zestimator-search-ranker` v1 with alias `@champion`.
+  `dubimator-search-ranker` v1 with alias `@champion`.
 - **By kind.** `specified` NDCG@10 is 0.996 against 0.483 for fused
   retrieval. `vague` is 1.000 against 0.897. The `no_match` mean top-10
   grade is 1.00 for every contender.
@@ -761,7 +761,7 @@ supersede them.
   - learned over rules: +0.025 (0.021–0.029);
   - learned over fused: +0.431 (0.414–0.449).
 - **Gate: passed against `baseline_rules`** (0.972). LightGBM was
-  registered as `zestimator-search-ranker` v2 with alias `@champion`. Tune
+  registered as `dubimator-search-ranker` v2 with alias `@champion`. Tune
   NDCG@10 was 0.9979 for LightGBM against 0.9977 for XGBoost.
 - **By kind:**
   - `specified`: 0.996 for the winner, 0.975 for the rules and 0.483 for

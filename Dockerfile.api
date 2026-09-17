@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-# Zestimator API (Phase 7) — CPU-only serving image.
+# Dubimator API (Phase 7) — CPU-only serving image.
 # uv sync installs the locked dependencies except torch and the CUDA wheels torch/xgboost pull
 # in on Linux; torch then comes from the PyTorch CPU index (same 2.9.1 release as uv.lock).
 

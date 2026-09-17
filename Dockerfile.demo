@@ -1,4 +1,4 @@
-# Zestimator Streamlit demo (Phase 8). It talks to the API over HTTP only, so it needs just
+# Dubimator Streamlit demo (Phase 8). It talks to the API over HTTP only, so it needs just
 # streamlit, httpx and python-dotenv (versions match uv.lock).
 FROM python:3.11-slim
 

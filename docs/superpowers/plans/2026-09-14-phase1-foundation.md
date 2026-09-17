@@ -36,7 +36,7 @@
 
 ```toml
 [project]
-name = "zestimator"
+name = "dubimator"
 version = "0.1.0"
 description = "Dubai Real Estate ML Platform — price estimation, fraud detection, and search ranking on DLD transaction data"
 requires-python = ">=3.11"
@@ -229,9 +229,9 @@ def test_postgres_pgvector():
         conn = psycopg2.connect(
             host="localhost",
             port=port,
-            user=_env("POSTGRES_USER", "zestimator"),
+            user=_env("POSTGRES_USER", "dubimator"),
             password=_env("POSTGRES_PASSWORD", "changeme"),
-            dbname=_env("POSTGRES_DB", "zestimator"),
+            dbname=_env("POSTGRES_DB", "dubimator"),
             connect_timeout=CONNECT_TIMEOUT,
         )
     except psycopg2.OperationalError as exc:
@@ -253,9 +253,9 @@ Expected: SKIPPED with message "Postgres not reachable on localhost:5432 — sta
 - [ ] **Step 3: Write `.env.example`**
 
 ```
-POSTGRES_USER=zestimator
+POSTGRES_USER=dubimator
 POSTGRES_PASSWORD=changeme
-POSTGRES_DB=zestimator
+POSTGRES_DB=dubimator
 POSTGRES_PORT=5432
 MLFLOW_TRACKING_URI=http://localhost:5000
 AIRFLOW_PORT=8080
@@ -273,7 +273,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: zestimator-postgres
+    container_name: dubimator-postgres
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -374,7 +374,7 @@ Add this service under `services:`, alongside `postgres`:
     build:
       context: .
       dockerfile: Dockerfile.mlflow
-    container_name: zestimator-mlflow
+    container_name: dubimator-mlflow
     ports:
       - "5000:5000"
     volumes:
@@ -436,7 +436,7 @@ Expected: SKIPPED with the Airflow-not-reachable message.
 ```yaml
   airflow:
     image: apache/airflow:2.10.3-python3.11
-    container_name: zestimator-airflow
+    container_name: dubimator-airflow
     command: standalone
     environment:
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
@@ -490,7 +490,7 @@ git commit -m "feat: add Airflow standalone service with smoke test"
 Write this exact content to `README.md` (using real triple-backtick fences for the `mermaid` and `bash` blocks shown below — they are not further escaped):
 
 ---START FILE CONTENT---
-# Zestimator — Dubai Real Estate ML Platform
+# Dubimator — Dubai Real Estate ML Platform
 
 Portfolio-grade ML platform for Dubai real estate: property price
 estimation, duplicate/fraud listing detection, and search ranking, built

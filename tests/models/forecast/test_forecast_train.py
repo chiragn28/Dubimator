@@ -186,10 +186,10 @@ def test_run_training_registers_only_passing_horizons(dataset, temp_mlflow):
     )  # fmt: skip
     assert summary.versions == {"3m": "1"}
     assert summary.results["1y"].status == "failed"
-    model, version = load_champion("zestimator-forecast-3m")
+    model, version = load_champion("dubimator-forecast-3m")
     assert version == "1" and model is not None
     assert model.horizon == "3m"
-    assert load_champion("zestimator-forecast-1y") == (None, None)
+    assert load_champion("dubimator-forecast-1y") == (None, None)
     gates = latest_gates(FAST.experiment)
     assert gates["3m"] == {"status": "passed", "reason": "passed"}
     assert gates["1y"]["status"] == "failed"
@@ -214,7 +214,7 @@ def test_run_training_registers_only_passing_horizons(dataset, temp_mlflow):
     )  # fmt: skip
     assert again.results["3m"].status == "failed"
     assert again.versions == {}
-    assert load_champion("zestimator-forecast-3m") == (None, None)
+    assert load_champion("dubimator-forecast-3m") == (None, None)
     assert mlflow_tags(again.run_id)["gate.3m.champion_removed"] == "true"
     gates = latest_gates(FAST.experiment)
     assert gates["3m"]["status"] == "failed"

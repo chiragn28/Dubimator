@@ -25,9 +25,9 @@ class DbSettings:
         return cls(
             host=os.environ.get("POSTGRES_HOST", "127.0.0.1"),
             port=int(port),
-            user=os.environ.get("POSTGRES_USER", "zestimator"),
+            user=os.environ.get("POSTGRES_USER", "dubimator"),
             password=os.environ.get("POSTGRES_PASSWORD", "changeme"),
-            dbname=os.environ.get("POSTGRES_DB", "zestimator"),
+            dbname=os.environ.get("POSTGRES_DB", "dubimator"),
         )
 
     def connect(self):

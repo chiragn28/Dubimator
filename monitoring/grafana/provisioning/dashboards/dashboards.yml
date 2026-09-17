@@ -1,9 +1,9 @@
 apiVersion: 1
 
 providers:
-  - name: zestimator
+  - name: dubimator
     orgId: 1
-    folder: Zestimator
+    folder: Dubimator
     type: file
     disableDeletion: true
     allowUiUpdates: false

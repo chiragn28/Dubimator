@@ -1,5 +1,5 @@
 [project]
-name = "zestimator"
+name = "dubimator"
 version = "0.1.0"
 description = "Dubai Real Estate ML Platform — price estimation, fraud detection, and search ranking on DLD transaction data"
 requires-python = ">=3.11"

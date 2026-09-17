@@ -28,9 +28,9 @@ def test_log_register_load_and_predict(temp_mlflow, tiny_bundle, tmp_path):
     with mlflow.start_run(run_name="xgb-production"):
         log_metrics({"test_clean.all.mdape": 0.12, "not_finite": float("nan")})
         model_uri = log_price_model(tmp_path / "model_dir")
-    assert register_champion(model_uri, "zestimator-price-test") == "1"
+    assert register_champion(model_uri, "dubimator-price-test") == "1"
 
-    model = mlflow.pyfunc.load_model("models:/zestimator-price-test@champion")
+    model = mlflow.pyfunc.load_model("models:/dubimator-price-test@champion")
     out = model.predict(REQUESTS)
     assert len(out) == 2
     assert (out["estimate_aed"] > 0).all()
@@ -47,8 +47,8 @@ def test_registering_again_moves_the_champion_alias(temp_mlflow, tiny_bundle, tm
     for expected in ("1", "2"):
         with mlflow.start_run():
             uri = log_price_model(tmp_path / "model_dir")
-        assert register_champion(uri, "zestimator-price-test") == expected
-    alias = mlflow.MlflowClient().get_model_version_by_alias("zestimator-price-test", "champion")
+        assert register_champion(uri, "dubimator-price-test") == expected
+    alias = mlflow.MlflowClient().get_model_version_by_alias("dubimator-price-test", "champion")
     assert str(alias.version) == "2"
 
 

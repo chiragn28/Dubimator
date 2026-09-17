@@ -1,6 +1,6 @@
-# Zestimator — Dubai Real Estate ML Platform
+# Dubimator — Dubai Real Estate ML Platform
 
-Zestimator is an end-to-end ML platform for Dubai real estate, built on
+Dubimator is an end-to-end ML platform for Dubai real estate, built on
 1,047,965 real Dubai Land Department (DLD) transactions. It estimates what a
 home is worth, forecasts its price, catches duplicate and suspicious listings,
 and ranks free-text property searches. Every model has to pass an acceptance
@@ -40,10 +40,10 @@ period, the confidence intervals and the caveats.
 
 | Model | Headline metric | Baseline | Gate outcome |
 |---|---|---|---|
-| Price (Phase 3) | Test MdAPE **12.6%** | Area comps: 17.3% | Passed (bar 15.6%); registered `zestimator-price@champion` |
-| Duplicates (Phase 4) | Precision **98.3%**, recall **21.1%** of retrieved duplicates (20.4% end to end) | Photos-only rule: precision 0.6%, recall 91.0% | Threshold set for 98% validation precision; registered `zestimator-duplicate-pair@champion` |
-| Search (Phase 5) | NDCG@10 **0.997** (95% CI 0.995–0.999) | Rules over parsed slots: 0.972 | Passed; registered `zestimator-search-ranker@champion` |
-| Forecast, 3 months (Phase 6) | MAPE **8.22%** | No change: 8.54% | Passed; registered `zestimator-forecast-3m@champion` |
+| Price (Phase 3) | Test MdAPE **12.6%** | Area comps: 17.3% | Passed (bar 15.6%); registered `dubimator-price@champion` |
+| Duplicates (Phase 4) | Precision **98.3%**, recall **21.1%** of retrieved duplicates (20.4% end to end) | Photos-only rule: precision 0.6%, recall 91.0% | Threshold set for 98% validation precision; registered `dubimator-duplicate-pair@champion` |
+| Search (Phase 5) | NDCG@10 **0.997** (95% CI 0.995–0.999) | Rules over parsed slots: 0.972 | Passed; registered `dubimator-search-ranker@champion` |
+| Forecast, 3 months (Phase 6) | MAPE **8.22%** | No change: 8.54% | Passed; registered `dubimator-forecast-3m@champion` |
 | Forecast, 1 year (Phase 6) | MAPE 18.51% | No change: 12.70% | **Failed**, not deployed |
 | Forecast, 3 years (Phase 6) | none (1 walk-forward fold, needs 2) | none | **Insufficient data**, not deployed |
 | API (Phase 7) | All 9 smoke-run endpoints return 200; warm latency 3.5–60.5 ms | none | `python -m api smoke` run against the real stack |
@@ -134,7 +134,7 @@ before the next phase started. Specs and plans are in `docs/superpowers/`.
 - **Design specs**, one per phase: [`docs/superpowers/specs/`](docs/superpowers/specs/)
 - **Implementation plans** (Phases 1–8): [`docs/superpowers/plans/`](docs/superpowers/plans/)
 - **Architecture page** (build status, data flow, the eleven phases, stack and
-  cost): https://zestimator-architecture.vercel.app. The source is
+  cost): https://dubimator-architecture.vercel.app. The source is
   [`docs/architecture.html`](docs/architecture.html). To redeploy it after editing,
   run `uv run python scripts/build_site.py`, then `vercel deploy site --prod`.
 - **Design-decisions casebook:** https://claude.ai/artifact/2CxCqLdMGgEw3Xwj6QDnXE
@@ -186,24 +186,24 @@ graph LR
     ML -.->|"runs + artifacts"| MLRUNS
     TRAIN["python -m models.price train<br/>(XGBoost on the GPU)"]
     PG -->|"home sales"| TRAIN
-    TRAIN -->|"runs + zestimator-price@champion"| ML
+    TRAIN -->|"runs + dubimator-price@champion"| ML
     LCLI["python -m listings"]
     LISTINGS[("listings schema<br/>synthetic corpus + vectors")]
     PG -->|"home sales"| LISTINGS
     LCLI --> LISTINGS
-    LCLI -->|"listing-dedup runs + zestimator-duplicate-pair@champion"| ML
+    LCLI -->|"listing-dedup runs + dubimator-duplicate-pair@champion"| ML
     SCLI["python -m search<br/>(queries, train, evaluate, query)"]
     SEARCH[("search schema<br/>queries, judgments, estimates")]
     LISTINGS -->|"listings, vectors, flags"| SCLI
     SCLI --> SEARCH
     SEARCH -->|"graded candidates"| SCLI
-    SCLI -->|"search-ranking runs + zestimator-search-ranker@champion"| ML
+    SCLI -->|"search-ranking runs + dubimator-search-ranker@champion"| ML
     FCLI["python -m models.forecast<br/>(build, infra-check, train, evaluate, predict)"]
     INFRA[("reference/infrastructure_projects.csv")]
     PG -->|"home sales"| FCLI
     INFRA --> FCLI
-    ML -.->|"zestimator-price@champion"| FCLI
-    FCLI -->|"price-forecast runs + zestimator-forecast-3m@champion"| ML
+    ML -.->|"dubimator-price@champion"| FCLI
+    FCLI -->|"price-forecast runs + dubimator-forecast-3m@champion"| ML
     API["FastAPI service<br/>python -m api serve"]
     ML -.->|"champions: price, forecast-3m,<br/>search-ranker, duplicate-pair"| API
     PG -->|"listings, vectors, flags, area stats"| API
@@ -323,7 +323,7 @@ uv run python -m models.price predict --area "JVC" --kind apartment --status rea
 - **Model:** XGBoost on the GPU, tuned by Optuna. It is compared against an
   area-comps rule (B0) and LightGBM (B1), and it must beat B0's test MdAPE by
   10% to be registered.
-- **Serving:** one MLflow pyfunc, `models:/zestimator-price@champion`.
+- **Serving:** one MLflow pyfunc, `models:/dubimator-price@champion`.
   - input validation
   - unseen-location fallback
   - clipping of implausible predictions
@@ -341,7 +341,7 @@ filter removed.
 
 The champion clears the gate easily (12.6% against a 15.6% bar, 0.9 × B0), but
 it beats LightGBM only narrowly: 0.4 points of MdAPE on the test set. These
-are the numbers of `zestimator-price` v2, retrained after the final-review
+are the numbers of `dubimator-price` v2, retrained after the final-review
 fixes. The rerun reproduced v1's evaluation metrics exactly. Only the
 production refit's trees differ, because GPU training isn't bit-reproducible,
 so individual estimates moved by a few percent (for example −3.7% for an
@@ -615,7 +615,7 @@ explained list of listings from the Phase 4 corpus.
    meets every parsed requirement exactly, the result says "nothing meets
    every requirement; showing the closest matches".
 
-The winning ranker is registered as `zestimator-search-ranker@champion` only if
+The winning ranker is registered as `dubimator-search-ranker@champion` only if
 it passes the gate described under Results. If no champion is registered, the
 engine falls back to fused order.
 
@@ -717,7 +717,7 @@ the lift is +0.431 (paired 95% CI 0.414–0.449).
   of `baseline_fused` and `baseline_rules`, here `baseline_rules` at 0.972.
   The winner's report NDCG@10 (0.997) and the lower bound of its 95% CI
   (0.995) must both beat that. They do, so the model was registered as
-  `zestimator-search-ranker` version 2 with alias `@champion`, and
+  `dubimator-search-ranker` version 2 with alias `@champion`, and
   `python -m search evaluate` re-scored it to the same figures.
 - **What drives the ranker.** By gain, the winner's top features are
   `size_ratio` (24,606), `price_over_max` (23,321), `beds_diff` (21,371),
@@ -827,7 +827,7 @@ the lift is +0.431 (paired 95% CI 0.414–0.449).
   The search itself then took 19–94 ms per query on the examples below.
   These are single measurements from a CLI process, not a serving benchmark.
 
-**Examples** (from the 2026-09-16 re-run, ranker `zestimator-search-ranker/v2`;
+**Examples** (from the 2026-09-16 re-run, ranker `dubimator-search-ranker/v2`;
 top 3 of 10 shown, area column omitted for width):
 
 ```text
@@ -1091,7 +1091,7 @@ one) is never used to tune, calibrate or select the final round count.
 both baselines (no_change 8.54%, area_trend 12.72%); and the bootstrap 95%
 upper bound of the model's `all` MAPE — 8.37%, per the ledger's STOP-3 note
 — is below the stronger baseline (8.54%). Registered as
-`zestimator-forecast-3m` v1 with alias `champion`.
+`dubimator-forecast-3m` v1 with alias `champion`.
 
 **Finding, not a failure: the champion is a drift predictor.** Its final
 model has only **3 boosting rounds** — early stopping hit its configured
@@ -1152,7 +1152,7 @@ gate on. The fix is the same as for 1y: a newer DLD file with data past
 2023-03-17 re-opens enough history for real 3y folds.
 
 **Example** (`predict_example.json`; Dubai Marina apartment, ready, 85 m²,
-1 bedroom; `models:/zestimator-price@champion` version
+1 bedroom; `models:/dubimator-price@champion` version
 `bc816911870f4af1b6e8cacf1d9bb29e`):
 
 ```json
@@ -1270,7 +1270,7 @@ curl -s -H "X-API-Key: $KEY" localhost:8000/v1/listings/1/flags
 | `GET /v1/areas/526/history` | 200 | 8.0 | 5.2 |
 | `GET /metrics` | 200 | 13.3 | 9.8 |
 
-**Duplicate pair model.** `python -m listings detect` now registers the Phase 4 pair model as `zestimator-duplicate-pair@champion`, which the listing check needs. The real run (detection run 4, 814 s):
+**Duplicate pair model.** `python -m listings detect` now registers the Phase 4 pair model as `dubimator-duplicate-pair@champion`, which the listing check needs. The real run (detection run 4, 814 s):
 - scored 598,533 candidate pairs;
 - flagged 754 at threshold 0.9995, plus 965 price-blind;
 - registered v1.
@@ -1373,8 +1373,8 @@ CI runners have neither the 637 MB DLD CSV nor a GPU, so retraining stays local 
 instead of running in GitHub Actions. Windows Task Scheduler (weekly, Sunday 03:00):
 
 ```bat
-schtasks /Create /TN "Zestimator retrain" /SC WEEKLY /D SUN /ST 03:00 ^
-  /TR "cmd /c cd /d C:\path\to\zestimator && .venv\Scripts\python.exe -m pipelines retrain >> data\pipelines\retrain.log 2>&1" ^
+schtasks /Create /TN "Dubimator retrain" /SC WEEKLY /D SUN /ST 03:00 ^
+  /TR "cmd /c cd /d C:\path\to\dubimator && .venv\Scripts\python.exe -m pipelines retrain >> data\pipelines\retrain.log 2>&1" ^
   /RU "%USERNAME%"
 ```
 
@@ -1385,7 +1385,7 @@ in `C:\Windows\System32`.
 or, on a machine that runs cron, the equivalent weekly line:
 
 ```cron
-0 3 * * 0 cd /path/to/zestimator && /path/to/zestimator/.venv/bin/python -m pipelines retrain >> data/pipelines/retrain.log 2>&1
+0 3 * * 0 cd /path/to/dubimator && /path/to/dubimator/.venv/bin/python -m pipelines retrain >> data/pipelines/retrain.log 2>&1
 ```
 
 Retraining registers new champions in MLflow but does not reload a running API. Afterwards,
@@ -1449,8 +1449,8 @@ Measured sizes from `docker image ls` on 2026-09-17. The first API build took ab
 
 | Image | Size |
 |---|---|
-| `zestimator-api:local` | 3.41 GB on disk (787 MB compressed) |
-| `zestimator-demo:local` | 815 MB on disk (187 MB compressed) |
+| `dubimator-api:local` | 3.41 GB on disk (787 MB compressed) |
+| `dubimator-demo:local` | 815 MB on disk (187 MB compressed) |
 
 **Profiles:**
 
@@ -1497,8 +1497,8 @@ service that switches on an env var:
 
 The URLs are:
 
-- Prometheus at <http://127.0.0.1:9090>. The `zestimator-api` target is under Status → Targets.
-- Grafana at <http://127.0.0.1:3000>. The home dashboard is "Zestimator API". To edit, log in as
+- Prometheus at <http://127.0.0.1:9090>. The `dubimator-api` target is under Status → Targets.
+- Grafana at <http://127.0.0.1:3000>. The home dashboard is "Dubimator API". To edit, log in as
   `admin` with the password from `.env`.
 
 The dashboard (`monitoring/grafana/dashboards/api.json`) shows:
@@ -1520,7 +1520,7 @@ self-contained `.html` table (gitignored) with three sections:
   last N months up to the data end. A feature is flagged when PSI is above 0.2, or when a
   numeric feature's KS statistic is above 0.3. A numeric feature that is constant in the
   reference is binned as below / equal to / above that value.
-- **Forecast residuals:** the `zestimator-forecast-3m` champion's MAPE on rows after its
+- **Forecast residuals:** the `dubimator-forecast-3m` champion's MAPE on rows after its
   `test_end` whose 3-month target window has fully happened, next to its gate MAPE. The DLD data
   currently ends in 2023, so this section reads `no newer resolved targets` until newer sales
   are ingested.
@@ -1535,11 +1535,11 @@ There is no Airflow DAG for drift: the Airflow image has no ML dependencies. Sch
 next to `pipelines retrain` instead. With Windows Task Scheduler, weekly on Monday at 03:30:
 
 ```bat
-schtasks /Create /SC WEEKLY /D MON /ST 03:30 /TN "Zestimator drift" ^
-  /TR "cmd /c cd /d C:\path\to\zestimator && uv run python -m monitoring drift >> data\monitoring\drift.log 2>&1"
+schtasks /Create /SC WEEKLY /D MON /ST 03:30 /TN "Dubimator drift" ^
+  /TR "cmd /c cd /d C:\path\to\dubimator && uv run python -m monitoring drift >> data\monitoring\drift.log 2>&1"
 ```
 
-With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring drift >> data/monitoring/drift.log 2>&1`.
+With cron: `30 3 * * 1 cd /path/to/dubimator && uv run python -m monitoring drift >> data/monitoring/drift.log 2>&1`.
 
 **Troubleshooting:**
 
@@ -1561,7 +1561,7 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
   named volume takes its ownership from the image the first time it is created. A volume created
   by an older image, or by another container running as root, stays root-owned. Fix it with
   `docker compose run --rm --user root --entrypoint chown api -R app:app /home/app/.cache/huggingface`,
-  or remove just that volume (`docker volume rm zestimator_hf_cache`, with the API stopped) so the
+  or remove just that volume (`docker volume rm dubimator_hf_cache`, with the API stopped) so the
   models download again.
 - **Grafana exits with "set GRAFANA_ADMIN_PASSWORD"**: set it in `.env`. Changing it later needs
   `grafana cli admin reset-admin-password`, because Grafana stores the password in the
@@ -1569,7 +1569,7 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
 - **No trycloudflare URL**: the quick tunnel needs outbound HTTPS to Cloudflare. Check
   `docker compose logs cloudflared-quick`, and wait a few seconds after start.
 - **Port already in use**: change `API_PORT`, `DEMO_PORT`, `PROMETHEUS_PORT` or `GRAFANA_PORT` in `.env`.
-- **Disk**: the API image is the big one. `docker image ls zestimator-*` shows the sizes. Old
+- **Disk**: the API image is the big one. `docker image ls dubimator-*` shows the sizes. Old
   build cache can be removed with `docker builder prune`, which never touches volumes.
 
 **Live deployment check (17 Sep 2026).** Run against the real stack on the host PC (RTX 3060, 16 GB RAM):
@@ -1579,9 +1579,9 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
 - **Components.** After the fix, `/v1/ready` in the container reported all five components up: price v2, forecast `3m:1`, search ranker v2, pair model `pair:1` and areas.
 - **Endpoints.** Every endpoint returned 200 from `localhost:8000`. Warm calls took 0.2–0.3 s, which includes about 0.2 s of Docker Desktop port-forwarding overhead. `/_stcore/health` on the demo returned `ok`, and the demo container reached `http://api:8000` over the compose network.
 - **Monitoring.**
-  - Prometheus reported both scrape targets (`prometheus`, `zestimator-api`) as `up`.
+  - Prometheus reported both scrape targets (`prometheus`, `dubimator-api`) as `up`.
   - `api_component_up` was 1 for all five components.
-  - Grafana was healthy and had provisioned the "Zestimator API" dashboard.
+  - Grafana was healthy and had provisioned the "Dubimator API" dashboard.
 - **Tunnel.** A quick tunnel issued a `trycloudflare.com` URL. Through it, `/_stcore/health` returned 200, and `/v1/ready` returned the Streamlit page, not the API: the tunnel can reach only the demo, which is the only container on the `public` network. The tunnel was stopped right after the check.
 - **Memory.** The API container used about 690 MB with every component loaded, and the demo about 53 MB.
 

@@ -17,7 +17,7 @@ def test_defaults_for_the_other_fields_when_only_the_port_is_set(monkeypatch):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("POSTGRES_PORT", "5433")
     assert DbSettings.from_env() == DbSettings(
-        host="127.0.0.1", port=5433, user="zestimator", password="changeme", dbname="zestimator"
+        host="127.0.0.1", port=5433, user="dubimator", password="changeme", dbname="dubimator"
     )
 
 
@@ -43,6 +43,6 @@ def test_pg_test_db_is_a_separate_database(pg_test_db):
     try:
         with conn.cursor() as cur:
             cur.execute("SELECT current_database()")
-            assert cur.fetchone()[0] == "zestimator_test"
+            assert cur.fetchone()[0] == "dubimator_test"
     finally:
         conn.close()

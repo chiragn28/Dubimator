@@ -7,7 +7,7 @@ import streamlit as st
 from demo.client import ApiProblem, get_client
 from demo.ui import DATA_NOTE, cached_areas, forecast_rows, money, show_problem
 
-st.set_page_config(page_title="Price & forecast — Zestimator", layout="wide")
+st.set_page_config(page_title="Price & forecast — Dubimator", layout="wide")
 st.title("Price & forecast")
 st.caption(DATA_NOTE)
 

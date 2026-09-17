@@ -4,7 +4,7 @@ Status: queued. The user added this brief on 2026-09-16.
 Before any code is written, it goes through the project's usual process: brainstorm, then spec, then plan, then subagent-driven build and review.
 Placement: a new phase after Phase 5 (search ranking) and before the API, so the API can serve forecasts. See "Where it fits".
 
-The original request is a generic XGBoost forecasting spec. This version adapts it to what zestimator already has and to what the DLD data actually contains.
+The original request is a generic XGBoost forecasting spec. This version adapts it to what dubimator already has and to what the DLD data actually contains.
 
 ## What changed from the original request, and why
 
@@ -26,7 +26,7 @@ The original request is a generic XGBoost forecasting spec. This version adapts 
 
 ## Scope
 
-Three separate XGBoost regressors, one per horizon: `forecast-3m`, `forecast-1y`, `forecast-3y`. Each is registered as `zestimator-forecast-<h>@champion` only if it passes its gate. There is no UI and no LLM layer, and training makes no network calls.
+Three separate XGBoost regressors, one per horizon: `forecast-3m`, `forecast-1y`, `forecast-3y`. Each is registered as `dubimator-forecast-<h>@champion` only if it passes its gate. There is no UI and no LLM layer, and training makes no network calls.
 
 ### Targets (unchanged in spirit)
 

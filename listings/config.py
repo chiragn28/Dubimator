@@ -76,6 +76,6 @@ class DetectConfig:
     photo_reuse_min_areas: int = 5
     relist_price_spread: float = 0.20
     bait_margin: float = 0.10
-    price_model_uri: str = "models:/zestimator-price@champion"
+    price_model_uri: str = "models:/dubimator-price@champion"
     experiment: str = "listing-dedup"
     seed: int = 42

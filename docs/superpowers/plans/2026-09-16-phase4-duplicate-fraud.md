@@ -32,7 +32,7 @@
 - Every MLflow-touching test uses the `temp_mlflow` fixture; only the real Task 11 run writes to the server at 127.0.0.1:5000.
 - Work directly on `master`. Stage specific files only; never `git add -A`. Never commit `.env`, `data/`, `mlruns/`.
 - Commit trailer: `Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>`.
-- Run from the repo root `C:\Users\cnaya\OneDrive\Desktop\zestimator` in Git Bash, always through `uv run`. At the end of every task run `uv run ruff format .`, then `uv run ruff check . && uv run ruff format --check .` must be clean.
+- Run from the repo root `C:\Users\cnaya\OneDrive\Desktop\dubimator` in Git Bash, always through `uv run`. At the end of every task run `uv run ruff format .`, then `uv run ruff check . && uv run ruff format --check .` must be clean.
 
 ## Controller rulings made while planning
 
@@ -243,7 +243,7 @@ class DetectConfig:
     photo_reuse_min_areas: int = 5
     relist_price_spread: float = 0.20
     bait_margin: float = 0.10
-    price_model_uri: str = "models:/zestimator-price@champion"
+    price_model_uri: str = "models:/dubimator-price@champion"
     experiment: str = "listing-dedup"
     seed: int = 42
 ```
@@ -1957,7 +1957,7 @@ def create_vector_indexes(conn) -> None:
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `uv run pytest tests/listings/ -v`
-Expected: PASS (the Docker stack must be up; the DB tests use the throwaway `zestimator_test` database).
+Expected: PASS (the Docker stack must be up; the DB tests use the throwaway `dubimator_test` database).
 
 - [ ] **Step 6: Lint and commit**
 
@@ -3391,7 +3391,7 @@ EOF
 - Create: `listings/fraud.py`, `tests/listings/test_listings_fraud.py`
 
 **Interfaces:**
-- Consumes: `listings.config.DetectConfig`, `listings.detect.DetectionResult`, `ingestion.load.copy_frame`, and the Phase 3 champion (`models:/zestimator-price@champion`) through `mlflow.pyfunc`
+- Consumes: `listings.config.DetectConfig`, `listings.detect.DetectionResult`, `ingestion.load.copy_frame`, and the Phase 3 champion (`models:/dubimator-price@champion`) through `mlflow.pyfunc`
 - Produces (`listings.fraud`):
   - `FLAGS = ("bait_price", "photo_reuse", "inconsistent_relist")`
   - `FRAUD_LISTING_SQL: str`, `load_fraud_attributes(conn) -> pl.DataFrame` (no label columns)
@@ -4716,7 +4716,7 @@ EOF
 - Consumes: the `python -m listings` CLI and the Phase 3 champion model
 
 **Rules for this task**
-- The Docker stack must be up (`docker compose ps`), `dld` must hold the full ingestion, and `models:/zestimator-price@champion` must be registered (Phase 3 v2).
+- The Docker stack must be up (`docker compose ps`), `dld` must hold the full ingestion, and `models:/dubimator-price@champion` must be registered (Phase 3 v2).
 - The real run writes to the real MLflow server — that is intended here.
 - NEVER connect to port 5432. Never `docker compose down -v`.
 - The photo download is about 176 MB; the two models about 600 MB on first use.
@@ -4736,7 +4736,7 @@ Expected: the photo pool reports 535 sets, then a corpus run id with counts
 Sanity-check the database:
 
 ```bash
-MSYS_NO_PATHCONV=1 docker exec zestimator-postgres psql -U zestimator -d zestimator -c "
+MSYS_NO_PATHCONV=1 docker exec dubimator-postgres psql -U dubimator -d dubimator -c "
 SELECT count(*) AS listings,
        count(DISTINCT area_id) AS areas,
        count(*) FILTER (WHERE dup_group_id IS NOT NULL) AS clones,

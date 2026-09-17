@@ -293,7 +293,7 @@ def render_html(payload: dict) -> str:
         '<html lang="en"><head><meta charset="utf-8">',
         f"<title>Drift report {html.escape(payload['generated'])}</title>",
         f"<style>{STYLE}</style></head><body>",
-        f"<h1>Zestimator drift report — {html.escape(payload['generated'])}</h1>",
+        f"<h1>Dubimator drift report — {html.escape(payload['generated'])}</h1>",
         (
             f'<p class="muted">PSI above {PSI_THRESHOLD} (or KS above {KS_THRESHOLD}) is '
             f"flagged. Data ends {html.escape(payload['data_end'])}.</p>"
