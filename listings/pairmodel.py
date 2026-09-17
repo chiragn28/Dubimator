@@ -14,6 +14,7 @@ import numpy as np
 import polars as pl
 
 from listings.detect import PRICE_FEATURE
+from models.price.pyfunc import artifact_dir
 
 LOGGER = logging.getLogger(__name__)
 PAIR_MODEL_NAME = "zestimator-duplicate-pair"
@@ -62,7 +63,7 @@ class PairModel:
 
 class PairModelPyfunc(mlflow.pyfunc.PythonModel):
     def load_context(self, context):
-        self.model = PairModel.load(Path(context.artifacts["model_dir"]))
+        self.model = PairModel.load(artifact_dir(context, "model_dir"))
 
     def predict(self, context, model_input, params=None):
         return self.model.scores(pl.from_pandas(model_input))

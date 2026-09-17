@@ -18,6 +18,20 @@ def pip_requirements() -> list[str]:
     return [f"{name}=={importlib.metadata.version(name)}" for name in RUNTIME_PACKAGES]
 
 
+def artifact_dir(context, key: str) -> Path:
+    """The local path of a logged pyfunc artifact, on any OS.
+
+    A model logged on Windows records its artifact path with backslashes
+    (`artifacts\\model_dir`); loaded on Linux (the API container) that is one literal
+    file name that doesn't exist, so the backslashes are turned into separators.
+    """
+    raw = context.artifacts[key]
+    path = Path(raw)
+    if path.exists():
+        return path
+    return Path(raw.replace("\\", "/"))
+
+
 def _present(record: dict) -> dict:
     return {
         key: value
@@ -28,7 +42,7 @@ def _present(record: dict) -> dict:
 
 class PricePyfunc(mlflow.pyfunc.PythonModel):
     def load_context(self, context):
-        self.predictor = PricePredictor.from_dir(Path(context.artifacts["model_dir"]))
+        self.predictor = PricePredictor.from_dir(artifact_dir(context, "model_dir"))
 
     def predict(self, context, model_input, params=None):
         records = model_input.to_dict(orient="records")

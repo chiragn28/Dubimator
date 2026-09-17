@@ -9,6 +9,8 @@ import mlflow
 import numpy as np
 import polars as pl
 
+from models.price.pyfunc import artifact_dir
+
 LOGGER = logging.getLogger(__name__)
 RUNTIME_PACKAGES = ("mlflow", "xgboost", "lightgbm", "polars", "pandas", "pyarrow", "numpy")
 META_FILE = "ranker.json"
@@ -189,7 +191,7 @@ def load_ranker(directory: Path) -> Ranker:
 
 class RankerPyfunc(mlflow.pyfunc.PythonModel):
     def load_context(self, context):
-        self.ranker = load_ranker(Path(context.artifacts["ranker_dir"]))
+        self.ranker = load_ranker(artifact_dir(context, "ranker_dir"))
 
     def predict(self, context, model_input, params=None):
         return self.ranker.score(pl.from_pandas(model_input))

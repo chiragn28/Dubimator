@@ -18,7 +18,7 @@ from models.forecast.config import HORIZONS
 from models.forecast.features import to_matrix
 from models.forecast.intervals import half_width
 from models.price.boosting import make_dmatrix
-from models.price.pyfunc import pip_requirements
+from models.price.pyfunc import artifact_dir, pip_requirements
 from models.price.registry import CHAMPION_ALIAS
 
 LOGGER = logging.getLogger(__name__)
@@ -92,7 +92,7 @@ class ForecastModel:
 
 class ForecastPyfunc(mlflow.pyfunc.PythonModel):
     def load_context(self, context):
-        self.model = ForecastModel.load(Path(context.artifacts["model_dir"]))
+        self.model = ForecastModel.load(artifact_dir(context, "model_dir"))
 
     def predict(self, context, model_input, params=None):
         return self.model.predict_growth(pl.from_pandas(model_input))
