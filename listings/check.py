@@ -5,6 +5,18 @@ Spec: docs/superpowers/specs/2026-09-17-phase7-api-design.md ("Listing check").
 The checker reuses the Phase 4 pair features and fraud rules, with the new listing as a
 temporary attribute row (`NEW_LISTING_ID`) paired with its pgvector candidates. It reads
 detection columns only.
+
+Two differences from Phase 4's corpus-wide rules:
+
+- `inconsistent_relist` looks at the new listing's direct neighbours only: the candidates
+  whose price-blind score clears the threshold. Phase 4 used transitive clusters (connected
+  components over all decided pairs); a single new listing has no stored pairs of its own
+  to chain through, so the relist group here is the listing plus those neighbours.
+- `photo_reuse` counts the new listing's own `area_id` in each photo set's area set (and
+  the listing itself among the set's listings), as it would be once stored.
+
+Stored flags (`stored_flags`) come from the latest detect run of the latest corpus run
+only; a detect run of an older corpus describes listings that no longer exist.
 """
 
 import threading
@@ -12,6 +24,7 @@ from datetime import date
 
 import numpy as np
 import polars as pl
+import psycopg2
 
 from listings.config import PAIR_FEATURES, DetectConfig
 from listings.embed import IMAGE_DIM, normalize
@@ -61,7 +74,11 @@ JOIN listings.listings l ON l.listing_id = lp.listing_id
 WHERE lp.photo_id = ANY(%s)
 """
 
-LATEST_RUN_SQL = "SELECT max(detect_run_id) FROM listings.detect_runs"
+LATEST_RUN_SQL = """
+SELECT max(detect_run_id)
+FROM listings.detect_runs
+WHERE corpus_run_id = (SELECT max(corpus_run_id) FROM listings.corpus_runs)
+"""
 LISTING_EXISTS_SQL = "SELECT 1 FROM listings.listings WHERE listing_id = %s"
 STORED_PAIRS_SQL = """
 SELECT CASE WHEN listing_a = %(id)s THEN listing_b ELSE listing_a END AS other,
@@ -90,6 +107,15 @@ def _field(request, name: str):
     return getattr(request, name, None)
 
 
+def _rollback_quietly(conn) -> None:
+    """Roll back without masking an error already on its way out (a dead connection
+    fails its rollback too, and that second error would replace the first)."""
+    try:
+        conn.rollback()
+    except psycopg2.Error:
+        pass
+
+
 class ListingChecker:
     def __init__(
         self,
@@ -104,8 +130,10 @@ class ListingChecker:
         listing_photo_ids: dict[int, list[int]],
         photo_vectors: dict[int, np.ndarray],
         fraud_attributes: pl.DataFrame,
+        price_version: str | None = None,
     ):
         self.conn = conn
+        self.price_version = price_version
         self.embedder = embedder
         self.pair_model = pair_model
         self.price = price
@@ -122,15 +150,17 @@ class ListingChecker:
         )
         self.image_dim = next((v.size for v in image_vectors.values()), IMAGE_DIM)
         spread = fraud_attributes.group_by("photo_set_id").agg(
-            pl.col("area_id").n_unique().alias("areas"), pl.len().alias("listings")
+            pl.col("area_id").unique().alias("areas"), pl.len().alias("listings")
         )
         self.set_spread = {
-            row["photo_set_id"]: (row["areas"], row["listings"])
+            row["photo_set_id"]: (frozenset(row["areas"]), row["listings"])
             for row in spread.iter_rows(named=True)
         }
 
     @classmethod
-    def from_connection(cls, conn, embedder, pair_model, price, config=DEFAULT_CONFIG):
+    def from_connection(
+        cls, conn, embedder, pair_model, price, config=DEFAULT_CONFIG, price_version=None
+    ):
         attributes = load_listing_attributes(conn)
         text_vectors, image_vectors = load_listing_vectors(conn)
         listing_photo_ids, photo_vectors = load_photo_sets(conn)
@@ -139,6 +169,7 @@ class ListingChecker:
         return cls(
             conn, embedder, pair_model, price, config, attributes, text_vectors,
             image_vectors, listing_photo_ids, photo_vectors, fraud_attributes,
+            price_version=price_version,
         )  # fmt: skip
 
     # --- database reads, serialized on the checker's connection -------------------------
@@ -152,7 +183,7 @@ class ListingChecker:
                     cur.execute(sql, params)
                     return cur.fetchall()
             finally:
-                self.conn.rollback()
+                _rollback_quietly(self.conn)
 
     def _neighbours(self, sql: str, vector: np.ndarray, limit: int) -> list[int]:
         if not np.any(vector):  # a zero vector has no cosine neighbours
@@ -208,6 +239,9 @@ class ListingChecker:
         return pl.DataFrame([row], schema=LISTING_ATTRIBUTE_SCHEMA)
 
     def _features(self, request, candidates, text_vec, image_vec, photo_ids) -> pl.DataFrame:
+        if not candidates:  # build_features can't stack zero pairs
+            columns = {"listing_a": pl.Int64, "listing_b": pl.Int64}
+            return pl.DataFrame(schema=columns | {name: pl.Float64 for name in PAIR_FEATURES})
         # Only the candidates' rows and vectors are needed: build_features looks up each
         # pair's two listings, so the subset gives the same features as the full corpus.
         wanted = set(candidates)
@@ -280,17 +314,24 @@ class ListingChecker:
         }
         return {"flag": "bait_price", "detail": detail}, [], estimate
 
-    def _photo_reuse(self, photo_ids: list[int]) -> dict | None:
+    def _photo_reuse(self, photo_ids: list[int], area_id: int) -> dict | None:
+        """Phase 4's rule with the new listing counted in: its photos' sets span at least
+        `photo_reuse_min_areas` distinct areas once its own area is added."""
         if not photo_ids:
             return None
         sets = [set_id for (set_id,) in self._fetch(PHOTO_SETS_SQL, (photo_ids,))]
-        spreads = [self.set_spread[set_id] for set_id in sets if set_id in self.set_spread]
+        spreads = [
+            (len(self.set_spread[set_id][0] | {area_id}), self.set_spread[set_id][1] + 1, set_id)
+            for set_id in sets
+            if set_id in self.set_spread
+        ]
         if not spreads:
             return None
-        areas, listings = max(spreads)
+        areas, listings, set_id = max(spreads, key=lambda item: (item[0], item[1], -item[2]))
         if areas < self.config.photo_reuse_min_areas:
             return None
-        return {"flag": "photo_reuse", "detail": {"areas": areas, "listings": listings}}
+        detail = {"photo_set_id": set_id, "areas": areas, "listings": listings}
+        return {"flag": "photo_reuse", "detail": detail}
 
     def _relist(self, request, features: pl.DataFrame) -> dict | None:
         if features.is_empty():
@@ -344,10 +385,16 @@ class ListingChecker:
         notes += bait_notes
         flags = [
             flag
-            for flag in (bait, self._photo_reuse(photo_ids), self._relist(request, features))
+            for flag in (
+                bait,
+                self._photo_reuse(photo_ids, int(request.area_id)),
+                self._relist(request, features),
+            )
             if flag is not None
         ]
-        price_version = getattr(estimate, "model_version", None) if estimate else None
+        price_version = None
+        if self.price is not None:  # the loaded model's version, priced or not
+            price_version = self.price_version or getattr(estimate, "model_version", None)
         return {
             "duplicates": self._duplicates(features, scores),
             "flags": flags,
@@ -357,7 +404,9 @@ class ListingChecker:
 
 
 def stored_flags(conn, listing_id: int) -> dict | None:
-    """The latest detect run's duplicates and fraud flags for a stored listing, or None."""
+    """The duplicates and fraud flags of the latest corpus's latest detect run for a stored
+    listing, or None if the listing is unknown. With no detect run for that corpus yet,
+    `detect_run_id` is None and both lists are empty."""
     try:
         with conn.cursor() as cur:
             cur.execute(LISTING_EXISTS_SQL, (listing_id,))
@@ -378,4 +427,4 @@ def stored_flags(conn, listing_id: int) -> dict | None:
             result["flags"] = [{"flag": flag, "detail": detail} for flag, detail in cur.fetchall()]
             return result
     finally:
-        conn.rollback()
+        _rollback_quietly(conn)

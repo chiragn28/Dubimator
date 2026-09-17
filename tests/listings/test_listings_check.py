@@ -5,6 +5,8 @@ from datetime import date, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
+import polars as pl
 import pytest
 
 from listings.config import PAIR_FEATURES, DetectConfig
@@ -245,11 +247,13 @@ def test_stock_photos_are_flagged_as_reused(detected, make_checker):
         "WHERE l.photo_set_id = %s ORDER BY lp.listing_id, lp.position LIMIT 4",
         (set_id,),
     )
-    checker = make_checker(price="default", config=DetectConfig(photo_reuse_min_areas=areas))
+    # The request's own area (987_654) is not a corpus area, so it adds one to the spread.
+    checker = make_checker(price="default", config=DetectConfig(photo_reuse_min_areas=areas + 1))
     result = checker.check(unrelated_request(photo_ids=[photo_id for (photo_id,) in photos]))
     (reuse,) = [flag for flag in result["flags"] if flag["flag"] == "photo_reuse"]
-    assert reuse["detail"]["areas"] == areas
-    assert reuse["detail"]["listings"] >= areas
+    assert reuse["detail"]["photo_set_id"] == set_id
+    assert reuse["detail"]["areas"] == areas + 1
+    assert reuse["detail"]["listings"] >= areas + 1
     assert NO_PHOTOS_NOTE not in result["notes"]
 
 
@@ -341,6 +345,155 @@ def test_stored_flags_for_unknown_and_clean_listings(detected):
         "duplicates": [],
         "flags": [],
     }
+
+
+def test_stored_flags_ignore_runs_of_an_older_corpus(detected):
+    from listings.check import stored_flags
+
+    write_stored_run(detected)
+    conn = detected.conn
+    ((listing_id,),) = fetch(conn, "SELECT min(listing_id) FROM listings.listings")
+    with conn.cursor() as cur:  # a newer corpus run that has not been detected yet
+        cur.execute(
+            "INSERT INTO listings.corpus_runs (seed, photo_dataset_sha, counts) "
+            "VALUES (0, NULL, '{}'::jsonb)"
+        )
+    conn.commit()
+    assert stored_flags(conn, listing_id) == {
+        "listing_id": listing_id,
+        "detect_run_id": None,
+        "duplicates": [],
+        "flags": [],
+    }
+
+
+# --- without a database ---------------------------------------------------------------------
+
+
+class ScriptedCursor:
+    def __init__(self, conn):
+        self.conn = conn
+        self.rows = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params=None):
+        self.conn.executed.append(sql)
+        answer = self.conn.answers.get(sql, [])
+        if isinstance(answer, Exception):
+            raise answer
+        self.rows = list(answer)
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return self.rows
+
+
+class ScriptedConn:
+    """Answers each SQL string with fixed rows (or raises); rollback can fail too."""
+
+    def __init__(self, answers=None, rollback_error=None):
+        self.answers = answers or {}
+        self.rollback_error = rollback_error
+        self.executed = []
+
+    def cursor(self):
+        return ScriptedCursor(self)
+
+    def rollback(self):
+        if self.rollback_error is not None:
+            raise self.rollback_error
+
+
+class StubPair:
+    threshold = 0.5
+    version = "pair-3"
+
+    def scores(self, features):
+        return np.zeros(features.height)
+
+    def price_blind_scores(self, features):
+        return np.zeros(features.height)
+
+
+def bare_checker(conn, fraud_rows=(), price=None, price_version=None, config=DEFAULT_CONFIG):
+    from listings.check import ListingChecker
+    from listings.features import LISTING_ATTRIBUTE_SCHEMA
+
+    fraud = pl.DataFrame(
+        list(fraud_rows),
+        schema={"listing_id": pl.Int64, "photo_set_id": pl.Int64, "area_id": pl.Int64},
+        orient="row",
+    )
+    return ListingChecker(
+        conn, FakeEmbedder(), StubPair(), price, config,
+        pl.DataFrame(schema=LISTING_ATTRIBUTE_SCHEMA), {}, {}, {},
+        {11: np.ones(4), 12: np.ones(4)}, fraud, price_version=price_version,
+    )  # fmt: skip
+
+
+def photo_conn():
+    from listings import check
+
+    return ScriptedConn({check.KNOWN_PHOTOS_SQL: [(11,), (12,)], check.PHOTO_SETS_SQL: [(7,)]})
+
+
+# Photo set 7 is used by three stored listings in areas 1 and 2.
+SET_7 = [(1, 7, 1), (2, 7, 2), (3, 7, 2)]
+
+
+def test_photo_reuse_counts_the_new_listings_own_area():
+    checker = bare_checker(photo_conn(), SET_7, config=DetectConfig(photo_reuse_min_areas=3))
+    elsewhere = checker.check(unrelated_request(area_id=3, photo_ids=[11, 12]))
+    (reuse,) = [flag for flag in elsewhere["flags"] if flag["flag"] == "photo_reuse"]
+    assert reuse["detail"] == {"photo_set_id": 7, "areas": 3, "listings": 4}
+
+    same_area = checker.check(unrelated_request(area_id=2, photo_ids=[11, 12]))
+    assert not [flag for flag in same_area["flags"] if flag["flag"] == "photo_reuse"]
+
+
+def test_model_versions_report_the_loaded_price_model():
+    failing = FakePrice(error=PriceInputError("area_id", "unknown area"))
+    checker = bare_checker(ScriptedConn(), price=failing, price_version="12")
+    result = checker.check(unrelated_request())
+    assert result["model_versions"] == {"pair": "pair-3", "price": "12"}
+
+    no_price = bare_checker(ScriptedConn(), price=None, price_version=None)
+    assert no_price.check(unrelated_request())["model_versions"]["price"] is None
+
+
+def test_a_failed_rollback_does_not_hide_the_query_error():
+    import psycopg2
+
+    from listings import check
+
+    lost = psycopg2.OperationalError("server closed the connection unexpectedly")
+    conn = ScriptedConn(
+        {check.KNOWN_PHOTOS_SQL: lost},
+        rollback_error=psycopg2.InterfaceError("connection already closed"),
+    )
+    with pytest.raises(psycopg2.OperationalError):
+        bare_checker(conn).check(unrelated_request(photo_ids=[11]))
+    conn.answers = {check.LISTING_EXISTS_SQL: lost}
+    with pytest.raises(psycopg2.OperationalError):
+        check.stored_flags(conn, 5)
+
+
+def test_stored_flags_with_no_run_for_the_latest_corpus():
+    from listings import check
+
+    conn = ScriptedConn({check.LISTING_EXISTS_SQL: [(1,)], check.LATEST_RUN_SQL: [(None,)]})
+    assert check.stored_flags(conn, 5) == {
+        "listing_id": 5, "detect_run_id": None, "duplicates": [], "flags": [],
+    }  # fmt: skip
+    assert "corpus_runs" in check.LATEST_RUN_SQL
+    assert check.STORED_PAIRS_SQL not in conn.executed
 
 
 def test_checker_selects_no_free_duplicate_oracle():
