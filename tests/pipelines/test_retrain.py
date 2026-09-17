@@ -1,10 +1,12 @@
 """TDD for pipelines/retrain.py (Phase 9 scheduled retraining pipeline).
 
 Uses a fake subprocess runner throughout — no real ingestion/training ever runs in tests.
-Covers: stage order, stop-on-first-failure, gate_failed (exit code 2) continues, --only/--skip,
-and the JSON report file.
+Covers: stage order, stop-on-first-failure, gate_failed (exit code 2 from a training step)
+continues, --only/--skip, the unchanged-source ingest skip, and the JSON report file.
+The latest-ingested-hash reader is always faked, so no test touches the database.
 """
 
+import hashlib
 import json
 
 import pytest
@@ -37,6 +39,17 @@ def make_runner(outcomes=None):
 
     runner.calls = calls
     return runner
+
+
+@pytest.fixture(autouse=True)
+def _no_database(monkeypatch):
+    """The default reader queries Postgres; tests must never reach it."""
+
+    def forbidden():
+        raise AssertionError("the database reader must not be called in tests")
+
+    monkeypatch.setattr(retrain, "latest_ingested_sha256", lambda: None)
+    return forbidden
 
 
 @pytest.fixture
@@ -216,3 +229,102 @@ def test_main_only_and_skip_are_mutually_composable(tmp_path, csv_path, monkeypa
     joined = [" ".join(c) for c in runner.calls]
     assert any("models.price train" in j for j in joined)
     assert not any("search" in j for j in joined)
+
+
+USAGE_ERROR = (
+    "usage: python -m models.price [-h] {train}\n"
+    "python -m models.price: error: argument command: invalid choice: 'trian'\n"
+)
+
+
+@pytest.mark.parametrize(
+    "failing",
+    ["-m ingestion", "models.forecast build", "listings detect", "search queries", "search train"],
+)
+def test_exit_2_outside_training_steps_is_a_failure(csv_path, failing):
+    runner = make_runner({failing: FakeResult(returncode=2)})
+    result = retrain.run_pipeline(retrain.build_stages(csv_path), runner)
+
+    assert result.reports[-1].status == "failed"
+    assert result.reports[-1].exit_code == 2
+    assert result.failed is True
+
+
+def test_exit_2_with_an_argparse_usage_error_is_a_failure(csv_path):
+    runner = make_runner({"models.price train": FakeResult(returncode=2, stderr=USAGE_ERROR)})
+    result = retrain.run_pipeline(retrain.build_stages(csv_path), runner)
+
+    assert [r.name for r in result.reports] == ["ingest", "price"]
+    assert result.reports[-1].status == "failed"
+    assert result.failed is True
+
+
+def test_exit_2_from_forecast_train_after_build_is_gate_failed(csv_path):
+    runner = make_runner({"models.forecast train": FakeResult(returncode=2, stdout="no gate")})
+    result = retrain.run_pipeline(retrain.build_stages(csv_path), runner)
+
+    assert result.reports[-1].status == "gate_failed"
+    joined = [" ".join(c) for c in runner.calls]
+    assert any("models.forecast build" in j for j in joined)
+
+
+def _sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_ingest_skip_reason_when_source_is_unchanged(csv_path):
+    reason = retrain.ingest_skip_reason(csv_path, lambda: _sha(csv_path))
+    assert reason is not None
+    assert "unchanged" in reason
+
+
+def test_ingest_skip_reason_none_when_source_changed_or_never_ingested(csv_path):
+    assert retrain.ingest_skip_reason(csv_path, lambda: "0" * 64) is None
+    assert retrain.ingest_skip_reason(csv_path, lambda: None) is None
+
+
+def test_ingest_skip_reason_runs_ingest_when_the_reader_fails(csv_path):
+    def broken():
+        raise OSError("connection refused")
+
+    assert retrain.ingest_skip_reason(csv_path, broken) is None
+
+
+def test_ingest_skip_reason_missing_file_does_not_read_the_database(tmp_path, _no_database):
+    reason = retrain.ingest_skip_reason(tmp_path / "missing.csv", _no_database)
+    assert reason is not None and "not found" in reason
+
+
+def test_ingest_skip_reason_uses_the_ingestion_hash_helper(csv_path, monkeypatch):
+    monkeypatch.setattr(retrain, "file_sha256", lambda path: "abc")
+    assert retrain.ingest_skip_reason(csv_path, lambda: "abc") is not None
+
+
+def test_unchanged_source_skips_ingest_and_continues(csv_path):
+    runner = make_runner()
+    stages = retrain.build_stages(csv_path, read_latest_sha=lambda: _sha(csv_path))
+    result = retrain.run_pipeline(stages, runner)
+
+    assert result.reports[0].status == "skipped"
+    assert "unchanged" in result.reports[0].output_tail[0]
+    assert not any("ingestion" in " ".join(c) for c in runner.calls)
+    assert [r.name for r in result.reports] == list(retrain.STAGE_NAMES)
+    assert result.failed is False
+
+
+def test_main_uses_the_default_reader(tmp_path, csv_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(retrain, "latest_ingested_sha256", lambda: _sha(csv_path))
+    runner = make_runner()
+    assert retrain.main(["retrain", "--csv", str(csv_path)], runner=runner) == 0
+    assert not any("ingestion" in " ".join(c) for c in runner.calls)
+
+
+def test_dry_run_checks_the_skip_once(csv_path, monkeypatch, capsys):
+    reads = []
+    monkeypatch.setattr(
+        retrain, "latest_ingested_sha256", lambda: reads.append(1) or _sha(csv_path)
+    )
+    assert retrain.main(["retrain", "--dry-run", "--csv", str(csv_path)]) == 0
+    assert "SKIP" in capsys.readouterr().out
+    assert len(reads) == 1

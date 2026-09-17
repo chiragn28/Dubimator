@@ -1050,8 +1050,12 @@ with three jobs:
 - `lint` — `uv run ruff check .` and `uv run ruff format --check .`.
 - `test` — an Ubuntu runner with a `pgvector/pgvector:pg16` service on port 5433, `uv sync
   --frozen`, and `uv run pytest -q -W error -m "not gpu and not live"`.
-- `docker` — builds `Dockerfile.mlflow` and `Dockerfile.airflow`. Phase 10 adds the API and
-  demo images to this job once their Dockerfiles exist.
+- `docker` — builds `Dockerfile.mlflow`, `Dockerfile.airflow`, `Dockerfile.api` and
+  `Dockerfile.demo`.
+
+The workflow's `GITHUB_TOKEN` is read-only (`permissions: contents: read`). The `test` job applies
+`docker/postgres-init.sql` to `template1` (so the test databases the `pg_test_db` fixture
+creates already have pgvector) and to `POSTGRES_DB`.
 
 Three pytest markers, registered in `pyproject.toml`, control what runs where:
 
@@ -1068,12 +1072,16 @@ instead — CI's `test` job sets it, since it does bring Postgres up, so a DB te
 reach it there is a real regression, not something to quietly skip.
 
 **Retraining pipeline.** `python -m pipelines retrain` runs the full retrain end to end, one
-stage at a time, each stage its own `python -m ...` subprocess: `ingestion` (skipped if the
-source CSV is missing), `models.price train`, `listings detect`, `search queries` + `search
-train`, `models.forecast build` + `models.forecast train`. It stops at the first real failure.
-A stage exiting 2 — the gate-failure convention used by `models.price train` and
-`models.forecast train` — is recorded as `gate_failed` and the pipeline keeps going, since a
-failed acceptance gate is an expected, legitimate outcome. Every run writes
+stage at a time, each stage its own `python -m ...` subprocess: `ingestion`, `models.price
+train`, `listings detect`, `search queries` + `search train`, `models.forecast build` +
+`models.forecast train`. Ingestion is skipped when the source CSV is missing, or when its
+SHA-256 matches `source_sha256` of the latest succeeded `dld.ingestion_runs` row (the file
+hasn't changed since it was last loaded). If that lookup fails, ingestion runs anyway. The
+pipeline stops at the first real failure. Exit code 2 from `models.price train` or
+`models.forecast train` is their gate-failure convention: it is recorded as `gate_failed` and
+the pipeline keeps going, since a failed acceptance gate is an expected, legitimate outcome.
+Exit code 2 from any other step, or an argparse usage error, is an ordinary `failed`. Every run
+writes
 `data/pipelines/retrain_<UTC timestamp>.json` with each stage's status, duration, exit code and
 its output's last 20 lines.
 
@@ -1088,15 +1096,24 @@ instead of running in GitHub Actions. Windows Task Scheduler (weekly, Sunday 03:
 
 ```bat
 schtasks /Create /TN "Zestimator retrain" /SC WEEKLY /D SUN /ST 03:00 ^
-  /TR "C:\path\to\zestimator\.venv\Scripts\python.exe -m pipelines retrain" ^
+  /TR "cmd /c cd /d C:\path\to\zestimator && .venv\Scripts\python.exe -m pipelines retrain >> data\pipelines\retrain.log 2>&1" ^
   /RU "%USERNAME%"
 ```
+
+The `cd /d` matters: the pipeline's default paths (`data/raw/Transactions.csv`,
+`data/pipelines/`) and `.env` are relative to the repository root, and a scheduled task starts
+in `C:\Windows\System32`.
 
 or, on a machine that runs cron, the equivalent weekly line:
 
 ```cron
 0 3 * * 0 cd /path/to/zestimator && /path/to/zestimator/.venv/bin/python -m pipelines retrain >> data/pipelines/retrain.log 2>&1
 ```
+
+Retraining registers new champions in MLflow but does not reload a running API. Afterwards,
+either call `POST /v1/admin/reload` with a key listed in `API_ADMIN_KEYS`, e.g.
+`curl -X POST -H "X-API-Key: <admin key>" localhost:8000/v1/admin/reload`, or restart the API
+(`docker compose restart api`).
 
 **First push checklist.** This repository has no git remote yet. Before relying on any of the
 above:
