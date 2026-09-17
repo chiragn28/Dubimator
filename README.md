@@ -1,24 +1,183 @@
 # Zestimator — Dubai Real Estate ML Platform
 
-Portfolio-grade ML platform for Dubai real estate: property price
-estimation, duplicate/fraud listing detection, and search ranking, built
-on real Dubai Land Department (DLD) transaction data.
+Zestimator is an end-to-end ML platform for Dubai real estate, built on
+1,047,965 real Dubai Land Department (DLD) transactions. It estimates what a
+home is worth, forecasts its price, catches duplicate and suspicious listings,
+and ranks free-text property searches. Every model has to pass an acceptance
+gate against a simple baseline before it is registered in MLflow and served.
+All of it runs behind one FastAPI service and a Streamlit demo, from a local
+Docker stack with CI, drift reports and Prometheus/Grafana monitoring.
 
-> **Status:** Phases 1–10 complete: data, price model, duplicate/fraud detection, search,
-> 3-month price forecasting, the FastAPI service, the Streamlit demo, CI/CD, and the
-> Docker + Cloudflare Tunnel deployment with monitoring. Phase 11 (final documentation)
-> is in progress. See `docs/superpowers/specs/` for every phase's design.
+> **Status:** all 11 phases are complete: foundation (1), ingestion (2), price
+> model (3), duplicate/fraud detection (4), search (5), price forecasting (6),
+> API (7), demo (8), CI/CD (9), deploy and monitor (10), and documentation
+> (11).
 
-## Architecture (current)
+## What it does
+
+- **Price:** estimates a home's fair value as of 2023-03-17, with 80% and 95%
+  ranges, and labels an asking price as below market, fair or above market
+  (XGBoost on the GPU, conformal ranges).
+- **Forecast:** predicts price growth over 3 months, 1 year and 3 years. A
+  horizon that fails its own accuracy gate returns `not_deployed` and the
+  reason, not a number.
+- **Duplicates and fraud:** finds reposted listings from text and photo
+  similarity (pgvector indexes and a logistic regression over 12 signals), and
+  flags bait prices, reused photos and inconsistent relists, on a synthetic
+  listings corpus built over real sales.
+- **Search:** parses requests such as "2BR in Dubai Marina under 1.5M", combines
+  vector and full-text retrieval, re-ranks the results with a learning-to-rank
+  model and explains each hit.
+- **API:** one versioned FastAPI service with API keys, per-key rate limits,
+  JSON logs and Prometheus metrics.
+- **Demo:** a Streamlit app over the API (price and forecast, search, listing
+  check, area explorer), shareable through a Cloudflare Tunnel.
+
+## Results at a glance
+
+Each number below is copied from its deep-dive section, which gives the test
+period, the confidence intervals and the caveats.
+
+| Model | Headline metric | Baseline | Gate outcome |
+|---|---|---|---|
+| Price (Phase 3) | Test MdAPE **12.6%** | Area comps: 17.3% | Passed (bar 15.6%); registered `zestimator-price@champion` |
+| Duplicates (Phase 4) | Precision **98.3%**, recall **21.1%** of retrieved duplicates (20.4% end to end) | Photos-only rule: precision 0.6%, recall 91.0% | Threshold set for 98% validation precision; registered `zestimator-duplicate-pair@champion` |
+| Search (Phase 5) | NDCG@10 **0.997** (95% CI 0.995–0.999) | Rules over parsed slots: 0.972 | Passed; registered `zestimator-search-ranker@champion` |
+| Forecast, 3 months (Phase 6) | MAPE **8.22%** | No change: 8.54% | Passed; registered `zestimator-forecast-3m@champion` |
+| Forecast, 1 year (Phase 6) | MAPE 18.51% | No change: 12.70% | **Failed**, not deployed |
+| Forecast, 3 years (Phase 6) | none (1 walk-forward fold, needs 2) | none | **Insufficient data**, not deployed |
+| API (Phase 7) | All 9 smoke-run endpoints return 200; warm latency 3.5–60.5 ms | none | `python -m api smoke` run against the real stack |
+
+## Quickstart
+
+You need Docker Desktop, [uv](https://docs.astral.sh/uv/) and the DLD
+transactions CSV (see [`data/README.md`](data/README.md) for the source). The
+training commands use a CUDA GPU when one is available (`--device auto`); the
+timings in this README are from an RTX 3060 Laptop GPU.
+
+```bash
+# 1. Configuration: set API_KEYS and DEMO_API_KEY (one of API_KEYS); see the API deep dive
+cp .env.example .env
+# 2. Postgres (with pgvector) and MLflow
+docker compose up -d --wait postgres mlflow
+# 3. Put the DLD file at data/raw/Transactions.csv
+# 4. Python environment
+uv sync
+# 5. Load and clean the transactions
+uv run python -m ingestion
+# 6. Price model
+uv run python -m models.price train
+# 7. Synthetic listings, embeddings, duplicate and fraud detection
+uv run python -m listings build
+uv run python -m listings embed
+uv run python -m listings detect
+# 8. Search queries, grades and ranker
+uv run python -m search queries
+uv run python -m search train
+# 9. Forecasts
+uv run python -m models.forecast build
+uv run python -m models.forecast train
+# 10. Serve and open the demo at http://127.0.0.1:8501
+uv run python -m api serve --port 8000     # terminal 1
+uv run python -m demo --port 8501          # terminal 2
+```
+
+For step 10 you can use containers instead:
+`docker compose build api demo && docker compose up -d --wait api demo`.
+
+After the first run, `uv run python -m pipelines retrain` repeats steps 5–9 in
+order: ingestion, price training, `listings detect`, the search stages and the
+forecast stages. It re-runs only `listings detect`, not `build` or `embed`, and
+it skips ingestion when the CSV hasn't changed. See [CI/CD](#cicd).
+
+## Honest limitations
+
+- **The data ends on 2023-03-17.** Every estimate and forecast is as of that
+  date. A newer DLD file needs no code change, but it hasn't been ingested.
+- **The listings are synthetic.** DLD publishes no listings, so the Phase 4
+  corpus invents text, agents, duplicates and fraud over real sales, and uses
+  public photos. The duplicate and search figures are measured on that corpus
+  and won't carry over to a real portal. Search queries and grades are
+  rule-generated too.
+- **There are no coordinates and no map.** DLD has no coordinates, so location
+  means area, project and building, infrastructure features are area-level
+  counts, and search can't score "near the Marina".
+- **Only one forecast horizon is served, and it acts like a drift rule.** The
+  3-month champion has 3 boosting rounds and forecasts about +1.4% for nearly
+  every home. The 1-year model failed its gate, and 3 years has too little
+  history; neither is deployed.
+- **Duplicate recall is 21%.** The detector is tuned for precision, so it finds
+  about one planted duplicate in five, and almost none of the reworded copies.
+- **Bait-price results are in-sample.** The price champion was refit on every
+  source sale, so the `bait_price` precision and recall (45.2% / 96.5%) are
+  optimistic. The same applies to the search ranker's value features.
+- **The public link works only while the host PC is on.** Hosting is a local
+  Docker stack behind a Cloudflare Tunnel, not a cloud service.
+
+## How it was built
+
+Each phase went through the same steps: a design spec, then an implementation
+plan, then a build by subagents, then a review against the spec, with fixes
+before the next phase started. Specs and plans are in `docs/superpowers/`.
+
+- **Tests:** 1,000 tests run in CI (`uv run pytest --collect-only -q -m "not gpu
+  and not live"` collects 1,000 of 1,005; the other 5 need a GPU or the full live
+  stack).
+- **CI:** GitHub Actions runs lint, tests against a pgvector Postgres, and
+  Docker builds. `scripts/ci.py` runs the same checks locally.
+- **Traceable numbers:** every number in this README comes from an MLflow run
+  (IDs are given in the deep dives) or from a logged command output such as
+  `quality.json`, `train_output.txt` or `stage_timings.json`.
+
+## Documentation map
+
+- **Design specs**, one per phase: [`docs/superpowers/specs/`](docs/superpowers/specs/)
+- **Implementation plans** (Phases 1–8): [`docs/superpowers/plans/`](docs/superpowers/plans/)
+- **Architecture page** (build status, data flow, the eleven phases, stack and
+  cost): https://claude.ai/artifact/6keTdjksn2nWLnkVmNbMRw. The source is
+  [`docs/architecture.html`](docs/architecture.html).
+- **Design-decisions casebook:** https://claude.ai/artifact/2CxCqLdMGgEw3Xwj6QDnXE
+- **Data source:** [`data/README.md`](data/README.md)
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Results at a glance](#results-at-a-glance)
+- [Quickstart](#quickstart)
+- [Honest limitations](#honest-limitations)
+- [How it was built](#how-it-was-built)
+- [Documentation map](#documentation-map)
+- [Architecture](#architecture)
+- [Local development](#local-development)
+- [Deep dives](#deep-dives)
+  - [Data (Phase 2)](#data-phase-2)
+  - [Ingestion (Phase 2)](#ingestion-phase-2)
+  - [Price model (Phase 3)](#price-model-phase-3)
+  - [Duplicate and fraud detection (Phase 4)](#duplicate-and-fraud-detection-phase-4)
+  - [Property search (Phase 5)](#property-search-phase-5)
+  - [Price forecasting (Phase 6)](#price-forecasting-phase-6)
+  - [API (Phase 7)](#api-phase-7)
+  - [Demo (Phase 8)](#demo-phase-8)
+- [CI/CD](#cicd)
+- [Deploy and monitor](#deploy-and-monitor)
+- [Cost breakdown](#cost-breakdown)
+- [Module layout](#module-layout)
+
+## Architecture
+
+Read the diagram from left to right: the DLD CSV is loaded into Postgres; each
+model's CLI trains from Postgres and registers its champion in MLflow; the API
+loads those champions and serves the demo, which is the only service the
+Cloudflare Tunnel exposes.
 
 ```mermaid
 graph LR
     CSV[("data/raw/Transactions.csv")]
     CLI["python -m ingestion"]
-    subgraph "Local Dev (Docker Compose)"
-        AF[Airflow: dld_ingestion DAG]
-        PG[(Postgres + pgvector<br/>schema dld)]
-        ML[MLflow]
+    subgraph LOCAL["Local Docker Compose stack"]
+        AF["Airflow: dld_ingestion DAG"]
+        PG[("Postgres + pgvector<br/>schema dld")]
+        ML["MLflow"]
     end
     MLRUNS[("mlflow_data volume")]
     CSV --> CLI --> PG
@@ -31,7 +190,7 @@ graph LR
     LISTINGS[("listings schema<br/>synthetic corpus + vectors")]
     PG -->|"home sales"| LISTINGS
     LCLI --> LISTINGS
-    LCLI -->|"listing-dedup runs"| ML
+    LCLI -->|"listing-dedup runs + zestimator-duplicate-pair@champion"| ML
     SCLI["python -m search<br/>(queries, train, evaluate, query)"]
     SEARCH[("search schema<br/>queries, judgments, estimates")]
     LISTINGS -->|"listings, vectors, flags"| SCLI
@@ -49,9 +208,9 @@ graph LR
     PG -->|"listings, vectors, flags, area stats"| API
     DEMO["Streamlit demo<br/>python -m demo"]
     DEMO -->|"HTTP + API key (server-side)"| API
-    PROM[Prometheus + Grafana]
+    PROM["Prometheus + Grafana"]
     PROM -->|"scrapes /metrics"| API
-    TUN[Cloudflare Tunnel]
+    TUN["Cloudflare Tunnel"]
     TUN -->|"public link (demo only)"| DEMO
 ```
 
@@ -61,12 +220,12 @@ Prerequisites: Docker Desktop, [uv](https://docs.astral.sh/uv/).
 
 ```bash
 cp .env.example .env
-docker compose up -d --wait
+docker compose up -d --wait postgres mlflow airflow
 uv sync
 uv run pytest tests/ -v
 ```
 
-`--wait` blocks until all three services report healthy (Airflow takes about a minute on first start). If a local Postgres already uses port 5432, set `POSTGRES_PORT=5433` (or any free port) in `.env` first; likewise set `MLFLOW_PORT` if something already holds 5000 (macOS AirPlay Receiver does by default). All ports bind to 127.0.0.1 only.
+`--wait` blocks until the three services report healthy (Airflow takes about a minute on first start). A bare `docker compose up -d` also starts the API and demo containers, which need built images and `API_KEYS` (see [Deploy and monitor](#deploy-and-monitor)). The `live` tests also need the registered champions from the Quickstart. If a local Postgres already uses port 5432, set `POSTGRES_PORT=5433` (or any free port) in `.env` first; likewise set `MLFLOW_PORT` if something already holds 5000 (macOS AirPlay Receiver does by default). All ports bind to 127.0.0.1 only.
 
 | Service | Where (default port — `.env` variable) |
 |---|---|
@@ -74,7 +233,12 @@ uv run pytest tests/ -v
 | Airflow | http://localhost:8080 — `AIRFLOW_PORT`. User `admin`; password via `docker compose exec airflow cat /opt/airflow/standalone_admin_password.txt` (in Git Bash, prefix with `MSYS_NO_PATHCONV=1`) |
 | Postgres | `localhost:5432` — `POSTGRES_PORT`. Database, user, and password from `.env` |
 
-## Data
+## Deep dives
+
+One section per model phase, in build order. Each covers how the part works, the
+commands that run it, and its measured results and caveats.
+
+### Data (Phase 2)
 
 Real Dubai Land Department transactions (see `data/README.md` for the source).
 The file covers **1995-03-07 to 2023-03-17**, so every price estimate in this
@@ -102,7 +266,7 @@ reason (last full run, 28.9s):
 and year; groups with fewer than 30 sales fall back to wider groups, ending at
 citywide by property type.
 
-## Ingestion
+### Ingestion (Phase 2)
 
 ```bash
 uv run python -m ingestion            # host CLI; reads data/raw/Transactions.csv
@@ -115,13 +279,13 @@ stops as soon as it reaches the database, before writing anything — and any
 run left marked `running` by a killed process is marked failed as abandoned
 by the next run. Each run records itself in
 `dld.ingestion_runs` with the file's SHA-256 and per-reason counts. Phase 3
-trains on the `dld.market_sales` view. `price_per_sqm_aed`, `price_robust_z`
+(the price model) trains on the `dld.market_sales` view. `price_per_sqm_aed`, `price_robust_z`
 and `peer_tier` are all derived from the price, so they must never be used as
 model features (the columns carry database comments saying so). `dld.area_aliases` maps
 familiar names (Dubai Marina, JBR, JLT, JVC, Downtown, …) to DLD's official
 area names.
 
-## Price model
+### Price model (Phase 3)
 
 Estimates the fair market price of a Dubai home (apartment, hotel apartment,
 townhouse or villa) **as of 2023-03-17**, the last date in the DLD data. It
@@ -240,7 +404,7 @@ and an honest one, because the cleaning rule itself used the price.
 - Evaluate against listing-to-sale outcomes, not just registered prices.
 - Geocode buildings to use distances instead of area IDs.
 
-## Duplicate and fraud detection
+### Duplicate and fraud detection (Phase 4)
 
 Finds duplicate property listings and suspicious postings using photo and text
 similarity, on a **synthetic listings corpus built over real DLD sales**.
@@ -421,7 +585,7 @@ On this corpus the next fixes are:
 - add a text signal that survives rewording, such as matching on extracted
   facts.
 
-## Property search
+### Property search (Phase 5)
 
 Turns a free-text request such as "2BR in Dubai Marina under 1.5M" into a ranked,
 explained list of listings from the Phase 4 corpus.
@@ -757,9 +921,10 @@ fraud share (a read-only probe, not a logged contender). Further weaknesses:
 - drop the features that simply restate the grading rules, or grade with
   human raters;
 - add geographic proximity;
-- measure warm latency behind the Phase 7 API.
+- benchmark latency under concurrent load. The Phase 7 smoke run measured only
+  single warm requests (59.8 ms for `GET /v1/search`).
 
-## Price forecasting
+### Price forecasting (Phase 6)
 
 Forecasts a Dubai home's market growth over three horizons — 3 months, 1
 year and 3 years — **as of 2023-03-17**, the last date in the DLD data.
@@ -1028,7 +1193,7 @@ Alstom/Emaar/Nakheel press releases, each with a `source_accessed` date);
 planned_completion_date`, area ids exist in `dld.areas`, and types are
 known.
 
-## API
+### API (Phase 7)
 
 `api/` serves every model behind one versioned FastAPI service. Design:
 `docs/superpowers/specs/2026-09-17-phase7-api-design.md`.
@@ -1112,9 +1277,9 @@ curl -s -H "X-API-Key: $KEY" localhost:8000/v1/listings/1/flags
 **Limits.**
 - **Photos:** `POST /v1/listings/check` only compares photos already in the corpus (`photo_ids`). It never embeds uploaded images.
 - **Relists:** its relist check uses the new listing's direct neighbours, not Phase 4's transitive clusters.
-- **Forecasts:** only the 3-month champion serves forecasts, and it behaves like an average-growth rule (see "Price forecasting").
+- **Forecasts:** only the 3-month champion serves forecasts, and it behaves like an average-growth rule (see [Price forecasting](#price-forecasting-phase-6)).
 
-## Demo
+### Demo (Phase 8)
 
 `demo/` is a Streamlit app that talks only to the API, over HTTP, with its key held server-side. It never touches the database or MLflow. Design: `docs/superpowers/specs/2026-09-17-phase8-demo-design.md`.
 
@@ -1145,22 +1310,9 @@ Every page shows "Data as of 2023-03-17", and the listing pages say the listings
 | Area explorer | 1.1 s | Loaded |
 | About | 0.3 s | Loaded |
 
-## Cost breakdown (current)
-
-| Component | Cost |
-|---|---|
-| Postgres, MLflow, Airflow (local Docker) | $0 — runs on your machine |
-| Price model training (local RTX 3060) | $0 — runs on your machine |
-| Photo dataset + embedding models (one-off download) | $0 — about 0.8 GB on disk |
-| Search queries, embeddings and ranker tuning (local RTX 3060) | $0 — GPU time on your machine |
-| Price forecast training (local RTX 3060, CUDA) | $0 — GPU time on your machine |
-| API + demo containers, Prometheus, Grafana | $0 — local Docker |
-| Public link (Cloudflare quick tunnel) | $0 — no account needed |
-
-Hosting stays at $0: Phase 10 (deploy and monitor) shares the local Docker stack
-through a free Cloudflare Tunnel instead of a cloud service.
-
 ## CI/CD
+
+Phase 9 added the CI workflows, a local CI runner and the retraining pipeline.
 
 **Local runner.** `uv run python scripts/ci.py` runs the same checks as CI, in order — ruff
 check, ruff format --check, pytest, `docker compose config -q`, and (when `uvx` and network
@@ -1419,6 +1571,21 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
 - **Disk**: the API image is the big one. `docker image ls zestimator-*` shows the sizes. Old
   build cache can be removed with `docker builder prune`, which never touches volumes.
 
+## Cost breakdown
+
+| Component | Cost |
+|---|---|
+| Postgres, MLflow, Airflow (local Docker) | $0 — runs on your machine |
+| Price model training (local RTX 3060) | $0 — runs on your machine |
+| Photo dataset + embedding models (one-off download) | $0 — about 0.8 GB on disk |
+| Search queries, embeddings and ranker tuning (local RTX 3060) | $0 — GPU time on your machine |
+| Price forecast training (local RTX 3060, CUDA) | $0 — GPU time on your machine |
+| API + demo containers, Prometheus, Grafana | $0 — local Docker |
+| Public link (Cloudflare quick tunnel) | $0 — no account needed |
+
+Hosting stays at $0: Phase 10 (deploy and monitor) shares the local Docker stack
+through a free Cloudflare Tunnel instead of a cloud service.
+
 ## Module layout
 
 - `ingestion/` — DLD CSV validation, cleaning, and Postgres load (`python -m ingestion`)
@@ -1433,4 +1600,7 @@ With cron: `30 3 * * 1 cd /path/to/zestimator && uv run python -m monitoring dri
 - `pipelines/` — scheduled retraining pipeline: ingest → price → listings → search → forecast, one gated stage at a time (`python -m pipelines retrain`, Phase 9)
 - `monitoring/` — drift report (`python -m monitoring drift`), Prometheus scrape config and Grafana provisioning + dashboard; `Dockerfile.api`, `Dockerfile.demo` and the compose profiles `monitoring` / `tunnel` / `tunnel-named` (Phase 10)
 - `.github/` — CI/CD: `workflows/ci.yml` (lint, test, docker), `workflows/release.yml` (GHCR on a `v*` tag), `dependabot.yml` (Phase 9)
+- `docker/` — `postgres-init.sql` (enables pgvector); the Dockerfiles and `docker-compose.yml` sit at the repository root
+- `tests/` — the pytest suite, one folder per package, plus the `live` infrastructure smoke tests
+- `docs/` — phase specs and plans (`docs/superpowers/`) and the architecture page (`docs/architecture.html`)
 - `data/raw/` — drop DLD CSVs here (gitignored)
