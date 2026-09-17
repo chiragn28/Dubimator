@@ -163,7 +163,7 @@ def _parse_metric_table(output: str) -> dict[str, float]:
 
 
 def test_cli_drives_the_whole_pipeline_end_to_end(
-    pg_test_db, temp_mlflow, tmp_path, monkeypatch, photo_archive, capsys
+    pg_test_db, temp_mlflow, tmp_path, monkeypatch, photo_archive, capsys, caplog
 ):
     """Runs `python -m listings build|embed|detect|evaluate` through main() itself.
 
@@ -249,7 +249,9 @@ def test_cli_drives_the_whole_pipeline_end_to_end(
     # temp_mlflow's store has nothing registered there: load_price_predictor must fail loudly
     # and _detect must surface that, per this phase's be-loud ruling (ruling #2).
     assert "WARNING: bait_price check was SKIPPED" in detect_captured.err
-    assert "MLflow tracking URI" in detect_captured.err  # listings.fraud's own warning line
+    # listings.fraud's own warning line: whether it reaches stderr depends on which logging
+    # handlers MLflow's first store touch left behind, so accept pytest's log capture too.
+    assert "MLflow tracking URI" in detect_captured.err + caplog.text
 
     assert cli.main(["evaluate", "--data-dir", str(data_dir)]) == 0
     evaluate_captured = capsys.readouterr()

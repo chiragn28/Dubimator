@@ -39,7 +39,9 @@ REQUIRED_ENDPOINTS = {
 def _env(monkeypatch):
     monkeypatch.setenv("API_KEYS", KEY)
     monkeypatch.setenv("API_RATE_LIMIT_PER_MINUTE", "1000")
-    monkeypatch.delenv("API_COMPONENTS", raising=False)
+    # tests/conftest.py loads the real .env, so clear every other API setting it may carry
+    for name in ("API_COMPONENTS", "API_ADMIN_KEYS", "API_CORS_ORIGINS", "API_EMBED_DEVICE"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cli, "load_dotenv", lambda: None)
 
 
