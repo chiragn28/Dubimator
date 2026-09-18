@@ -16,6 +16,18 @@ from demo.client import ApiProblem
 DATA_NOTE = "Data as of 2023-03-17 (Dubai Land Department)."
 SYNTHETIC_NOTE = "Listings are synthetic, generated over real DLD sales, and labelled."
 
+# Listing IDs run 1-20000, but which ones are interesting depends on the detect run, so these
+# are picked from the current corpus: one per outcome, so the listing check shows something on
+# the first click instead of an empty result. Refresh them after rebuilding the corpus:
+#   SELECT listing_id FROM listings.fraud_flags GROUP BY listing_id
+#     ORDER BY count(DISTINCT flag) DESC LIMIT 1;                          -- the flagged one
+#   SELECT listing_a FROM listings.duplicate_pairs WHERE decision LIMIT 1; -- the duplicate
+EXAMPLE_LISTING_IDS: tuple[tuple[str, str], ...] = (
+    ("8249", "flags"),
+    ("19722", "duplicate"),
+    ("1", "clean"),
+)
+
 _SETUP_CODES = frozenset({"no_key", "unreachable", "unauthorized"})
 _SETUP_HINT = (
     "Set DEMO_API_URL and DEMO_API_KEY (in a .env file or your shell) and reload the page."

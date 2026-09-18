@@ -5,7 +5,13 @@ from __future__ import annotations
 import streamlit as st
 
 from demo.client import ApiProblem, get_client
-from demo.ui import DATA_NOTE, SYNTHETIC_NOTE, cached_areas, show_problem
+from demo.ui import (
+    DATA_NOTE,
+    EXAMPLE_LISTING_IDS,
+    SYNTHETIC_NOTE,
+    cached_areas,
+    show_problem,
+)
 
 st.set_page_config(page_title="Listing check — Dubimator", layout="wide")
 st.title("Listing check")
@@ -62,11 +68,32 @@ def _render_flags(flags: list[dict]) -> None:
         st.write("No flags raised.")
 
 
+def _use_example(listing_id: str) -> None:
+    """Fill the ID box and look it up, from the example buttons."""
+    st.session_state.existing_listing_id = listing_id
+    st.session_state.run_existing_lookup = True
+
+
 existing_tab, new_tab = st.tabs(["Existing listing", "New listing"])
 
 with existing_tab:
-    listing_id = st.text_input("Listing ID", key="existing_listing_id")
-    if st.button("Look up", key="lookup_existing") and listing_id:
+    listing_id = st.text_input(
+        "Listing ID", key="existing_listing_id", placeholder="a number from 1 to 20000"
+    )
+    st.caption("Or try an example:")
+    # One trailing spacer keeps the buttons compact on the wide layout without
+    # squeezing the labels to an ellipsis.
+    columns = st.columns(len(EXAMPLE_LISTING_IDS) + 1)
+    for column, (example_id, outcome) in zip(columns, EXAMPLE_LISTING_IDS):
+        column.button(
+            f"{example_id} · {outcome}",
+            key=f"example_{example_id}",
+            on_click=_use_example,
+            args=(example_id,),
+            use_container_width=True,
+        )
+    looked_up = st.button("Look up", key="lookup_existing")
+    if (looked_up or st.session_state.pop("run_existing_lookup", False)) and listing_id:
         try:
             result = get_client().listing_flags(listing_id)
         except ApiProblem as problem:

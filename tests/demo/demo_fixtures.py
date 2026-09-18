@@ -241,6 +241,7 @@ class FakeClient:
         return payload
 
     def listing_flags(self, listing_id) -> dict:
+        self.calls["listing_flags"].append(listing_id)
         self._maybe_fail("listing_flags")
         payload = dict(LISTING_FLAGS_PAYLOAD)
         payload["listing_id"] = listing_id

@@ -9,6 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 import demo.client
 from demo.client import ApiProblem
+from demo.ui import EXAMPLE_LISTING_IDS
 from tests.demo.demo_fixtures import FakeClient
 
 DEMO_DIR = Path(__file__).resolve().parents[2] / "demo"
@@ -128,6 +129,40 @@ def test_listing_check_existing_tab_shows_flag_names(monkeypatch):
     assert not at.exception
     markdown_text = " ".join(el.value for el in at.markdown)
     assert "photo_reuse" in markdown_text
+
+
+# ---------------------------------------------------------------------------
+# 5b. Listing check: an example button fills the ID box and looks that ID up,
+#     so the page is usable without knowing any listing ID.
+# ---------------------------------------------------------------------------
+
+
+def test_listing_check_example_button_looks_up_that_id(monkeypatch):
+    client = patch_client(monkeypatch)
+
+    at = AppTest.from_file(str(DEMO_DIR / "pages" / "3_Listing_check.py"))
+    at.run()
+    example_id, _ = EXAMPLE_LISTING_IDS[0]
+    at.button(key=f"example_{example_id}").click().run()
+
+    assert not at.exception
+    assert client.calls["listing_flags"] == [example_id]
+    assert at.text_input(key="existing_listing_id").value == example_id
+
+
+def test_listing_check_offers_one_example_per_outcome(monkeypatch):
+    patch_client(monkeypatch)
+
+    at = AppTest.from_file(str(DEMO_DIR / "pages" / "3_Listing_check.py"))
+    at.run()
+
+    assert not at.exception
+    keys = {el.key for el in at.button}
+    assert {f"example_{i}" for i, _ in EXAMPLE_LISTING_IDS} <= keys
+    # Distinct ids, and each says what it demonstrates.
+    ids = [i for i, _ in EXAMPLE_LISTING_IDS]
+    assert len(set(ids)) == len(ids) >= 2
+    assert all(outcome for _, outcome in EXAMPLE_LISTING_IDS)
 
 
 # ---------------------------------------------------------------------------
