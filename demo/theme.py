@@ -78,11 +78,68 @@ h3 {{ font-size: 1.15rem; letter-spacing: -0.015em; }}
   background: linear-gradient(90deg, var(--emerald), rgba(16,185,129,0.15) 38%, transparent 72%);
 }}
 
+/* ---- Texture -------------------------------------------------------------------------
+   Three layers, none of them decoration for its own sake:
+
+   1. A plot grid. The subject is land parcels and floor areas, so the page sits on the
+      squared paper those are drawn on. It fades out down the page so it never competes
+      with content below the fold.
+   2. Fine grain over everything. Large flat dark fields band on cheap panels and read as a
+      void; a little noise gives the ground a surface.
+   3. An emerald bloom behind the header, the same radial glow the landing page opens with.
+
+   All are pointer-events:none and sit behind content. */
+[data-testid="stAppViewContainer"] {{
+  position: relative;
+  background-color: var(--ink);
+  background-image:
+    radial-gradient(900px 460px at 14% -14%, rgba(16,185,129,0.17), transparent 64%),
+    linear-gradient(rgba(255,255,255,0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.045) 1px, transparent 1px);
+  background-size: 100% 100%, 56px 56px, 56px 56px;
+  background-repeat: no-repeat, repeat, repeat;
+  background-attachment: scroll, fixed, fixed;
+}}
+
+/* The grid belongs to the top of the page; this mask retires it as you scroll. */
+[data-testid="stAppViewContainer"]::before {{
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(to bottom, transparent 0, rgba(11,16,20,0.55) 45%, var(--ink) 980px);
+  z-index: 0;
+}}
+
+/* Grain. An SVG fractal-noise tile, fixed so it reads as the screen's surface rather than
+   something printed on the content. */
+[data-testid="stAppViewContainer"]::after {{
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.055;
+  z-index: 0;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}}
+
+/* Content rides above all three. */
+[data-testid="stAppViewContainer"] .main,
+[data-testid="stAppViewContainer"] [data-testid="stMain"] {{
+  position: relative;
+  z-index: 1;
+}}
+
 /* Cards: one hairline border and a lift on hover. No stacked shadows. */
 [data-testid="stVerticalBlockBorderWrapper"] {{
   border-radius: 14px;
   border-color: var(--line) !important;
-  background: var(--surface);
+  /* Its own ground plus a lit top edge: the one-pixel highlight that makes a surface look
+     raised off the grid rather than drawn on it. */
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.045), rgba(255,255,255,0) 64px),
+    var(--surface);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.05);
   transition: border-color 140ms ease, transform 140ms ease;
 }}
 [data-testid="stVerticalBlockBorderWrapper"]:hover {{
@@ -113,7 +170,9 @@ h3 {{ font-size: 1.15rem; letter-spacing: -0.015em; }}
 
 /* Sidebar: its own darker ground, with the emerald rule repeated at the top. */
 [data-testid="stSidebar"] {{
-  background: #080C10;
+  background-color: #080C10;
+  background-image:
+    radial-gradient(420px 220px at 0% 0%, rgba(16,185,129,0.08), transparent 70%);
   border-right: 1px solid var(--line);
 }}
 [data-testid="stSidebar"] h2, [data-testid="stSidebar"] h3 {{ margin-top: 0.6rem; }}
