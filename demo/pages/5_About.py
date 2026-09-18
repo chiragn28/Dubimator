@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from demo import theme
 from demo.client import ApiProblem
 from demo.ui import (
     DATA_NOTE,
@@ -14,7 +15,13 @@ from demo.ui import (
 )
 
 st.set_page_config(page_title="About — Dubimator", layout="wide")
-st.title("About")
+theme.apply()
+theme.page_header(
+    "Dubimator",
+    "About",
+    "What the data is, what each model had to beat to be served, and what this demo "
+    "cannot tell you.",
+)
 
 st.markdown(
     f"""

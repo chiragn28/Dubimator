@@ -14,6 +14,9 @@ ENV PYTHONUNBUFFERED=1 \
     STREAMLIT_BROWSER_GATHER_USAGE_STATS=false \
     STREAMLIT_CLIENT_SHOW_ERROR_DETAILS=false
 WORKDIR /app
+# Streamlit reads .streamlit/config.toml relative to the working directory, so the demo's
+# palette has to travel with it or the container falls back to Streamlit's default theme.
+COPY .streamlit ./.streamlit
 COPY demo ./demo
 USER app
 EXPOSE 8501

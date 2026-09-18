@@ -1,0 +1,16 @@
+# The demo's palette, matched to the landing page (landing/src/components/Hero.tsx) so the
+# product reads as one thing: emerald accent on a deep ink ground with a teal bias, rather than
+# Streamlit's default red on neutral grey.
+[theme]
+base = "dark"
+primaryColor = "#10B981"
+backgroundColor = "#0B1014"
+secondaryBackgroundColor = "#121A20"
+textColor = "#E6EDF3"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

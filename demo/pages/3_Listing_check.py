@@ -4,24 +4,28 @@ from __future__ import annotations
 
 import streamlit as st
 
+from demo import theme
 from demo.client import ApiProblem, get_client
 from demo.ui import (
     DATA_NOTE,
     EXAMPLE_LISTING_IDS,
-    NO_PHOTO_BOX,
-    PHOTO_DISCLAIMER,
+    PHOTO_COMPARISON_NOTE,
     SYNTHETIC_NOTE,
     cached_areas,
     chips,
-    cover_photo,
     duplicate_chips,
     flag_summary,
-    photo_strip,
     show_problem,
 )
 
 st.set_page_config(page_title="Listing check — Dubimator", layout="wide")
-st.title("Listing check")
+theme.apply()
+theme.page_header(
+    "Phase 4",
+    "Listing check",
+    "Is this listing a repost, and is the price bait? Duplicates come from text and image "
+    "similarity; the warnings come from the price model and the listing’s own history.",
+)
 st.caption(DATA_NOTE)
 st.caption(SYNTHETIC_NOTE)
 
@@ -55,6 +59,25 @@ def parse_photo_ids(text: str) -> list[int]:
     return ids
 
 
+def _render_verdict(listing_id, result: dict) -> None:
+    """Lead with the answer: how many reposts and warnings this listing has.
+
+    The heading used to sit above a photo strip; with the photos gone it would be a bare id, so
+    it carries the finding instead and the sections below give the detail.
+    """
+    duplicates = len(result.get("duplicates") or [])
+    flags = len(result.get("flags") or [])
+    st.subheader(f"Listing #{listing_id}")
+    parts = []
+    if flags:
+        parts.append((f"{flags} warning{'' if flags == 1 else 's'}", "bad"))
+    if duplicates:
+        parts.append((f"{duplicates} possible repost{'' if duplicates == 1 else 's'}", "warn"))
+    if not parts:
+        parts.append(("nothing found", "good"))
+    chips(parts)
+
+
 def _render_duplicates(duplicates: list[dict]) -> None:
     st.subheader("Possible reposts")
     if not duplicates:
@@ -62,26 +85,22 @@ def _render_duplicates(duplicates: list[dict]) -> None:
         return
     count = len(duplicates)
     st.caption(
-        f"{count} other listing looks like the same home."
-        if count == 1
-        else f"{count} other listings look like the same home."
+        (
+            f"{count} other listing looks like the same home."
+            if count == 1
+            else f"{count} other listings look like the same home."
+        )
+        + " "
+        + PHOTO_COMPARISON_NOTE
     )
     for duplicate in duplicates:
         other_id = duplicate.get("listing_id")
         with st.container(border=True):
-            image_col, text_col = st.columns([1, 2.6], vertical_alignment="top")
-            with image_col:
-                photo = cover_photo(int(other_id)) if other_id is not None else None
-                if photo:
-                    st.image(photo, use_container_width=True)
-                else:
-                    st.markdown(NO_PHOTO_BOX, unsafe_allow_html=True)
-            with text_col:
-                score = duplicate.get("score")
-                if score is not None:
-                    st.markdown(f"### {min(float(score), 1.0) * 100:.1f}% match")
-                st.markdown(f"**Listing #{other_id}**")
-                chips(duplicate_chips(duplicate.get("signals") or {}))
+            score = duplicate.get("score")
+            if score is not None:
+                st.markdown(f"### {min(float(score), 1.0) * 100:.1f}% match")
+            st.markdown(f"**Listing #{other_id}**")
+            chips(duplicate_chips(duplicate.get("signals") or {}))
 
 
 def _render_flags(flags: list[dict]) -> None:
@@ -133,11 +152,7 @@ with existing_tab:
         except ApiProblem as problem:
             show_problem(problem)
         else:
-            st.subheader(f"Listing #{listing_id}")
-            if photo_strip(int(listing_id)):
-                st.caption(PHOTO_DISCLAIMER)
-            else:
-                st.caption("No photos for this listing on this server.")
+            _render_verdict(listing_id, result)
             _render_duplicates(result.get("duplicates") or [])
             _render_flags(result.get("flags") or [])
 

@@ -128,70 +128,14 @@ def cached_ready() -> dict:
     return api_client.get_client().ready()
 
 
-@st.cache_data(ttl=600, show_spinner=False)
-def cached_listing_photos(listing_id: int) -> dict:
-    """`GET /v1/listings/{id}/photos`, cached for 10 minutes."""
-    return api_client.get_client().listing_photos(listing_id)
-
-
-@st.cache_data(ttl=600, show_spinner=False)
-def cached_photo(photo_id: int) -> bytes | None:
-    """`GET /v1/photos/{id}` bytes, cached for 10 minutes. None when there is no image."""
-    return api_client.get_client().photo(photo_id)
-
-
-# Said wherever the corpus photos are actually shown. They are American houses from the
-# Houses-dataset assigned at random (listings/photos.py), so they must never be passed off as
-# the property; they are shown here only because reused photos are the finding on this page.
-PHOTO_DISCLAIMER = (
-    "Stand-in images from a public photo dataset, assigned to synthetic listings — not the "
-    "real property. They are what the duplicate and photo-reuse detectors compare."
+# The corpus images are American houses from the Houses-dataset, assigned to synthetic listings
+# at random (listings/generate.py picks a set with rng.choice, never consulting property type),
+# so no page shows them: beside a Dubai listing they read as a picture of the property and
+# contradict it. The detector still embeds and compares them, which this note explains.
+PHOTO_COMPARISON_NOTE = (
+    "The detector also compared the listings' images; those are stand-ins from a public photo "
+    "dataset, so they are scored but not shown."
 )
-
-
-def photo_strip(listing_id: int, limit: int = 4) -> int:
-    """The listing's own photos in a row, captioned by room. Returns how many were shown.
-
-    Zero means this deployment has no images for it, so the caller can stay quiet rather than
-    leaving an empty heading behind.
-    """
-    try:
-        photos = (cached_listing_photos(listing_id) or {}).get("photos") or []
-    except ApiProblem:
-        return 0
-    loaded = []
-    for photo in photos[:limit]:
-        try:
-            data = cached_photo(int(photo["photo_id"]))
-        except (ApiProblem, KeyError, TypeError, ValueError):
-            data = None
-        if data:
-            loaded.append((data, str(photo.get("room") or "photo").replace("_", " ")))
-    if not loaded:
-        return 0
-    for column, (data, room) in zip(st.columns(limit), loaded):
-        column.image(data, caption=room, use_container_width=True)
-    return len(loaded)
-
-
-def cover_photo(listing_id: int, room: str = "frontal") -> bytes | None:
-    """The JPEG bytes to lead a listing card with, or None if there is no usable image.
-
-    Prefers the exterior shot the way a property site does, then falls back to the first
-    photo. Photos are decoration, so every failure here returns None instead of raising:
-    a deployment without the corpus images shows cards without pictures.
-    """
-    try:
-        photos = (cached_listing_photos(listing_id) or {}).get("photos") or []
-    except ApiProblem:
-        return None
-    if not photos:
-        return None
-    chosen = next((p for p in photos if p.get("room") == room), photos[0])
-    try:
-        return cached_photo(int(chosen["photo_id"]))
-    except (ApiProblem, KeyError, TypeError, ValueError):
-        return None
 
 
 # Streamlit's own colour-background markdown, so chips need no raw HTML.
@@ -261,13 +205,6 @@ def parsed_chips(parsed: dict) -> list[tuple[str, str]]:
 def _reason_tone(reason: str) -> str:
     """A ranking reason is either a match ("area OK") or a miss ("89% over budget")."""
     return "good" if "✓" in reason else "warn"
-
-
-NO_PHOTO_BOX = (
-    "<div style='aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;"
-    "border-radius:8px;background:rgba(128,128,128,0.14);color:rgba(150,150,150,0.9);"
-    "font-size:0.8rem'>no photo</div>"
-)
 
 
 # The corpus photos are American houses from the Houses-dataset (listings/photos.py), assigned to

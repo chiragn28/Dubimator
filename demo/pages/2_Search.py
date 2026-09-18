@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import streamlit as st
 
+from demo import theme
 from demo.client import ApiProblem, get_client
 from demo.ui import (
     DATA_NOTE,
@@ -15,7 +16,13 @@ from demo.ui import (
 )
 
 st.set_page_config(page_title="Search — Dubimator", layout="wide")
-st.title("Search")
+theme.apply()
+theme.page_header(
+    "Phase 5",
+    "Search",
+    "Ask in plain English. The parser fills the slots it recognises, two retrievers fetch "
+    "candidates, and a learning-to-rank model orders them — each result saying why it is here.",
+)
 st.caption(DATA_NOTE)
 st.caption(SYNTHETIC_NOTE)
 

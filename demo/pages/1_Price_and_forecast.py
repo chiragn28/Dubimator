@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import streamlit as st
 
+from demo import theme
 from demo.client import ApiProblem, get_client
 from demo.ui import DATA_NOTE, cached_areas, forecast_rows, money, show_problem
 
 st.set_page_config(page_title="Price & forecast — Dubimator", layout="wide")
-st.title("Price & forecast")
+theme.apply()
+theme.page_header(
+    "Phases 3 & 6",
+    "Price & forecast",
+    "What a home is worth today, with the range around it, and where that value goes next. "
+    "A horizon that missed its accuracy gate says so instead of guessing.",
+)
 st.caption(DATA_NOTE)
 
 PROPERTY_KINDS = ["apartment", "hotel_apartment", "townhouse", "villa"]

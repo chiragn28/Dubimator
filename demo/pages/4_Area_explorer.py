@@ -5,11 +5,18 @@ from __future__ import annotations
 import pandas as pd
 import streamlit as st
 
+from demo import theme
 from demo.client import ApiProblem
 from demo.ui import DATA_NOTE, cached_area_history, cached_areas, show_problem
 
 st.set_page_config(page_title="Area explorer — Dubimator", layout="wide")
-st.title("Area explorer")
+theme.apply()
+theme.page_header(
+    "Phase 2",
+    "Area explorer",
+    "Twelve-month medians and how they moved, per area and property kind, straight from the "
+    "Dubai Land Department record — no model in the way.",
+)
 st.caption(DATA_NOTE)
 
 try:

@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 import demo.client
 from demo.client import ApiProblem
-from demo.ui import EXAMPLE_LISTING_IDS, PHOTO_DISCLAIMER, listing_tile
+from demo.ui import EXAMPLE_LISTING_IDS, listing_tile
 from tests.demo.demo_fixtures import FakeClient
 
 DEMO_DIR = Path(__file__).resolve().parents[2] / "demo"
@@ -134,8 +134,6 @@ def test_listing_check_existing_tab_shows_flag_names(monkeypatch):
     markdown_text = " ".join(el.value for el in at.markdown)
     # The flag is named in plain words, and its numbers are read out as a sentence.
     assert "Reused photos" in markdown_text
-    # The corpus photos are shown here, so the page must say what they are.
-    assert any(PHOTO_DISCLAIMER in el.value for el in at.caption)
     assert "122 other listings" in markdown_text
 
 
@@ -155,6 +153,19 @@ def test_search_results_do_not_fetch_corpus_photos(monkeypatch):
     assert not at.exception
     assert client.calls["photo"] == []
     assert client.calls["listing_photos"] == []
+
+
+def test_no_page_renders_a_corpus_photo(monkeypatch):
+    """The images are US houses assigned at random, so no page may show one."""
+    for page in PAGE_FILES:
+        client = patch_client(monkeypatch)
+        at = AppTest.from_file(str(page))
+        at.run()
+        if page.name == "3_Listing_check.py":
+            at.button(key="example_8249").click().run()
+        assert not at.exception, page.name
+        assert client.calls["photo"] == [], page.name
+        assert client.calls["listing_photos"] == [], page.name
 
 
 def test_the_listing_tile_only_repeats_the_listing_s_own_facts():
