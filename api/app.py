@@ -231,7 +231,7 @@ def create_app(settings: ApiSettings, loaders: dict) -> FastAPI:
     # Deferred import: api.routes.* import `current_state`/`require_key` from this
     # module, so importing them at module scope here would be circular. By the time
     # create_app() runs, this module is already fully defined.
-    from api.routes import admin, areas, forecast, health, listings, price, search
+    from api.routes import admin, areas, forecast, health, listings, photos, price, search
 
     app.include_router(health.router)
     app.include_router(admin.router)
@@ -239,6 +239,7 @@ def create_app(settings: ApiSettings, loaders: dict) -> FastAPI:
     app.include_router(forecast.router)
     app.include_router(search.router)
     app.include_router(listings.router)
+    app.include_router(photos.router)
     app.include_router(areas.router)
 
     return app

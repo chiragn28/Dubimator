@@ -5,7 +5,15 @@ from __future__ import annotations
 import streamlit as st
 
 from demo.client import ApiProblem, get_client
-from demo.ui import DATA_NOTE, SYNTHETIC_NOTE, money, show_problem
+from demo.ui import (
+    DATA_NOTE,
+    SYNTHETIC_NOTE,
+    chips,
+    cover_photo,
+    listing_card,
+    parsed_chips,
+    show_problem,
+)
 
 st.set_page_config(page_title="Search — Dubimator", layout="wide")
 st.title("Search")
@@ -37,33 +45,34 @@ if query:
         show_problem(problem)
     else:
         parsed = result.get("parsed") or {}
-        if parsed:
-            st.subheader("Understood")
-            st.json(parsed)
+        understood = parsed_chips(parsed)
+        if understood:
+            st.caption("Searching for")
+            chips(understood)
+        for error in parsed.get("errors") or []:
+            st.warning(error)
 
         for note in result.get("notes") or []:
             st.info(note)
 
         hits = result.get("results") or []
-        st.subheader(f"{len(hits)} result(s)")
+        st.subheader(f"{len(hits)} result{'' if len(hits) == 1 else 's'}")
         for hit in hits:
-            with st.container(border=True):
-                st.markdown(
-                    f"**{hit.get('title', 'Untitled')}**  ·  listing #{hit.get('listing_id')}"
+            listing_id = hit.get("listing_id")
+            photo = cover_photo(int(listing_id)) if listing_id is not None else None
+            listing_card(hit, photo=photo)
+
+        with st.expander("How these results were found"):
+            if result.get("ranker"):
+                st.write(f"Ranked by `{result['ranker']}`.")
+            timings = result.get("timings_ms") or {}
+            if timings:
+                st.write(
+                    "  ·  ".join(
+                        f"{name} {value:.0f} ms"
+                        for name, value in timings.items()
+                        if isinstance(value, (int, float))
+                    )
                 )
-                details = [money(hit["asking_price_aed"])] if "asking_price_aed" in hit else []
-                if hit.get("size_sqm"):
-                    details.append(f"{hit['size_sqm']:,.0f} m²")
-                if hit.get("bedrooms") is not None:
-                    details.append("studio" if hit["bedrooms"] == 0 else f"{hit['bedrooms']} bed")
-                if hit.get("area_name"):
-                    details.append(hit["area_name"])
-                st.write("  ·  ".join(details))
-                reasons = hit.get("reasons") or []
-                if reasons:
-                    st.write("Why: " + ", ".join(reasons))
-                hidden = hit.get("duplicates_hidden") or 0
-                if hidden:
-                    st.warning(f"{hidden} likely duplicate listing(s) of this one were hidden")
-        if result.get("ranker"):
-            st.caption(f"Ranked by {result['ranker']}")
+            st.caption("The parsed query, as the API returned it:")
+            st.json(parsed)

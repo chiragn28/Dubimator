@@ -93,6 +93,34 @@ class ApiClient:
             )
         return body
 
+    def _bytes(self, path: str) -> bytes:
+        """GET `path` and return the raw body. `_request` insists on a JSON object."""
+        if not self._key:
+            raise ApiProblem(0, "no_key", "DEMO_API_KEY is not set")
+        headers = {"X-API-Key": self._key}
+        try:
+            response = self._client.request("GET", path, headers=headers)
+        except httpx.TransportError:
+            raise ApiProblem(
+                0, "unreachable", f"cannot reach the API at {self._base_url}"
+            ) from None
+        if response.status_code // 100 != 2:
+            body = {}
+            try:
+                parsed = response.json()
+            except ValueError:
+                parsed = None
+            if isinstance(parsed, dict):
+                body = parsed
+            error = body.get("error") if isinstance(body.get("error"), dict) else {}
+            raise ApiProblem(
+                response.status_code,
+                error.get("code") or "http_error",
+                error.get("message") or f"HTTP {response.status_code}",
+                request_id=body.get("request_id") or response.headers.get("X-Request-ID"),
+            )
+        return response.content
+
     def ready(self) -> dict:
         return self._request("GET", "/v1/ready")
 
@@ -107,6 +135,22 @@ class ApiClient:
 
     def listing_flags(self, listing_id) -> dict:
         return self._request("GET", f"/v1/listings/{listing_id}/flags")
+
+    def listing_photos(self, listing_id) -> dict:
+        return self._request("GET", f"/v1/listings/{listing_id}/photos")
+
+    def photo(self, photo_id) -> bytes | None:
+        """A photo's JPEG bytes, or None when this deployment has no image for it.
+
+        Photos are decoration: a missing one must never break a page, so a 404 (no corpus
+        images on the server) comes back as None instead of an `ApiProblem`.
+        """
+        try:
+            return self._bytes(f"/v1/photos/{photo_id}")
+        except ApiProblem as problem:
+            if problem.status == 404:
+                return None
+            raise
 
     def check_listing(self, body: dict) -> dict:
         return self._request("POST", "/v1/listings/check", json=body)

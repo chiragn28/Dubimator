@@ -135,6 +135,21 @@ class FakeChecker:
             return None
         return {"listing_id": listing_id, "detect_run_id": 1, "duplicates": [], "flags": []}
 
+    def photos(self, listing_id):
+        """Same 404 sentinel as `stored`; listing 7 is the "no photos at all" case."""
+        if listing_id == 404:
+            return None
+        if listing_id == 7:
+            return {"listing_id": listing_id, "photos": []}
+        return {
+            "listing_id": listing_id,
+            "photos": [{"photo_id": 529, "room": "frontal", "position": 0}],
+        }
+
+    def photo_path(self, photo_id):
+        """529 is on disk (the test writes it), 530 is a row with no file, 404 is unknown."""
+        return {529: "photos/529_frontal.jpg", 530: "photos/missing.jpg"}.get(photo_id)
+
 
 class FakeAreas:
     """A stand-in for `api.areas.AreaStats`: one area with a history a 404 sentinel."""

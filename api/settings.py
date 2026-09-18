@@ -20,6 +20,10 @@ class ApiSettings:
     auth_enabled: bool = True
     # Keys allowed to call POST /v1/admin/reload; empty disables reload.
     admin_keys: tuple[str, ...] = ()
+    # Where the listing photo files live. The database stores each photo's path relative to
+    # this directory ("photos/133_frontal.jpg"). Blank turns photo serving off, which is what
+    # a deployment without the (gitignored, 184 MB) corpus images gets.
+    photo_root: str = "data/listings"
 
     @classmethod
     def from_env(cls, environ=None) -> "ApiSettings":
@@ -49,4 +53,5 @@ class ApiSettings:
             embed_device=env.get("API_EMBED_DEVICE", "auto"),
             auth_enabled=bool(keys),
             admin_keys=admin_keys,
+            photo_root=env.get("API_PHOTO_ROOT", "data/listings"),
         )

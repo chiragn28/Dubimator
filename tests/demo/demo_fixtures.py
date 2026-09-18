@@ -10,11 +10,24 @@ the demo package itself never does.
 
 from __future__ import annotations
 
+import io
 from collections import defaultdict
 
 from api.schemas import ForecastRequest, ListingCheckRequest
 from demo.client import ApiProblem
 from models.price.predictor import PriceRequest
+
+
+def _tiny_jpeg() -> bytes:
+    """A 4x3 JPEG, so pages that render a photo get bytes Streamlit can actually decode."""
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (4, 3), (200, 160, 120)).save(buffer, format="JPEG")
+    return buffer.getvalue()
+
+
+TINY_JPEG = _tiny_jpeg()
 
 READY_PAYLOAD = {
     "status": "ok",
@@ -104,23 +117,48 @@ SEARCH_PAYLOAD = {
     "ranker": "learned_v2",
 }
 
+# Shaped like the real API: `detail` and `signals` are objects, not prose (see
+# listings/check.py's STORED_PAIRS_SQL / STORED_FLAGS_SQL).
 LISTING_FLAGS_PAYLOAD = {
     "listing_id": 501,
-    "detect_run_id": "run-2023-03-17",
+    "detect_run_id": 4,
     "duplicates": [
-        {"listing_id": 777, "score": 0.95, "signals": ["photo hash", "same phone"]},
+        {
+            "listing_id": 777,
+            "score": 0.95,
+            "signals": {
+                "same_area": 1,
+                "same_building": 1,
+                "same_project": 0,
+                "same_agent": 0,
+                "bedrooms_equal": 1,
+                "days_apart": 11.0,
+                "text_cosine": 0.986,
+                "image_max_cosine": 0.99,
+                "shared_photo_count": 3,
+                "abs_log_price_ratio": 0.0114,
+            },
+        },
     ],
     "flags": [
-        {"flag": "photo_reuse", "detail": "3 photos match listing 777"},
+        {"flag": "photo_reuse", "detail": {"photo_set_id": 185, "listings": 122, "areas": 33}},
     ],
 }
 
 CHECK_LISTING_PAYLOAD = {
     "duplicates": [
-        {"listing_id": 777, "score": 0.95, "signals": ["photo hash"]},
+        {"listing_id": 777, "score": 0.95, "signals": {"same_area": 1, "text_cosine": 0.93}},
     ],
     "flags": [
-        {"flag": "bait_price", "detail": "asking price is 40% below the area median"},
+        {
+            "flag": "bait_price",
+            "detail": {
+                "asking_price_aed": 350000.0,
+                "range_80_low": 418330.5,
+                "estimate_aed": 576331.0,
+                "below_low_pct": 16.3,
+            },
+        },
     ],
     "notes": ["checked against the live corpus"],
     "model_versions": {"listings": "listings-v1"},
@@ -246,6 +284,19 @@ class FakeClient:
         payload = dict(LISTING_FLAGS_PAYLOAD)
         payload["listing_id"] = listing_id
         return payload
+
+    def listing_photos(self, listing_id) -> dict:
+        self.calls["listing_photos"].append(listing_id)
+        self._maybe_fail("listing_photos")
+        return {
+            "listing_id": listing_id,
+            "photos": [{"photo_id": 529, "room": "frontal", "position": 0}],
+        }
+
+    def photo(self, photo_id) -> bytes | None:
+        self.calls["photo"].append(photo_id)
+        self._maybe_fail("photo")
+        return TINY_JPEG
 
     def check_listing(self, body: dict) -> dict:
         ListingCheckRequest.model_validate(body)

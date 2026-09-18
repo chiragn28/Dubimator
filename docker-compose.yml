@@ -93,11 +93,16 @@ services:
       API_RATE_LIMIT_PER_MINUTE: ${API_RATE_LIMIT_PER_MINUTE:-60}
       API_CORS_ORIGINS: ${API_CORS_ORIGINS:-}
       API_COMPONENTS: ${API_COMPONENTS:-}
+      API_PHOTO_ROOT: ${API_PHOTO_ROOT:-data/listings}
       API_EMBED_DEVICE: cpu
     ports:
       - "127.0.0.1:${API_PORT:-8000}:8000"
     volumes:
       - hf_cache:/home/app/.cache/huggingface
+      # The corpus images, so /v1/photos/{id} can serve them. Read-only, and optional: the
+      # files are gitignored, and without them that route 404s while the rest of the API works.
+      - ./data/listings/photos:/app/data/listings/photos:ro
+      - ./data/listings/variants:/app/data/listings/variants:ro
     restart: unless-stopped
 
   demo:

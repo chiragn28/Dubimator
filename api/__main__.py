@@ -188,6 +188,29 @@ def _smoke_calls(headers: dict) -> list[tuple[str, str, str, dict]]:
     return calls
 
 
+def _photo_rows(client, headers: dict, listing_id) -> tuple[list[dict], bool]:
+    """GET a listing's photo list, then the first photo's bytes: (rows, all passed).
+
+    A listing with no photos, or a host without the (gitignored) corpus images, is not a
+    failure: the list is still a 200, and the byte call is skipped with a printed reason.
+    """
+    path = f"/v1/listings/{listing_id}/photos"
+    row, response = _run_call(client, f"GET {path}", "get", path, {"headers": headers})
+    rows, ok = [row], _passed(row)
+    photos = response.json().get("photos") if response.status_code == 200 else None
+    if not photos:
+        print(f"listing {listing_id} has no photos: cannot call /v1/photos/{{id}}")
+        return rows, ok
+    photo_path = f"/v1/photos/{photos[0]['photo_id']}"
+    photo, photo_response = _run_call(client, f"GET {photo_path}", "get", photo_path,
+                                      {"headers": headers})  # fmt: skip
+    if photo_response.status_code == 404:
+        print(f"{photo_path}: no image file on this host (API_PHOTO_ROOT), skipping")
+        return rows, ok
+    rows.append(photo)
+    return rows, ok and _passed(photo)
+
+
 def _area_rows(client, headers: dict) -> tuple[list[dict], bool]:
     """GET /v1/areas, then the history of its first summary area: (rows, all passed)."""
     row, response = _run_call(client, "GET /v1/areas", "get", "/v1/areas", {"headers": headers})
@@ -218,6 +241,10 @@ def _smoke(args: argparse.Namespace) -> int:
         for name, method, path, kwargs in _smoke_calls(headers):
             rows.append(_run_call(client, name, method, path, kwargs)[0])
         all_ok = all(_passed(row) for row in rows)
+        if "listings" in settings.components and (sample := _sample_listing()):
+            photo_rows, photos_ok = _photo_rows(client, headers, sample["listing_id"])
+            rows += photo_rows
+            all_ok = all_ok and photos_ok
         if "areas" in settings.components:
             area_rows, areas_ok = _area_rows(client, headers)
             rows += area_rows

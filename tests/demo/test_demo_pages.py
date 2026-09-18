@@ -108,9 +108,13 @@ def test_search_shows_results(monkeypatch):
     assert not at.exception
     headings = [el.value for el in at.subheader]
     assert any("2 result" in heading for heading in headings)
+    text = " ".join(el.value for el in at.markdown) + " ".join(el.value for el in at.caption)
     # the real API returns "results" with duplicates_hidden (search/engine.py SearchResult.to_dict)
-    assert any("2 likely duplicate" in el.value for el in at.warning)
-    assert any("learned_v2" in el.value for el in at.caption)
+    assert "2 likely reposts" in text
+    assert "learned_v2" in text
+    # Each hit is a card: the price leads, and the facts are chips, not a JSON dump.
+    assert "AED 2,850,000" in text
+    assert "3 bed" in text
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +132,9 @@ def test_listing_check_existing_tab_shows_flag_names(monkeypatch):
 
     assert not at.exception
     markdown_text = " ".join(el.value for el in at.markdown)
-    assert "photo_reuse" in markdown_text
+    # The flag is named in plain words, and its numbers are read out as a sentence.
+    assert "Reused photos" in markdown_text
+    assert "122 other listings" in markdown_text
 
 
 # ---------------------------------------------------------------------------
@@ -367,7 +373,7 @@ def test_new_listing_sends_a_valid_body(monkeypatch):
         "photo_ids": [11, 12, 13],
     }
     markdown_text = " ".join(el.value for el in at.markdown)
-    assert "bait_price" in markdown_text
+    assert "Bait price" in markdown_text
 
 
 def test_new_listing_rejects_bad_photo_ids_without_calling_the_api(monkeypatch):

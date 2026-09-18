@@ -8,8 +8,14 @@ from demo.client import ApiProblem, get_client
 from demo.ui import (
     DATA_NOTE,
     EXAMPLE_LISTING_IDS,
+    NO_PHOTO_BOX,
     SYNTHETIC_NOTE,
     cached_areas,
+    chips,
+    cover_photo,
+    duplicate_chips,
+    flag_summary,
+    photo_strip,
     show_problem,
 )
 
@@ -49,23 +55,50 @@ def parse_photo_ids(text: str) -> list[int]:
 
 
 def _render_duplicates(duplicates: list[dict]) -> None:
-    st.subheader("Duplicates")
-    if duplicates:
-        st.table(duplicates)
-    else:
-        st.write("No duplicates found.")
+    st.subheader("Possible reposts")
+    if not duplicates:
+        st.success("No duplicates found.")
+        return
+    count = len(duplicates)
+    st.caption(
+        f"{count} other listing looks like the same home."
+        if count == 1
+        else f"{count} other listings look like the same home."
+    )
+    for duplicate in duplicates:
+        other_id = duplicate.get("listing_id")
+        with st.container(border=True):
+            image_col, text_col = st.columns([1, 2.6], vertical_alignment="top")
+            with image_col:
+                photo = cover_photo(int(other_id)) if other_id is not None else None
+                if photo:
+                    st.image(photo, use_container_width=True)
+                else:
+                    st.markdown(NO_PHOTO_BOX, unsafe_allow_html=True)
+            with text_col:
+                score = duplicate.get("score")
+                if score is not None:
+                    st.markdown(f"### {min(float(score), 1.0) * 100:.1f}% match")
+                st.markdown(f"**Listing #{other_id}**")
+                chips(duplicate_chips(duplicate.get("signals") or {}))
 
 
 def _render_flags(flags: list[dict]) -> None:
-    st.subheader("Flags")
-    if flags:
-        for flag in flags:
-            with st.container(border=True):
-                st.markdown(f"**{flag.get('flag', 'flag')}**")
-                if flag.get("detail"):
-                    st.write(flag["detail"])
-    else:
-        st.write("No flags raised.")
+    st.subheader("Warnings")
+    if not flags:
+        st.success("No flags raised.")
+        return
+    for flag in flags:
+        name = flag.get("flag", "flag")
+        heading, sentence, tags = flag_summary(name, flag.get("detail") or {})
+        with st.container(border=True):
+            st.markdown(f"**⚠️ {heading}**")
+            if sentence:
+                st.write(sentence)
+            chips(tags)
+            if flag.get("detail"):
+                with st.expander("Why the detector said so"):
+                    st.json(flag["detail"])
 
 
 def _use_example(listing_id: str) -> None:
@@ -99,6 +132,9 @@ with existing_tab:
         except ApiProblem as problem:
             show_problem(problem)
         else:
+            st.subheader(f"Listing #{listing_id}")
+            if not photo_strip(int(listing_id)):
+                st.caption("No photos for this listing on this server.")
             _render_duplicates(result.get("duplicates") or [])
             _render_flags(result.get("flags") or [])
 

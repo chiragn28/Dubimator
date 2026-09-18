@@ -1276,6 +1276,8 @@ API_RATE_LIMIT_PER_MINUTE=60
 | `GET /v1/search?q=...&k=10` | Phase 5 ranked results, with reasons, notes and `duplicates_hidden` |
 | `GET /v1/listings/{id}/flags` | Stored duplicate pairs and fraud flags from the latest detection run on the current corpus |
 | `POST /v1/listings/check` | A **new** listing scored on the fly: duplicates with their 12 signals, plus `bait_price`, `photo_reuse` and `inconsistent_relist` flags |
+| `GET /v1/listings/{id}/photos` | The listing's photos in display order (`photo_id`, `room`, `position`) |
+| `GET /v1/photos/{id}` | The photo itself, as JPEG bytes. Needs the corpus images on the server (`API_PHOTO_ROOT`, mounted read-only by compose); 404 without them, and the rest of the API is unaffected |
 | `GET /v1/areas`, `GET /v1/areas/{id}/history` | 12-month area medians and changes, and monthly history per property kind (used by the demo) |
 | `POST /v1/admin/reload` | Rebuilds every component and swaps it in. Admin keys only; returns 409 while a reload is already running. |
 | `GET /metrics` | Prometheus text: request count and latency per route, `api_component_up`, `api_model_info` |
@@ -1347,12 +1349,14 @@ uv run python -m demo --port 8501        # binds 127.0.0.1; --host 0.0.0.0 to ex
 | Page | What it does |
 |---|---|
 | Price & forecast | Choose area, kind, status, size and bedrooms to get the estimate with its 80% range and the 3-month forecast. Undeployed horizons show the gate's reason. Also shows key drivers and the exclusions applied. |
-| Search | Plain-English search, with the parsed query, notes, reasons per result and hidden-duplicate counts |
-| Listing check | Enter an existing listing id to see its stored flags, or a new listing to score it on the fly |
+| Search | Plain-English search. Results are listing cards — photo, price, then chips for the facts and for each ranking reason. What the parser understood is shown as chips, and the raw parsed query sits in a "how these results were found" expander |
+| Listing check | Enter an existing listing id (or click one of three examples, one per outcome) to see its photos, possible reposts and warnings; or describe a new listing to score it on the fly. Each fraud flag is a sentence with its numbers, and the detector's raw detail is one expander away |
 | Area explorer | A sortable table of 12-month medians and changes, plus monthly price and sales charts per property kind |
 | About | Data source and limits, how each model is gated, and live deployment status |
 
 Every page shows "Data as of 2023-03-17", and the listing pages say the listings are synthetic. There is **no map**: DLD has no coordinates, and geocoding was declined.
+
+**Photos.** The listing images come from the API (`GET /v1/photos/{id}`), never off disk: the demo stays a pure API client. They are the Houses-dataset photos the Phase 4 corpus assigns to each synthetic listing, so they illustrate a listing rather than depict a real Dubai home, and a deployment without those (gitignored) files simply shows cards with a "no photo" placeholder.
 
 **Live check.** On 17 Sep 2026, every page ran through `streamlit.testing.v1.AppTest` against the running API with no exceptions or error messages. The `http://127.0.0.1:8501/_stcore/health` check returned `ok`.
 

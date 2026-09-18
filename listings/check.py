@@ -87,6 +87,14 @@ FROM listings.duplicate_pairs
 WHERE detect_run_id = %(run)s AND decision AND (listing_a = %(id)s OR listing_b = %(id)s)
 ORDER BY score DESC, other
 """
+LISTING_PHOTOS_SQL = """
+SELECT lp.position, p.photo_id, p.room
+FROM listings.listing_photos lp
+JOIN listings.photos p USING (photo_id)
+WHERE lp.listing_id = %s
+ORDER BY lp.position
+"""
+PHOTO_PATH_SQL = "SELECT path FROM listings.photos WHERE photo_id = %s"
 STORED_FLAGS_SQL = """
 SELECT flag, detail
 FROM listings.fraud_flags
@@ -369,6 +377,20 @@ class ListingChecker:
         """
         return stored_flags(self.conn, listing_id)
 
+    def photos(self, listing_id: int) -> dict | None:
+        """The photos of a stored listing in display order, or None if it is unknown."""
+        return listing_photos(self.conn, listing_id)
+
+    def photo_path(self, photo_id: int) -> str | None:
+        """A photo's path relative to the corpus directory, or None if it is unknown."""
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(PHOTO_PATH_SQL, (photo_id,))
+                row = cur.fetchone()
+                return None if row is None else row[0]
+        finally:
+            _rollback_quietly(self.conn)
+
     def check(self, request) -> dict:
         photo_ids = list(dict.fromkeys(_field(request, "photo_ids") or []))
         self._validate_photos(photo_ids)
@@ -401,6 +423,24 @@ class ListingChecker:
             "notes": notes,
             "model_versions": {"pair": self.pair_model.version, "price": price_version or None},
         }
+
+
+def listing_photos(conn, listing_id: int) -> dict | None:
+    """`{"listing_id": n, "photos": [{"photo_id", "room", "position"}, ...]}` in display
+    order, or None if the listing is unknown. A listing with no photos gives an empty list."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(LISTING_EXISTS_SQL, (listing_id,))
+            if cur.fetchone() is None:
+                return None
+            cur.execute(LISTING_PHOTOS_SQL, (listing_id,))
+            photos = [
+                {"photo_id": photo_id, "room": room, "position": position}
+                for position, photo_id, room in cur.fetchall()
+            ]
+            return {"listing_id": listing_id, "photos": photos}
+    finally:
+        _rollback_quietly(conn)
 
 
 def stored_flags(conn, listing_id: int) -> dict | None:

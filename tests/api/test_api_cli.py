@@ -27,7 +27,13 @@ SAMPLE = {
     "photo_ids": [],
 }
 
-LISTING_ENDPOINTS = {f"GET /v1/listings/{SAMPLE['listing_id']}/flags", "POST /v1/listings/check"}
+LISTING_ENDPOINTS = {
+    f"GET /v1/listings/{SAMPLE['listing_id']}/flags",
+    "POST /v1/listings/check",
+    # The photo pair: the list, then the first photo FakeChecker.photos() names.
+    f"GET /v1/listings/{SAMPLE['listing_id']}/photos",
+    "GET /v1/photos/529",
+}
 AREA_ENDPOINTS = {"GET /v1/areas", "GET /v1/areas/1/history"}  # FakeAreas' first area is 1
 REQUIRED_ENDPOINTS = {
     "GET /v1/ready", "POST /v1/price", "POST /v1/forecast", "GET /v1/search",
