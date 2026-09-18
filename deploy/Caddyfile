@@ -1,0 +1,14 @@
+# HTTPS front door for the API and the demo. deploy/server_setup.sh fills in the two domains
+# and installs this as /etc/caddy/Caddyfile; Caddy fetches and renews the certificates itself.
+# Airflow, MLflow, Prometheus and Grafana are deliberately not exposed: reach them over SSH,
+# e.g. `ssh -L 3000:127.0.0.1:3000 root@SERVER` for Grafana.
+
+API_DOMAIN {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000
+}
+
+DEMO_DOMAIN {
+    encode gzip
+    reverse_proxy 127.0.0.1:8501
+}

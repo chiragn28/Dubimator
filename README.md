@@ -1,17 +1,65 @@
 # Dubimator — Dubai Real Estate ML Platform
 
-Dubimator is an end-to-end ML platform for Dubai real estate, built on
-1,047,965 real Dubai Land Department (DLD) transactions. It estimates what a
-home is worth, forecasts its price, catches duplicate and suspicious listings,
-and ranks free-text property searches. Every model has to pass an acceptance
-gate against a simple baseline before it is registered in MLflow and served.
-All of it runs behind one FastAPI service and a Streamlit demo, from a local
+[![CI](https://github.com/chiragn28/Dubimator/actions/workflows/ci.yml/badge.svg)](https://github.com/chiragn28/Dubimator/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)](pyproject.toml)
+[![Tests](https://img.shields.io/badge/tests-1002%20in%20CI-brightgreen)](#how-it-was-built)
+[![Transactions](https://img.shields.io/badge/DLD%20sales-1%2C047%2C965-orange)](data/README.md)
+
+**[Landing page](https://dubimator.vercel.app)** ·
+**[Architecture and results](https://dubimator-architecture.vercel.app)** ·
+**[Hosting guide](deploy/README.md)** ·
+**[Quickstart](#quickstart)**
+
+Dubimator is an end-to-end machine-learning platform for Dubai real estate,
+built on 1,047,965 real Dubai Land Department (DLD) transactions. It estimates
+what a home is worth, forecasts its price, catches duplicate and suspicious
+listings, and ranks free-text property searches. Every model has to pass an
+acceptance gate against a simple baseline before it is registered in MLflow and
+served. All of it runs behind one FastAPI service and a Streamlit demo, from a
 Docker stack with CI, drift reports and Prometheus/Grafana monitoring.
+
+[![The Dubimator landing page](docs/images/landing.jpg)](https://dubimator.vercel.app)
 
 > **Status:** all 11 phases are complete: foundation (1), ingestion (2), price
 > model (3), duplicate/fraud detection (4), search (5), price forecasting (6),
 > API (7), demo (8), CI/CD (9), deploy and monitor (10), and documentation
 > (11).
+
+## Why this exists
+
+Buying or selling a home in Dubai means guessing. The DLD publishes every
+completed sale, but a buyer looking at a listing still can't answer four basic
+questions, and the portals don't answer them either:
+
+1. **Is this price fair?** Listing sites show asking prices, not what comparable
+   homes actually sold for. The honest answer needs the transaction record, and
+   a number with a range around it rather than a single confident figure.
+2. **What happens to this price next?** A home is the largest purchase most
+   people make, and its value over the next three months or three years is
+   treated as unknowable.
+3. **Is this listing real?** The same apartment gets reposted by five agents
+   with five prices, photos get reused across buildings, and bait prices pull
+   in calls for homes that aren't available.
+4. **Why can't I just ask for what I want?** "2BR in Dubai Marina under 1.5M"
+   is how people think, but search forms make them translate it into dropdowns.
+
+Dubimator answers all four from the official record, and — the part that matters
+more than any single model — it refuses to answer when it can't. The 1-year
+forecast missed its accuracy gate, so it returns `not_deployed` and the reason
+instead of a number. That is the design: a gate per model, a baseline it must
+beat, and no champion served that failed.
+
+It is also a portfolio project, built in eleven reviewed phases, and it is
+honest about what synthetic data and a 2023 dataset can and cannot support —
+see [Honest limitations](#honest-limitations).
+
+## Live and running
+
+| Piece | Where | Notes |
+|---|---|---|
+| Landing page | [dubimator.vercel.app](https://dubimator.vercel.app) | Static, on Vercel's free tier |
+| Architecture and results | [dubimator-architecture.vercel.app](https://dubimator-architecture.vercel.app) | Static, built from [`docs/architecture.html`](docs/architecture.html) |
+| API, demo, Postgres, MLflow | Your machine or one small server | Needs a host that stays on — see the **[hosting guide](deploy/README.md)** |
 
 ## What it does
 
@@ -111,8 +159,11 @@ it skips ingestion when the CSV hasn't changed. See [CI/CD](#cicd).
 - **Bait-price results are in-sample.** The price champion was refit on every
   source sale, so the `bait_price` precision and recall (45.2% / 96.5%) are
   optimistic. The same applies to the search ranker's value features.
-- **The public link works only while the host PC is on.** Hosting is a local
-  Docker stack behind a Cloudflare Tunnel, not a cloud service.
+- **The live URLs are the two static pages only.** The landing and architecture
+  pages are on Vercel; the API, demo, database and model store need a host that
+  stays on. [`deploy/README.md`](deploy/README.md) sets that up on one ~€8/month
+  server, and the Cloudflare Tunnel profiles still work for a quick share from
+  your own PC.
 
 ## How it was built
 
@@ -142,6 +193,8 @@ before the next phase started. Specs and plans are in `docs/superpowers/`.
 
 ## Contents
 
+- [Why this exists](#why-this-exists)
+- [Live and running](#live-and-running)
 - [What it does](#what-it-does)
 - [Results at a glance](#results-at-a-glance)
 - [Quickstart](#quickstart)
@@ -161,6 +214,7 @@ before the next phase started. Specs and plans are in `docs/superpowers/`.
   - [Demo (Phase 8)](#demo-phase-8)
 - [CI/CD](#cicd)
 - [Deploy and monitor](#deploy-and-monitor)
+- [Hosting it on the web](deploy/README.md)
 - [Cost breakdown](#cost-breakdown)
 - [Module layout](#module-layout)
 
@@ -1409,6 +1463,11 @@ Phase 10 runs the whole product from `docker-compose.yml`: the API (`Dockerfile.
 Streamlit demo (`Dockerfile.demo`) sit next to Postgres, MLflow and Airflow. Every host port is
 bound to `127.0.0.1`. Nothing is public unless you start a tunnel.
 
+> To put this on the internet instead of a laptop, follow
+> **[`deploy/README.md`](deploy/README.md)**: one 8 GB server, `scripts/export_volumes.ps1` to
+> move the database and model store, and `deploy/server_setup.sh` to install Docker and Caddy,
+> restore the volumes and start the stack behind HTTPS.
+
 **Before the first start**, fill these in `.env` (see `.env.example`):
 
 - `API_KEYS`: at least one key. The API refuses to start without one.
@@ -1614,6 +1673,7 @@ through a free Cloudflare Tunnel instead of a cloud service.
 - `pipelines/` — scheduled retraining pipeline: ingest → price → listings → search → forecast, one gated stage at a time (`python -m pipelines retrain`, Phase 9)
 - `monitoring/` — drift report (`python -m monitoring drift`), Prometheus scrape config and Grafana provisioning + dashboard; `Dockerfile.api`, `Dockerfile.demo` and the compose profiles `monitoring` / `tunnel` / `tunnel-named` (Phase 10)
 - `.github/` — CI/CD: `workflows/ci.yml` (lint, test, docker), `workflows/release.yml` (GHCR on a `v*` tag), `dependabot.yml` (Phase 9)
+- `deploy/` — hosting kit: production compose override, Caddyfile, `server_setup.sh` and the [hosting guide](deploy/README.md)
 - `docker/` — `postgres-init.sql` (enables pgvector); the Dockerfiles and `docker-compose.yml` sit at the repository root
 - `tests/` — the pytest suite, one folder per package, plus the `live` infrastructure smoke tests
 - `landing/` — the marketing landing page, live at https://dubimator.vercel.app: Vite, React 19, Tailwind v4 and framer-motion. Run `npm install`, `npm run video` (fetches the 14 MB background video, which is gitignored), then `npm run dev`. Every outbound link lives in `landing/src/site.ts`; set `VITE_DEMO_URL` at build time to point "Try the Demo" at a public demo instead of `localhost:8501`. To redeploy: `npm run build`, then `vercel deploy dist --prod --yes --name dubimator` from `landing/`.

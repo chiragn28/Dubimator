@@ -1,0 +1,21 @@
+# Production overrides for a single Linux server. Use together with the base file:
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml --profile monitoring up -d
+#
+# (deploy/server_setup.sh writes a COMPOSE_FILE line into .env so plain `docker compose` works.)
+# Ports stay bound to 127.0.0.1 in the base file; Caddy (deploy/Caddyfile) is the only thing on
+# 80/443. Nothing here needs a GPU: serving is CPU-only.
+
+services:
+  postgres:
+    restart: unless-stopped
+
+  mlflow:
+    restart: unless-stopped
+
+  airflow:
+    restart: unless-stopped
+
+  api:
+    environment:
+      API_EMBED_DEVICE: cpu
