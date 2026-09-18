@@ -582,7 +582,8 @@
         <div class="num">10</div>
         <div class="what"><b>Deploy &amp; monitor</b><span>17 Sep 2026</span></div>
         <div class="detail">CPU-only API and demo images, a public link through a free Cloudflare Tunnel (demo only, on
-          an isolated network), Prometheus + Grafana, and a PSI/KS drift report.</div>
+          an isolated network), Prometheus + Grafana, and a PSI/KS drift report. A landing page ships to Vercel from
+          git, and <code>deploy/</code> holds the kit that moves the stack to one server behind HTTPS.</div>
         <div class="pill" data-state="done">shipped</div>
       </article>
 
@@ -798,6 +799,8 @@
           <tr><td>Streamlit</td><td>1.64</td><td>the demo</td><td class="n">$0</td></tr>
           <tr><td>Prometheus + Grafana</td><td>—</td><td>metrics and dashboards</td><td class="n">$0</td></tr>
           <tr><td>Cloudflare Tunnel</td><td>quick tunnel</td><td>public link while the PC is on</td><td class="n">$0</td></tr>
+          <tr><td>Vercel</td><td>hobby</td><td>landing page + this page, built from git</td><td class="n">$0</td></tr>
+          <tr><td>Server (optional)</td><td>4 vCPU / 8 GB</td><td>always-on API, demo, Postgres, MLflow</td><td class="n">~$9/mo</td></tr>
         </tbody>
       </table>
     </div>
