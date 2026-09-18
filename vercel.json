@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "cd landing && npm ci && npm run video && npm run build",
+  "outputDirectory": "landing/dist",
+  "installCommand": "echo 'dependencies install inside landing/'",
+  "framework": null,
+  "headers": [
+    {
+      "source": "/hero.mp4",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+    }
+  ]
+}
