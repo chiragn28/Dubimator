@@ -9,6 +9,7 @@ from demo.ui import (
     DATA_NOTE,
     EXAMPLE_LISTING_IDS,
     NO_PHOTO_BOX,
+    PHOTO_DISCLAIMER,
     SYNTHETIC_NOTE,
     cached_areas,
     chips,
@@ -133,7 +134,9 @@ with existing_tab:
             show_problem(problem)
         else:
             st.subheader(f"Listing #{listing_id}")
-            if not photo_strip(int(listing_id)):
+            if photo_strip(int(listing_id)):
+                st.caption(PHOTO_DISCLAIMER)
+            else:
                 st.caption("No photos for this listing on this server.")
             _render_duplicates(result.get("duplicates") or [])
             _render_flags(result.get("flags") or [])

@@ -9,7 +9,7 @@ from streamlit.testing.v1 import AppTest
 
 import demo.client
 from demo.client import ApiProblem
-from demo.ui import EXAMPLE_LISTING_IDS
+from demo.ui import EXAMPLE_LISTING_IDS, PHOTO_DISCLAIMER, listing_tile
 from tests.demo.demo_fixtures import FakeClient
 
 DEMO_DIR = Path(__file__).resolve().parents[2] / "demo"
@@ -134,7 +134,42 @@ def test_listing_check_existing_tab_shows_flag_names(monkeypatch):
     markdown_text = " ".join(el.value for el in at.markdown)
     # The flag is named in plain words, and its numbers are read out as a sentence.
     assert "Reused photos" in markdown_text
+    # The corpus photos are shown here, so the page must say what they are.
+    assert any(PHOTO_DISCLAIMER in el.value for el in at.caption)
     assert "122 other listings" in markdown_text
+
+
+# ---------------------------------------------------------------------------
+# 4b. Search results never show a corpus photo: the images are American houses
+#     assigned at random, so a tile built from the listing's own facts is used.
+# ---------------------------------------------------------------------------
+
+
+def test_search_results_do_not_fetch_corpus_photos(monkeypatch):
+    client = patch_client(monkeypatch)
+
+    at = AppTest.from_file(str(DEMO_DIR / "pages" / "2_Search.py"))
+    at.run()
+    at.text_input(key="search_query").set_value("3br villa in dubai marina").run()
+
+    assert not at.exception
+    assert client.calls["photo"] == []
+    assert client.calls["listing_photos"] == []
+
+
+def test_the_listing_tile_only_repeats_the_listing_s_own_facts():
+    hit = {
+        "listing_id": 11304,
+        "title": "Studio apartment in Bay Square - 11, Business Bay",
+        "area_name": "Business Bay",
+        "size_sqm": 52.0,
+    }
+    tile = listing_tile(hit)
+
+    assert "Business Bay" in tile and "52" in tile
+    assert "apartment" in tile
+    # It is drawn, not fetched: no image element can carry a stock photo in.
+    assert "<img" not in tile and "photos/" not in tile
 
 
 # ---------------------------------------------------------------------------

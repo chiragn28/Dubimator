@@ -140,6 +140,15 @@ def cached_photo(photo_id: int) -> bytes | None:
     return api_client.get_client().photo(photo_id)
 
 
+# Said wherever the corpus photos are actually shown. They are American houses from the
+# Houses-dataset assigned at random (listings/photos.py), so they must never be passed off as
+# the property; they are shown here only because reused photos are the finding on this page.
+PHOTO_DISCLAIMER = (
+    "Stand-in images from a public photo dataset, assigned to synthetic listings — not the "
+    "real property. They are what the duplicate and photo-reuse detectors compare."
+)
+
+
 def photo_strip(listing_id: int, limit: int = 4) -> int:
     """The listing's own photos in a row, captioned by room. Returns how many were shown.
 
@@ -261,16 +270,71 @@ NO_PHOTO_BOX = (
 )
 
 
-def listing_card(hit: dict, *, photo: bytes | None = None) -> None:
-    """One search result, laid out like a property listing rather than a row of fields."""
+# The corpus photos are American houses from the Houses-dataset (listings/photos.py), assigned to
+# listings at random with no regard for property type, so a 52 m2 studio can get a detached house
+# with a lawn. Showing one beside "Studio apartment in Business Bay" contradicts the text, so
+# search results get a drawn tile built from the listing's own facts instead. The real photos are
+# still used where they carry meaning: the listing check, where reused photos are the finding.
+_TILE_GLYPHS = {
+    "apartment": "&#9974;",
+    "hotel_apartment": "&#9974;",
+    "townhouse": "&#8962;",
+    "villa": "&#8962;",
+}
+_TILE_TINTS = (
+    ("#0f3b46", "#15505e"),
+    ("#12313f", "#1b4557"),
+    ("#123a38", "#1a524d"),
+    ("#1a2f45", "#24415f"),
+)
+
+
+def _tile_kind(hit: dict) -> str:
+    """The property kind implied by a hit, from its title (the API sends no explicit kind)."""
+    title = (hit.get("title") or "").lower()
+    for kind in ("hotel apartment", "townhouse", "villa", "apartment"):
+        if kind in title:
+            return kind.replace(" ", "_")
+    return "apartment"
+
+
+def listing_tile(hit: dict) -> str:
+    """An SVG stand-in for a listing photo, drawn from the listing's own facts.
+
+    Honest by construction: it can only show what the listing actually says, so it can never
+    contradict the text next to it the way a random stock photo does.
+    """
+    kind = _tile_kind(hit)
+    glyph = _TILE_GLYPHS.get(kind, "&#9974;")
+    seed = int(hit.get("listing_id") or 0)
+    top, bottom = _TILE_TINTS[seed % len(_TILE_TINTS)]
+    label = kind.replace("_", " ")
+    size = f"{hit['size_sqm']:,.0f} m&#178;" if hit.get("size_sqm") else ""
+    area = (hit.get("area_name") or "").replace("&", "&amp;").replace("<", "&lt;")
+    return f"""
+<div style="aspect-ratio:4/3;border-radius:8px;overflow:hidden;position:relative;
+     background:linear-gradient(160deg,{top},{bottom});display:flex;flex-direction:column;
+     align-items:center;justify-content:center;gap:4px;color:rgba(255,255,255,0.92)">
+  <div style="font-size:2.4rem;line-height:1">{glyph}</div>
+  <div style="font-size:0.78rem;letter-spacing:0.04em;text-transform:uppercase;
+       color:rgba(255,255,255,0.75)">{label}</div>
+  <div style="font-size:0.72rem;color:rgba(255,255,255,0.6)">{area}{" &middot; " if area and size else ""}{size}</div>
+  <div style="position:absolute;bottom:6px;font-size:0.6rem;color:rgba(255,255,255,0.4)">
+    no listing photo</div>
+</div>
+"""
+
+
+def listing_card(hit: dict) -> None:
+    """One search result, laid out like a property listing rather than a row of fields.
+
+    The thumbnail is drawn from the listing's own facts rather than a corpus photo: see
+    `listing_tile` for why.
+    """
     with st.container(border=True):
         image_col, text_col = st.columns([1, 2.6], vertical_alignment="top")
         with image_col:
-            if photo:
-                st.image(photo, use_container_width=True)
-            else:
-                # Keep the two-column shape with no image, so the cards still line up.
-                st.markdown(NO_PHOTO_BOX, unsafe_allow_html=True)
+            st.markdown(listing_tile(hit), unsafe_allow_html=True)
         with text_col:
             price = hit.get("asking_price_aed")
             if price is not None:

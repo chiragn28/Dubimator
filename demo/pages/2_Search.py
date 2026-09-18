@@ -9,7 +9,6 @@ from demo.ui import (
     DATA_NOTE,
     SYNTHETIC_NOTE,
     chips,
-    cover_photo,
     listing_card,
     parsed_chips,
     show_problem,
@@ -58,9 +57,7 @@ if query:
         hits = result.get("results") or []
         st.subheader(f"{len(hits)} result{'' if len(hits) == 1 else 's'}")
         for hit in hits:
-            listing_id = hit.get("listing_id")
-            photo = cover_photo(int(listing_id)) if listing_id is not None else None
-            listing_card(hit, photo=photo)
+            listing_card(hit)
 
         with st.expander("How these results were found"):
             if result.get("ranker"):

@@ -144,7 +144,9 @@ it skips ingestion when the CSV hasn't changed. See [CI/CD](#cicd).
   date. A newer DLD file needs no code change, but it hasn't been ingested.
 - **The listings are synthetic.** DLD publishes no listings, so the Phase 4
   corpus invents text, agents, duplicates and fraud over real sales, and uses
-  public photos. The duplicate and search figures are measured on that corpus
+  photos of American houses from a public dataset — they are inputs the duplicate
+  detector compares, not pictures of the property, and the demo never presents
+  them as one. The duplicate and search figures are measured on that corpus
   and won't carry over to a real portal. Search queries and grades are
   rule-generated too.
 - **There are no coordinates and no map.** DLD has no coordinates, so location
@@ -1356,7 +1358,7 @@ uv run python -m demo --port 8501        # binds 127.0.0.1; --host 0.0.0.0 to ex
 
 Every page shows "Data as of 2023-03-17", and the listing pages say the listings are synthetic. There is **no map**: DLD has no coordinates, and geocoding was declined.
 
-**Photos.** The listing images come from the API (`GET /v1/photos/{id}`), never off disk: the demo stays a pure API client. They are the Houses-dataset photos the Phase 4 corpus assigns to each synthetic listing, so they illustrate a listing rather than depict a real Dubai home, and a deployment without those (gitignored) files simply shows cards with a "no photo" placeholder.
+**Photos.** The corpus images are Houses-dataset photos of American properties, assigned to synthetic listings at random with no regard for property type, so they can contradict the listing beside them (a 52 m² studio drawing a detached house). **Search results therefore show no photo at all**: each card draws a tile from the listing's own facts, which cannot say anything the listing does not. The real images appear only on the listing check, where reused photos *are* the finding, and are captioned as stand-ins. They reach the page through the API (`GET /v1/photos/{id}`), never off disk, so the demo stays a pure API client; without those (gitignored) files the page says so.
 
 **Live check.** On 17 Sep 2026, every page ran through `streamlit.testing.v1.AppTest` against the running API with no exceptions or error messages. The `http://127.0.0.1:8501/_stcore/health` check returned `ok`.
 
