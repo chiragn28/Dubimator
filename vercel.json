@@ -1,6 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "buildCommand": "cd landing && npm ci && npm run video && npm run build",
+  "buildCommand": "cd landing && npm ci && npm run build",
   "outputDirectory": "landing/dist",
   "installCommand": "echo 'dependencies install inside landing/'",
   "framework": null,

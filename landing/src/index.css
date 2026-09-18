@@ -25,46 +25,5 @@
   .nav-bar { padding: 20px 20px !important; }
   .hero-content { padding-left: 24px !important; }
   .hero-footer { left: 24px !important; }
-  .tower { opacity: 0.8; }
   .hero-scrim { background: linear-gradient(to bottom, rgba(0,0,0,0.05) 8%, rgba(0,0,0,0.5) 30%, rgba(0,0,0,0.5) 62%, rgba(0,0,0,0.05) 80%); }
-}
-
-/* The tower drawn over the hero video (see components/Tower.tsx). */
-.tower-rise {
-  transform-box: fill-box;
-  transform-origin: 50% 100%;
-  animation: tower-rise 2.6s cubic-bezier(0.22, 1, 0.36, 1) 0.4s both;
-}
-.tower-win {
-  animation: tower-win-on 0.5s ease-out both, tower-win-flicker 9s ease-in-out 4s infinite;
-}
-.tower-sweep {
-  animation: tower-sweep 7s ease-in-out 3.5s infinite;
-}
-.tower-beacon {
-  animation: tower-beacon 1.6s ease-in-out infinite;
-}
-@keyframes tower-rise {
-  from { transform: scaleY(0); }
-  to { transform: scaleY(1); }
-}
-@keyframes tower-win-on {
-  from { opacity: 0; }
-}
-@keyframes tower-win-flicker {
-  0%, 92%, 100% { filter: brightness(1); }
-  95% { filter: brightness(1.35); }
-}
-@keyframes tower-sweep {
-  0%, 60%, 100% { transform: translateY(400px); opacity: 0; }
-  62% { opacity: 1; }
-  90% { transform: translateY(-100px); opacity: 0; }
-}
-@keyframes tower-beacon {
-  0%, 100% { opacity: 0.15; }
-  50% { opacity: 1; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .tower-rise, .tower-win, .tower-sweep { animation: none; }
-  .tower-beacon { animation-duration: 3s; }
 }

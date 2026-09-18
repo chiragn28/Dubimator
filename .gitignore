@@ -18,7 +18,6 @@ site/
 .vercel/
 landing/node_modules/
 landing/dist/
-landing/public/hero.mp4
 landing/*.tsbuildinfo
 
 # Stray npm files at the repo root (threlte/three), not part of this project

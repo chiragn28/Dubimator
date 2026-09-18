@@ -1,6 +1,5 @@
 import { motion } from 'framer-motion'
 import { links } from '../site'
-import Tower from './Tower'
 
 const socials = [
   {
@@ -24,11 +23,11 @@ export default function Hero() {
   return (
     <section style={{ position: 'relative', width: '100%', height: '100vh', overflow: 'hidden' }}>
       <video style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} src="/hero.mp4" autoPlay muted loop playsInline />
-      <Tower />
       <div className="hero-scrim" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }} />
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.10)' }} />
-      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.13) 0%, transparent 22%, transparent 60%, rgba(0,0,0,0.19) 100%)' }} />
-      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to right, rgba(0,0,0,0.07) 0%, transparent 18%, transparent 82%, rgba(0,0,0,0.07) 100%)' }} />
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.42) 0%, transparent 26%, transparent 62%, rgba(0,0,0,0.28) 100%)' }} />
+      {/* Daylight footage: the copy sits over bright glass, so the left third carries a scrim. */}
+      <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to right, rgba(0,0,0,0.58) 0%, rgba(0,0,0,0.30) 34%, transparent 60%)' }} />
       <div style={{ position: 'absolute', top: '-14%', left: '50%', transform: 'translateX(-50%)', width: '1000px', height: '720px', background: 'radial-gradient(ellipse at 50% 30%, rgba(6,95,70,0.18) 0%, transparent 68%)', pointerEvents: 'none' }} />
 
       <div className="hero-content" style={{ position: 'relative', zIndex: 10, display: 'flex', flexDirection: 'column', height: '100%', justifyContent: 'flex-start', paddingTop: '24vh', paddingLeft: '64px', paddingRight: '24px' }}>
