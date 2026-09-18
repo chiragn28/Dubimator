@@ -297,8 +297,26 @@ def test_app_renders_nested_component_status(monkeypatch):
 
     assert not at.exception
     markdown_text = " ".join(el.value for el in at.markdown)
-    assert "**price** (price-v3)" in markdown_text
-    assert "**status**" not in markdown_text
+    # One row per component with its short version, under a summary; the payload's own
+    # top-level "status" key is not a component and must not be listed.
+    assert "5 of 5" in markdown_text
+    for name, version in (("price", "v3"), ("forecast", "v1"), ("search", "v2")):
+        assert f'dbm-status-name">{name}<' in markdown_text
+        assert f'dbm-status-version">{version}<' in markdown_text
+    assert 'dbm-status-name">status<' not in markdown_text
+
+
+def test_short_version_reads_like_a_version_not_a_registry_id():
+    from demo.ui import short_version
+
+    assert short_version("2") == "v2"
+    assert short_version("3m:1") == "3m \u00b7 v1"
+    assert short_version("pair:1") == "v1"
+    assert short_version("dubimator-search-ranker/v2") == "v2"
+    assert short_version("data_end:2023-03-17") == "to 2023-03-17"
+    assert short_version("price-v3") == "v3"
+    assert short_version(None) == ""
+    assert short_version("something-odd") == "something-odd"
 
 
 def test_ready_is_cached_across_reruns(monkeypatch):

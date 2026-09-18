@@ -181,6 +181,32 @@ h3 {{ font-size: 1.15rem; letter-spacing: -0.015em; }}
 .stTabs [data-baseweb="tab-highlight"] {{ background-color: var(--emerald); }}
 .stTabs [aria-selected="true"] {{ color: #fff !important; }}
 
+/* The API status block in the sidebar: summary line, then one row per component. */
+.dbm-status {{ display: flex; flex-direction: column; gap: 0.3rem; margin-top: 0.2rem; }}
+.dbm-status-summary {{
+  display: flex; align-items: center; gap: 0.5rem;
+  font-size: 0.8rem; font-weight: 600; letter-spacing: 0.01em;
+  padding-bottom: 0.45rem; margin-bottom: 0.15rem;
+  border-bottom: 1px solid var(--line);
+}}
+.dbm-status-row {{
+  display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 0.55rem;
+  font-size: 0.86rem; line-height: 1.7;
+}}
+.dbm-status-name {{ font-weight: 500; }}
+.dbm-status-version {{
+  font-size: 0.74rem; color: var(--muted); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}}
+.dbm-status-error {{
+  font-size: 0.72rem; color: #f0857d; padding-left: 1.15rem; margin-top: -0.15rem;
+  overflow-wrap: anywhere;
+}}
+.dbm-dot {{ width: 8px; height: 8px; border-radius: 999px; flex: 0 0 8px; display: inline-block; }}
+.dbm-tone-good .dbm-dot {{ background: var(--emerald); box-shadow: 0 0 0 3px rgba(16,185,129,0.16); }}
+.dbm-tone-warn .dbm-dot {{ background: #f2a54a; box-shadow: 0 0 0 3px rgba(242,165,74,0.16); }}
+.dbm-tone-bad .dbm-dot {{ background: #ef5350; box-shadow: 0 0 0 3px rgba(239,83,80,0.18); }}
+
 /* Keyboard focus stays visible, on the accent. */
 :focus-visible {{ outline: 2px solid var(--emerald) !important; outline-offset: 2px; }}
 

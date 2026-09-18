@@ -8,7 +8,9 @@ the Phase 8 global constraints stay true in one place.
 
 from __future__ import annotations
 
+import html
 import math
+import re
 
 import streamlit as st
 
@@ -88,26 +90,70 @@ def forecast_rows(forecast: dict) -> list[dict]:
     return rows
 
 
-def render_component_status(ready: dict) -> None:
-    """Render each API component's up/down state and version.
+_VERSION_TAIL = re.compile(r"v?(\d+)$")
 
-    `/v1/ready` nests them under `"components"`.
+
+def short_version(raw) -> str:
+    """The part of a component version a reader wants: `2` -> `v2`, `3m:1` -> `3m \u00b7 v1`,
+    `dubimator-search-ranker/v2` -> `v2`, `data_end:2023-03-17` -> `to 2023-03-17`.
+
+    The API's version strings are registry identifiers, useful in a log and noise in a
+    sidebar. Anything this cannot shorten is shown as it came.
+    """
+    if raw is None or raw == "":
+        return ""
+    text = str(raw)
+    if text.startswith("data_end:"):
+        return "to " + text[len("data_end:") :]
+    if ":" in text:
+        head, _, tail = text.rpartition(":")
+        version = _VERSION_TAIL.search(tail)
+        if version:
+            return (
+                f"v{version.group(1)}" if head == "pair" else f"{head} \u00b7 v{version.group(1)}"
+            )
+    leaf = text.rsplit("/", 1)[-1]
+    version = _VERSION_TAIL.search(leaf)
+    if version and (leaf.startswith("v") or leaf.isdigit() or "-v" in leaf):
+        return f"v{version.group(1)}"
+    return text
+
+
+def render_component_status(ready: dict) -> None:
+    """Each API component as a row - state dot, name, short version - under a one-line
+    summary, so the sidebar answers "is it up?" before anyone reads the details.
+
+    `/v1/ready` nests the components under `"components"`. A component that is down shows
+    its error beneath the row.
     """
     components = ready.get("components")
     if not isinstance(components, dict):
         return
-    for name, info in components.items():
-        if not isinstance(info, dict):
-            continue
-        up = info.get("up")
-        version = info.get("version")
-        icon = "🟢" if up else "🔴"
-        label = f"{icon} **{name}**"
-        if version:
-            label += f" ({version})"
-        st.markdown(label)
-        if not up and info.get("error"):
-            st.caption(info["error"])
+    rows = [(name, info) for name, info in components.items() if isinstance(info, dict)]
+    if not rows:
+        return
+    up = sum(1 for _, info in rows if info.get("up"))
+    total = len(rows)
+    tone = "good" if up == total else ("warn" if up else "bad")
+    summary = "all up" if up == total else f"{total - up} down"
+    parts = [
+        '<div class="dbm-status">',
+        (
+            f'<div class="dbm-status-summary dbm-tone-{tone}">'
+            f'<span class="dbm-dot"></span>{up} of {total} \u00b7 {summary}</div>'
+        ),
+    ]
+    for name, info in rows:
+        state = "good" if info.get("up") else "bad"
+        parts.append(
+            f'<div class="dbm-status-row dbm-tone-{state}"><span class="dbm-dot"></span>'
+            f'<span class="dbm-status-name">{html.escape(str(name))}</span>'
+            f'<span class="dbm-status-version">{html.escape(short_version(info.get("version")))}</span></div>'
+        )
+        if not info.get("up") and info.get("error"):
+            parts.append(f'<div class="dbm-status-error">{html.escape(str(info["error"]))}</div>')
+    parts.append("</div>")
+    st.markdown("".join(parts), unsafe_allow_html=True)
 
 
 @st.cache_data(ttl=600)
