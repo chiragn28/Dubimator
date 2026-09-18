@@ -5,7 +5,8 @@
 base = "dark"
 primaryColor = "#10B981"
 backgroundColor = "#0B1014"
-secondaryBackgroundColor = "#121A20"
+# Inputs and popovers take this, so it sits a clear step above the card surface (#121A20).
+secondaryBackgroundColor = "#1B2732"
 textColor = "#E6EDF3"
 font = "sans serif"
 

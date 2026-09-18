@@ -17,6 +17,7 @@ import streamlit as st
 
 INK = "#0B1014"
 SURFACE = "#121A20"
+FIELD = "#1B2732"
 EMERALD = "#10B981"
 
 _FONTS = (
@@ -31,6 +32,7 @@ _CSS = f"""
 :root {{
   --ink: {INK};
   --surface: {SURFACE};
+  --field: {FIELD};
   --emerald: {EMERALD};
   --line: rgba(255,255,255,0.09);
   --muted: rgba(230,237,243,0.62);
@@ -155,6 +157,37 @@ h3 {{ font-size: 1.15rem; letter-spacing: -0.015em; }}
   font-weight: 500;
   line-height: 1.5;
 }}
+
+/* Form fields: a lighter fill and a hairline so they read as fields on the card surface,
+   and an emerald ring when focused. Covers selects, text, number and text-area inputs. */
+div[data-baseweb="select"] > div,
+div[data-baseweb="input"] > div,
+div[data-baseweb="base-input"],
+[data-testid="stTextArea"] textarea {{
+  background-color: var(--field) !important;
+  border: 1px solid rgba(255,255,255,0.14) !important;
+  border-radius: 10px !important;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}}
+div[data-baseweb="select"] > div:hover,
+div[data-baseweb="input"] > div:hover,
+[data-testid="stTextArea"] textarea:hover {{
+  border-color: rgba(255,255,255,0.26) !important;
+}}
+div[data-baseweb="select"] > div:focus-within,
+div[data-baseweb="input"] > div:focus-within,
+[data-testid="stTextArea"] textarea:focus {{
+  border-color: var(--emerald) !important;
+  box-shadow: 0 0 0 3px rgba(16,185,129,0.22) !important;
+}}
+/* The open dropdown list matches the field it came from. */
+div[data-baseweb="popover"] ul[role="listbox"] {{
+  background-color: var(--field);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: 10px;
+}}
+/* Number-input steppers sit inside the field, not on the page. */
+[data-testid="stNumberInput"] button {{ background-color: transparent !important; }}
 
 /* Buttons read as controls, and the primary action is unmistakable. */
 .stButton > button {{
