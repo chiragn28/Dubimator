@@ -1,5 +1,6 @@
 import { motion } from 'framer-motion'
 import { links } from '../site'
+import heroVideo from '../assets/hero.mp4'
 
 const socials = [
   {
@@ -22,7 +23,7 @@ const socials = [
 export default function Hero() {
   return (
     <section style={{ position: 'relative', width: '100%', height: '100vh', overflow: 'hidden' }}>
-      <video style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} src="/hero.mp4" autoPlay muted loop playsInline />
+      <video style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', objectFit: 'cover' }} src={heroVideo} autoPlay muted loop playsInline />
       <div className="hero-scrim" style={{ position: 'absolute', inset: 0, pointerEvents: 'none' }} />
       <div style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.10)' }} />
       <div style={{ position: 'absolute', inset: 0, background: 'linear-gradient(to bottom, rgba(0,0,0,0.42) 0%, transparent 26%, transparent 62%, rgba(0,0,0,0.28) 100%)' }} />
