@@ -27,7 +27,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and push MLflow image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.mlflow
@@ -37,7 +37,7 @@ jobs:
             ghcr.io/${{ github.repository }}/mlflow:latest
 
       - name: Build and push Airflow image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.airflow
@@ -47,7 +47,7 @@ jobs:
             ghcr.io/${{ github.repository }}/airflow:latest
 
       - name: Build and push API image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.api
@@ -57,7 +57,7 @@ jobs:
             ghcr.io/${{ github.repository }}/api:latest
 
       - name: Build and push demo image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.demo
