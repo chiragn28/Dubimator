@@ -1,0 +1,56 @@
+name: Deploy
+
+# Redeploys the server (API + demo) whenever CI passes on master. The landing page is not part of
+# this: Vercel deploys it straight from the repo on its own.
+#
+# One-time setup: the repository secret DEPLOY_SSH_KEY holds the private half of a key whose
+# public half sits in the server's authorized_keys, locked to deploy/redeploy.sh (see
+# deploy/README.md, "Automatic deploys"). Without that secret this workflow fails at the first step.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
+
+# Deploys queue up rather than overlap or cancel each other half way through a build.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  SERVER: root@151.245.137.100
+  # The server's own host key (public information), pinned so the deploy can only ever talk to
+  # this machine and not something impersonating it.
+  SERVER_HOST_KEY: "151.245.137.100 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJUxmzADhlR7c6L5exC+ED/RoGOHBsr2/88qiJwMg5M"
+
+jobs:
+  deploy:
+    # Only after CI succeeded on a push (not on a pull request), or when run by hand.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Install the deploy key
+        env:
+          DEPLOY_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::The DEPLOY_SSH_KEY repository secret is not set."
+            exit 1
+          fi
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$SERVER_HOST_KEY" > ~/.ssh/known_hosts
+
+      - name: Redeploy
+        run: |
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -o ServerAliveInterval=30 "$SERVER" deploy

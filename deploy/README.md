@@ -249,6 +249,25 @@ Then open `http://127.0.0.1:3000` (Grafana), `http://127.0.0.1:5000` (MLflow) an
 
 ---
 
+## Automatic deploys
+
+Every push to `master` redeploys the server once CI passes. The workflow is
+`.github/workflows/deploy.yml`; it logs in over SSH and runs `deploy/redeploy.sh`, which pulls
+the new code, rebuilds only what changed, and fails (turning the Action red) if the API does not
+come back with every component up. The landing page is separate: Vercel deploys it from the repo.
+
+The SSH key it uses is not your personal one. Its public half sits in the server's
+`/root/.ssh/authorized_keys` with `restrict,command="bash /opt/dubimator/deploy/redeploy.sh"` in
+front, so that key can run the redeploy script and nothing else. Its private half is the
+repository secret `DEPLOY_SSH_KEY` (GitHub, Settings, Secrets and variables, Actions).
+
+To rotate it: `ssh-keygen -t ed25519 -N "" -f k`, replace the `github-actions-deploy` line in
+`authorized_keys` with the new public key (keep the `restrict,command=...` prefix), and update the
+secret. To deploy by hand, run `ssh root@SERVER 'bash /opt/dubimator/deploy/redeploy.sh'`, or use
+"Run workflow" on the Deploy action.
+
+---
+
 ## Keeping it running
 
 **Updating the code.** Push to `master`, then on the server:

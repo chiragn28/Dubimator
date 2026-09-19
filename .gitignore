@@ -23,3 +23,6 @@ landing/*.tsbuildinfo
 # Stray npm files at the repo root (threlte/three), not part of this project
 /package.json
 /package-lock.json
+
+# Volume exports from scripts/export_volumes.ps1 (hundreds of MB, contain the database)
+deploy/out/
