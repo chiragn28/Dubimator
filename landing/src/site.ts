@@ -12,6 +12,6 @@ export const links = {
     { label: 'Areas', href: `${demo}/Area_explorer` },
   ],
   // Leave a link empty to hide its icon.
-  github: '',
+  github: 'https://github.com/chiragn28/Dubimator',
   linkedin: '',
 }

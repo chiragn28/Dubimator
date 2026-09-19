@@ -597,3 +597,13 @@ def test_a_blank_demo_landing_url_hides_the_link(monkeypatch):
 
     assert not at.exception
     assert "dbm-home" not in _all_markdown(at).replace(".dbm-home", "")
+
+
+def test_about_links_to_the_source_repository(monkeypatch):
+    patch_client(monkeypatch)
+
+    at = AppTest.from_file(str(DEMO_DIR / "pages" / "5_About.py"))
+    at.run()
+
+    assert not at.exception
+    assert "https://github.com/chiragn28/Dubimator" in _all_markdown(at)

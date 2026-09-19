@@ -49,6 +49,7 @@ corpus, never over a real seller's data.
 
 ### Links
 - [Architecture](https://dubimator-architecture.vercel.app)
+- [Source code on GitHub](https://github.com/chiragn28/Dubimator)
 """
 )
 
