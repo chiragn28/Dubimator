@@ -295,7 +295,7 @@ def listing_tile(hit: dict) -> str:
     size = f"{hit['size_sqm']:,.0f} m&#178;" if hit.get("size_sqm") else ""
     area = (hit.get("area_name") or "").replace("&", "&amp;").replace("<", "&lt;")
     return f"""
-<div style="aspect-ratio:4/3;border-radius:8px;overflow:hidden;position:relative;
+<div class="dbm-tile" style="aspect-ratio:4/3;border-radius:8px;overflow:hidden;position:relative;
      background:linear-gradient(160deg,{top},{bottom});display:flex;flex-direction:column;
      align-items:center;justify-content:center;gap:4px;color:rgba(255,255,255,0.92)">
   <div style="font-size:2.4rem;line-height:1">{glyph}</div>

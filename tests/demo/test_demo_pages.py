@@ -607,3 +607,28 @@ def test_about_links_to_the_source_repository(monkeypatch):
 
     assert not at.exception
     assert "https://github.com/chiragn28/Dubimator" in _all_markdown(at)
+
+
+# ---------------------------------------------------------------------------
+# Phones: the stylesheet keeps Streamlit's icons on their own font and shrinks the layout.
+# ---------------------------------------------------------------------------
+
+
+def test_the_theme_keeps_streamlit_icons_on_the_icon_font():
+    from demo import theme
+
+    # Without this rule the blanket font-family reaches the icon spans and the sidebar arrow and
+    # every expander chevron print their glyph name ("keyboard_double_arrow_right") as text.
+    assert '[data-testid="stIconMaterial"]' in theme._CSS
+    assert '"Material Symbols Rounded"' in theme._CSS
+
+
+def test_the_theme_has_a_phone_layout():
+    from demo import theme
+
+    assert "@media (max-width: 640px)" in theme._CSS
+    assert ".dbm-tile" in theme._CSS
+
+
+def test_the_listing_tile_carries_the_class_the_phone_layout_targets():
+    assert 'class="dbm-tile"' in listing_tile({"listing_id": 1, "title": "Studio apartment"})

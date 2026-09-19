@@ -50,6 +50,15 @@ html, body, [class*="st-"], .stMarkdown, p, li, label, input, textarea, button {
   font-family: 'Inter', -apple-system, 'Segoe UI', sans-serif;
 }}
 
+/* Streamlit draws its icons (sidebar arrow, expander chevrons) by rendering a word such as
+   "keyboard_double_arrow_right" in the Material Symbols font. The rule above would swap that font
+   for Inter and print the word, so icons are put back on their own face. */
+[data-testid="stIconMaterial"] {{
+  font-family: "Material Symbols Rounded" !important;
+  font-feature-settings: "liga";
+  letter-spacing: normal !important;
+}}
+
 /* Display face for every heading, set tight and large — the one loud move on the page. */
 h1, h2, h3, h4,
 [data-testid="stMetricValue"] {{
@@ -269,6 +278,20 @@ div[data-baseweb="popover"] ul[role="listbox"] {{
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1.1;
+}}
+
+/* Phones. The desktop scale is generous; on a 390px screen the title and the placeholder tile
+   would otherwise take most of the first screen. */
+@media (max-width: 640px) {{
+  h1 {{ font-size: 2.05rem; }}
+  h2 {{ font-size: 1.3rem; margin-top: 1.6rem; }}
+  .dbm-lede {{ font-size: 0.95rem; margin-bottom: 0.6rem; }}
+  .dbm-rule {{ margin-bottom: 1.1rem; }}
+  .dbm-price {{ font-size: 1.6rem; }}
+  .dbm-tile {{ aspect-ratio: 16 / 6 !important; }}
+  /* Tap targets: a fingertip needs about 44px. */
+  .stButton > button {{ min-height: 2.75rem; }}
+  .dbm-home {{ padding: 0.45rem 0.9rem; }}
 }}
 
 @media (prefers-reduced-motion: reduce) {{
