@@ -552,3 +552,48 @@ def test_area_history_is_cached(monkeypatch):
 
     assert not at.exception
     assert len(client.calls["area_history"]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Every page links back to the landing page, which is the product's front door.
+# ---------------------------------------------------------------------------
+
+
+def _all_markdown(at) -> str:
+    return " ".join(el.value for el in at.markdown)
+
+
+@pytest.mark.parametrize("page_file", PAGE_FILES, ids=lambda p: p.name)
+def test_every_page_links_back_to_the_landing_page(monkeypatch, page_file):
+    monkeypatch.delenv("DEMO_LANDING_URL", raising=False)
+    patch_client(monkeypatch)
+
+    at = AppTest.from_file(str(page_file))
+    at.run()
+
+    assert not at.exception
+    markdown = _all_markdown(at)
+    assert 'class="dbm-home" href="https://dubimator.vercel.app"' in markdown
+    assert "Dubimator home" in markdown
+
+
+def test_the_landing_link_follows_demo_landing_url(monkeypatch):
+    monkeypatch.setenv("DEMO_LANDING_URL", 'https://example.test/?a=1&b="2"')
+    patch_client(monkeypatch)
+
+    at = AppTest.from_file(str(DEMO_DIR / "app.py"))
+    at.run()
+
+    # Escaped, so a odd value can't break out of the attribute.
+    assert 'href="https://example.test/?a=1&amp;b=&quot;2&quot;"' in _all_markdown(at)
+
+
+def test_a_blank_demo_landing_url_hides_the_link(monkeypatch):
+    monkeypatch.setenv("DEMO_LANDING_URL", "")
+    patch_client(monkeypatch)
+
+    at = AppTest.from_file(str(DEMO_DIR / "app.py"))
+    at.run()
+
+    assert not at.exception
+    assert "dbm-home" not in _all_markdown(at).replace(".dbm-home", "")

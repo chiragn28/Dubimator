@@ -13,6 +13,9 @@ at, without a nav bar restating it.
 
 from __future__ import annotations
 
+import html
+import os
+
 import streamlit as st
 
 INK = "#0B1014"
@@ -24,6 +27,11 @@ _FONTS = (
     "https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@500;600;700"
     "&family=Inter:wght@400;500;600&display=swap"
 )
+
+# Where "back to the front door" goes. The landing page is the product's entry point and the demo
+# is one of its destinations, so every demo page links back. Set DEMO_LANDING_URL to point it
+# elsewhere; set it to an empty string to hide the link (e.g. a demo running on its own).
+DEFAULT_LANDING_URL = "https://dubimator.vercel.app"
 
 _CSS = f"""
 <style>
@@ -57,6 +65,17 @@ h3 {{ font-size: 1.15rem; letter-spacing: -0.015em; }}
 [data-testid="stMetricValue"], .dbm-price, table, code {{
   font-variant-numeric: tabular-nums;
 }}
+
+/* The way back to the landing page: a slim row above every page, out of the way of the content. */
+.dbm-topbar {{ display: flex; justify-content: flex-end; margin: -0.6rem 0 0.9rem 0; }}
+.dbm-home {{
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  font-size: 0.74rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--muted) !important; text-decoration: none !important;
+  padding: 0.3rem 0.8rem; border: 1px solid var(--line); border-radius: 999px;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}}
+.dbm-home:hover {{ color: #fff !important; border-color: var(--emerald); background: rgba(16,185,129,0.1); }}
 
 /* The page opener: eyebrow, title, one line, hairline. */
 .dbm-eyebrow {{
@@ -260,9 +279,24 @@ div[data-baseweb="popover"] ul[role="listbox"] {{
 """
 
 
+def landing_url() -> str:
+    """The landing page's address, or "" when the link is switched off."""
+    return os.environ.get("DEMO_LANDING_URL", DEFAULT_LANDING_URL).strip()
+
+
 def apply() -> None:
-    """Inject the fonts and component styling. Call once, at the top of every page."""
+    """Inject the fonts and component styling, and the link back to the landing page.
+
+    Call once, at the top of every page.
+    """
     st.markdown(_CSS, unsafe_allow_html=True)
+    url = landing_url()
+    if url:
+        st.markdown(
+            f'<div class="dbm-topbar"><a class="dbm-home" href="{html.escape(url, quote=True)}"'
+            ' target="_self">&larr; Dubimator home</a></div>',
+            unsafe_allow_html=True,
+        )
 
 
 def page_header(eyebrow: str, title: str, lede: str = "") -> None:

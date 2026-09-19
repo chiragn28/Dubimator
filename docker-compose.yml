@@ -117,6 +117,7 @@ services:
     environment:
       DEMO_API_URL: http://api:8000
       DEMO_API_KEY: ${DEMO_API_KEY:-}
+      DEMO_LANDING_URL: ${DEMO_LANDING_URL:-https://dubimator.vercel.app}
     ports:
       - "127.0.0.1:${DEMO_PORT:-8501}:8501"
     # `default` reaches the API; `public` is the only network the tunnels share with it.
